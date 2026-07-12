@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>第二微信 AI 控制台</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div>
+      <div class="brand"><span class="brand-signal"></span><div><strong>WXConsole</strong><small>第二微信 AI 控制台</small></div></div>
+      <nav class="nav" aria-label="主导航">
+        <button class="nav-item active" data-page="overview"><span class="nav-icon">⌘</span><span>运行总览</span></button>
+        <button class="nav-item" data-page="ai"><span class="nav-icon">AI</span><span>模型配置</span></button>
+        <button class="nav-item" data-page="groups"><span class="nav-icon">#</span><span>群聊策略</span></button>
+        <button class="nav-item" data-page="tests"><span class="nav-icon">✓</span><span>测试中心</span></button>
+        <button class="nav-item" data-page="logs"><span class="nav-icon">›_</span><span>完整日志</span><i id="logPulse"></i></button>
+      </nav>
+    </div>
+    <div class="sidebar-foot">
+      <div class="local-node"><span></span><div><strong>LOCAL NODE</strong><small>127.0.0.1 · 在线</small></div></div>
+      <div class="build">macOS Core Engine · v2.0</div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div><h1 id="pageTitle">运行总览</h1><p id="pageSubtitle">服务控制与实时运行反馈</p></div>
+      <div class="top-actions"><span id="syncTime" class="sync-time">正在同步</span><button class="icon-btn" id="refreshBtn" title="刷新状态">↻</button><button class="btn primary" id="startAllBtn">▶ 启动全部</button></div>
+    </header>
+
+    <div class="content">
+      <section class="page active" id="page-overview">
+        <div class="dashboard-layout">
+          <div class="dashboard-main">
+            <div class="section-bar"><div><h2>核心服务</h2><p>第二微信专用运行环境</p></div><span class="health-chip" id="healthChip">检查中</span></div>
+            <div class="service-matrix">
+              <article class="status-card" data-service="wechat2">
+                <div class="card-top"><div class="service-name"><span class="service-mark wx">微</span><div><h3>第二微信</h3><small>WeChat2.app · 4.1.11.53</small></div></div><span class="status-badge state-text">检查中</span></div>
+                <dl><div><dt>PID</dt><dd class="pid">--</dd></div><div><dt>运行时长</dt><dd class="uptime">--</dd></div><div><dt>容器</dt><dd>instance2</dd></div></dl>
+                <div class="card-actions"><button class="btn subtle action-btn" data-action="launch_wechat2">启动 / 前置</button></div>
+              </article>
+              <article class="status-card" data-service="onebot">
+                <div class="card-top"><div class="service-name"><span class="service-mark ob">OB</span><div><h3>OneBot 核心</h3><small>Frida 本地控制通道</small></div></div><span class="status-badge state-text">检查中</span></div>
+                <dl><div><dt>PID</dt><dd class="pid">--</dd></div><div><dt>端口</dt><dd>58080</dd></div><div><dt>Hook</dt><dd class="hook">--</dd></div></dl>
+                <div class="card-actions"><button class="btn ghost action-btn" data-action="stop_onebot">停止</button><button class="btn subtle action-btn" data-action="start_onebot">启动 / 重载</button></div>
+              </article>
+              <article class="status-card" data-service="ai">
+                <div class="card-top"><div class="service-name"><span class="service-mark ai">AI</span><div><h3>AI 服务网关</h3><small>OpenAI-compatible Bridge</small></div></div><span class="status-badge state-text">检查中</span></div>
+                <dl><div><dt>PID</dt><dd class="pid">--</dd></div><div><dt>端口</dt><dd>36060</dd></div><div><dt>配置</dt><dd class="configured">--</dd></div></dl>
+                <div class="card-actions"><button class="btn ghost action-btn" data-action="stop_ai">停止</button><button class="btn subtle action-btn" data-action="restart_ai">重启</button></div>
+              </article>
+            </div>
+
+            <div class="isolation-panel"><div class="isolation-icon">✓</div><div><strong>主微信隔离环境</strong><small id="isolationPath">读取隔离路径中</small></div><span>强制保护</span></div>
+
+            <div class="panel operations">
+              <div class="panel-head"><div><h2>后台操作</h2><p>仅作用于第二微信实例</p></div></div>
+              <div class="operation-grid">
+                <button class="operation action-btn" data-action="launch_wechat2"><span>01</span><strong>启动第二微信</strong><small>复用已登录实例</small></button>
+                <button class="operation action-btn" data-action="start_onebot"><span>02</span><strong>挂载 OneBot</strong><small>Attach 当前 PID</small></button>
+                <button class="operation action-btn" data-action="restart_ai"><span>03</span><strong>重载 AI 服务</strong><small>应用最新配置</small></button>
+                <button class="operation danger action-btn" data-action="stop_backend"><span>×</span><strong>停止后台</strong><small>保留第二微信运行</small></button>
+              </div>
+            </div>
+          </div>
+
+          <aside class="dashboard-terminal panel">
+            <div class="terminal-head"><div><span class="live-dot"></span><div><h2>综合日志流</h2><p>AI + OneBot</p></div></div><button class="link-btn" data-jump="logs">完整视图 →</button></div>
+            <div class="mini-log-toolbar"><button class="active" data-mini-source="all">ALL</button><button data-mini-source="ai">AI</button><button data-mini-source="onebot">ONEBOT</button><span id="miniLogCount">0 events</span></div>
+            <div class="mini-log-output" id="dashboardLogOutput"><div class="terminal-empty">正在连接日志流…</div></div>
+          </aside>
+        </div>
+      </section>
+
+      <section class="page" id="page-ai">
+        <form id="aiForm">
+          <div class="page-bar"><div><h2>模型供应与推理参数</h2><p>配置保存后自动重载 AI 服务</p></div><div class="bar-actions"><span id="saveState" class="save-state">配置同步中</span><button class="btn primary" type="submit">保存并应用</button></div></div>
+          <div class="model-layout">
+            <aside class="provider-panel panel">
+              <div class="panel-head"><div><h2>模型渠道</h2><p>选择首选服务源</p></div><button type="button" class="icon-btn add-channel" id="addChannelBtn" title="添加模型渠道">＋</button></div>
+              <div class="channel-picker">
+                <label for="channelSelect">当前渠道</label>
+                <select id="channelSelect"></select>
+                <div class="channel-actions"><button type="button" class="btn subtle" id="testAllChannelsBtn">测试全部</button><button type="button" class="btn ghost" id="refreshHealthBtn">刷新状态</button></div>
+              </div>
+              <div id="channelStatusList" class="channel-status-list"></div>
+              <div class="channel-options">
+                <label class="compact-toggle"><span><strong>自动故障切换</strong><small>失败时尝试下一渠道</small></span><span class="switch"><input id="autoFailover" type="checkbox"><i></i></span></label>
+                <label class="compact-toggle"><span><strong>自动健康检测</strong><small>定时验证渠道连通性</small></span><span class="switch"><input id="autoHealthCheck" type="checkbox"><i></i></span></label>
+                <div class="field"><label for="healthInterval">检测间隔</label><div class="unit-input"><input id="healthInterval" type="number" min="30" max="86400"><span>SEC</span></div></div>
+              </div>
+            </aside>
+
+            <div class="model-workspace">
+              <div class="panel form-panel">
+                <div class="panel-head"><div><h2>基础鉴权</h2><p>编辑当前模型渠道</p></div><div class="bar-actions"><button type="button" class="btn ghost danger-text" id="deleteChannelBtn">删除渠道</button><button type="button" class="btn subtle" id="modelsBtn">获取模型列表</button></div></div>
+                <div class="form-grid panel-body">
+                  <div class="field"><label for="channelName">渠道名称</label><input id="channelName" required autocomplete="off"></div>
+                  <div class="field"><label for="channelProvider">服务类型</label><select id="channelProvider"><option value="compatible">第三方中转</option><option value="deepseek">DeepSeek</option><option value="openai">OpenAI</option><option value="openrouter">OpenRouter</option><option value="local">本地服务</option></select></div>
+                  <div class="field span-2"><label for="baseUrl">API Base URL</label><input id="baseUrl" type="url" required autocomplete="off"></div>
+                  <div class="field span-2"><label for="apiKey">API Key</label><div class="input-action"><input id="apiKey" type="password" autocomplete="new-password"><button type="button" id="toggleKey" title="显示或隐藏密钥">◉</button></div></div>
+                  <div class="field"><label for="model">Model ID</label><input id="model" list="modelList" required><datalist id="modelList"></datalist></div>
+                  <div class="field"><label for="timeout">请求超时</label><div class="unit-input"><input id="timeout" type="number" min="3" max="300"><span>SEC</span></div></div>
+                  <label class="toggle-row span-2"><span><strong>启用当前渠道</strong><small>关闭后不会参与调用和故障切换</small></span><span class="switch"><input id="channelEnabled" type="checkbox"><i></i></span></label>
+                </div>
+              </div>
+
+              <div class="panel form-panel">
+                <div class="panel-head"><div><h2>推理参数</h2><p>生成强度与返回上限</p></div></div>
+                <div class="form-grid panel-body compact">
+                  <div class="field"><label for="temperature">Temperature <output id="temperatureValue">0.3</output></label><input id="temperature" type="range" min="0" max="2" step="0.1"></div>
+                  <div class="field"><label for="maxTokens">Max Tokens</label><input id="maxTokens" type="number" min="1" max="100000"></div>
+                  <div class="field span-2"><label for="systemPrompt">System Prompt</label><textarea id="systemPrompt" rows="7"></textarea><span class="char-count"><b id="promptCount">0</b> chars</span></div>
+                </div>
+              </div>
+
+              <div class="panel form-panel personality-panel">
+                <div class="panel-head"><div><h2>机器人性格</h2><p>作为最高优先级回复风格严格执行</p></div><span class="route-status">STRICT STYLE</span></div>
+                <div class="panel-body"><div class="field"><label for="personality">性格与表达规则</label><textarea id="personality" rows="5" placeholder="例如：专业、冷静、直接；优先给结论；不使用夸张语气；遇到不确定信息先澄清。"></textarea><span class="char-count"><b id="personalityCount">0</b> chars</span></div></div>
+              </div>
+
+              <div class="connection-strip"><div><strong>当前渠道测试</strong><small>保存后执行真实 Chat Completions</small></div><textarea id="quickPrompt" rows="1">只回复：连接成功</textarea><button type="button" class="btn subtle" id="quickTestBtn">手动测试</button><div id="quickResult" class="test-result idle"><strong>READY</strong><span>等待测试</span></div></div>
+            </div>
+          </div>
+        </form>
+      </section>
+
+      <section class="page" id="page-groups">
+        <form id="groupForm">
+          <div class="page-bar"><div><h2>群聊权限矩阵</h2><p>仅对勾选的微信群启用 AI 与未来扩展能力</p></div><div class="bar-actions"><button type="button" class="btn subtle" id="refreshGroupsBtn">刷新群列表</button><button class="btn primary" type="submit">保存并应用</button></div></div>
+          <div class="panel route-panel">
+            <div class="route-summary"><div><span id="groupCount">0</span><small>已授权群</small></div><div><span id="routeMode">全消息</span><small>触发模式</small></div><div><span id="routePrefix">无</span><small>回复前缀</small></div><div><span id="routeCooldown">2s</span><small>冷却时间</small></div></div>
+            <div class="group-discovery-bar"><div class="field"><label for="groupQuickSelect">微信群下拉选择</label><select id="groupQuickSelect"></select></div><button type="button" class="btn subtle" id="enableSelectedGroupBtn">勾选此群</button><span id="groupDiscoveryState" class="save-state">等待获取群列表</span></div>
+            <div class="route-table-wrap"><div class="route-head permission-head"><span>AI 权限</span><span>群聊名称</span><span>群 ID</span><span>发现状态</span></div><div id="groupList" class="group-list permission-list"></div></div>
+          </div>
+          <div class="panel rules-panel">
+            <div class="panel-head"><div><h2>全局回复规则</h2><p>适用于上方全部目标群</p></div><span class="route-status">ROUTE POLICY</span></div>
+            <div class="rules-grid panel-body">
+              <label class="toggle-row"><span><strong>启用 AI 回复</strong><small>接收目标群文本事件</small></span><span class="switch"><input id="enabled" type="checkbox"><i></i></span></label>
+              <label class="toggle-row"><span><strong>仅关键词触发</strong><small>不匹配关键词时忽略</small></span><span class="switch"><input id="requireKeyword" type="checkbox"><i></i></span></label>
+              <label class="toggle-row"><span><strong>忽略自身消息</strong><small>过滤第二微信发言</small></span><span class="switch"><input id="ignoreSelf" type="checkbox"><i></i></span></label>
+              <label class="toggle-row"><span><strong>演练模式</strong><small>生成但不发送</small></span><span class="switch"><input id="dryRun" type="checkbox"><i></i></span></label>
+              <div class="field"><label for="replyPrefix">回复前缀</label><input id="replyPrefix" placeholder="留空则不添加前缀"></div>
+              <div class="field"><label for="keywords">触发关键词</label><input id="keywords" placeholder="多个关键词用逗号分隔"></div>
+              <div class="field"><label for="cooldown">群回复间隔</label><div class="unit-input"><input id="cooldown" type="number" min="0" step="0.5"><span>SEC</span></div></div>
+              <div class="field"><label for="maxReplyChars">最大回复字数</label><input id="maxReplyChars" type="number" min="1"></div>
+              <div class="field"><label for="maxContext">上下文消息数</label><input id="maxContext" type="number" min="1" max="100"></div>
+            </div>
+          </div>
+        </form>
+      </section>
+
+      <section class="page" id="page-tests">
+        <div class="page-bar"><div><h2>链路验证沙盒</h2><p>真实请求、真实耗时、真实错误</p></div><span id="testHealth" class="health-chip">读取状态</span></div>
+        <div class="test-layout">
+          <div class="panel test-controls">
+            <div class="panel-head"><div><h2>注入参数</h2><p>当前目标与消息负载</p></div></div>
+            <div class="panel-body test-fields">
+              <div class="field"><label for="testGroup">目标群</label><select id="testGroup"></select></div>
+              <div class="field"><label for="testAiPrompt">AI 独立测试消息</label><textarea id="testAiPrompt" rows="3">只回复：AI 接口正常</textarea></div>
+              <div class="field"><label for="testOnebotText">OneBot 发送消息</label><textarea id="testOnebotText" rows="3">第二微信 OneBot 通道测试</textarea></div>
+              <div class="field"><label for="testCallbackText">完整回调模拟消息</label><textarea id="testCallbackText" rows="3">请简短回复本次值班测试</textarea></div>
+            </div>
+          </div>
+          <div class="test-pipeline">
+            <button class="pipeline-step test-run" data-test="ai"><span>01</span><div><strong>AI MODEL</strong><small>Chat Completions</small></div><b>运行</b></button><i></i>
+            <button class="pipeline-step test-run" data-test="onebot"><span>02</span><div><strong>ONEBOT SEND</strong><small>58080 → WeChat</small></div><b>发送</b></button><i></i>
+            <button class="pipeline-step test-run" data-test="callback"><span>03</span><div><strong>FULL CALLBACK</strong><small>Event → AI → ACK</small></div><b>运行</b></button>
+          </div>
+          <div class="panel test-console">
+            <div class="console-head"><div><span></span><span></span><span></span><strong>test-session.log</strong></div><button class="link-btn" id="clearTestConsole">CLEAR</button></div>
+            <div class="console-body" id="testConsole"><p class="muted">// 测试控制台就绪</p></div>
+            <div class="hidden-results"><div id="result-ai"></div><div id="result-onebot"></div><div id="result-callback"></div></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="page logs-page" id="page-logs">
+        <div class="page-bar"><div><h2>完整运行日志</h2><p>AI 服务与 OneBot 原始事件流</p></div><div class="bar-actions"><button class="btn subtle" id="pauseLogs">暂停</button><button class="btn ghost" id="clearLogs">清空视图</button></div></div>
+        <div class="full-terminal">
+          <div class="log-toolbar"><div class="source-tabs"><button class="active" data-source="all">ALL</button><button data-source="ai">AI SERVICE</button><button data-source="onebot">ONEBOT</button></div><div class="level-filters"><label><input type="checkbox" value="debug" checked><i class="debug"></i>DEBUG</label><label><input type="checkbox" value="info" checked><i class="info"></i>INFO</label><label><input type="checkbox" value="warning" checked><i class="warning"></i>WARN</label><label><input type="checkbox" value="error" checked><i class="error"></i>ERROR</label><label><input type="checkbox" value="critical" checked><i class="critical"></i>CRITICAL</label><span class="stream-live"><i></i>LIVE</span></div></div>
+          <div class="terminal-title"><div><i></i><i></i><i></i><strong>run.log</strong></div><span id="logCounter">0 events</span></div>
+          <div class="log-output" id="logOutput"><div class="terminal-empty">正在连接日志流…</div></div>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+
+<div class="toast-stack" id="toastStack"></div>
+<dialog id="channelDialog" class="channel-dialog">
+  <form method="dialog" id="channelDialogForm">
+    <div class="dialog-head"><div><h2>添加模型渠道</h2><p>新渠道将参与健康检测和自动故障切换</p></div><button type="button" class="icon-btn" id="closeChannelDialog" title="关闭">×</button></div>
+    <div class="form-grid dialog-body">
+      <div class="field"><label for="newChannelName">渠道名称</label><input id="newChannelName" required placeholder="例如：备用中转站"></div>
+      <div class="field"><label for="newChannelProvider">服务类型</label><select id="newChannelProvider"><option value="compatible">第三方中转</option><option value="deepseek">DeepSeek</option><option value="openai">OpenAI</option><option value="openrouter">OpenRouter</option><option value="local">本地服务</option></select></div>
+      <div class="field span-2"><label for="newBaseUrl">API Base URL</label><input id="newBaseUrl" type="url" required placeholder="https://example.com/v1"></div>
+      <div class="field span-2"><label for="newApiKey">API Key</label><input id="newApiKey" type="password" autocomplete="new-password"></div>
+      <div class="field"><label for="newModel">Model ID</label><input id="newModel" required placeholder="model-name"></div>
+      <div class="field"><label for="newTimeout">请求超时</label><div class="unit-input"><input id="newTimeout" type="number" min="3" max="300" value="30"><span>SEC</span></div></div>
+    </div>
+    <div class="dialog-actions"><button type="button" class="btn ghost" id="cancelChannelDialog">取消</button><button type="submit" class="btn primary">添加渠道</button></div>
+  </form>
+</dialog>
+<script src="/static/app.js"></script>
+</body>
+</html>

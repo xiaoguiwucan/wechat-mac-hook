@@ -1,0 +1,46 @@
+syntax = "proto2";
+
+package wxproto;
+
+option go_package = "github.com/yincongcyincong/weixin-macos/onebot/proto;wxproto";
+
+// 发送回复(引用)消息的protobuf结构
+// CG路径: /cgi-bin/micromsg-bin/sendappmsg
+// 消息类型: appmsg type=57
+message WxSendReplyMsg {
+  optional ReplyMsgHeader header = 1;
+  optional ReplyMsgBody body = 2;
+  optional bytes unknown5 = 5;         // md5
+  optional int32 unknown9 = 9;         // 1
+  optional uint64 unknown10 = 10;      // msgSvrId
+  optional int32 unknown11 = 11;       // 2
+}
+
+// Header: 请求头，所有消息共用
+message ReplyMsgHeader {
+  optional bytes flag = 1;              // 固定 [0x00]
+  optional uint32 session_id = 2;      // 会话ID (启动时生成，全局复用)
+  optional bytes client_proof = 3;     // 16字节设备标识字符串 (如"m64a7624402b3883")
+  optional uint64 device_id = 4;       // 设备ID (大整数，启动时生成，全局复用)
+  optional string platform = 5;        // 平台信息 "UnifiedPCMac 26 arm64"
+  optional uint32 version = 6;         // 版本标记
+}
+
+// Body: 消息体
+message ReplyMsgBody {
+  optional string sender = 1;          // 接收方wxid (field1是target)
+  optional bytes unknown2 = 2;         // 空 (必须显式存在)
+  optional int32 unknown3 = 3;         // 0 (必须显式存在)
+  optional string receiver = 4;        // 发送方wxid
+  optional int32 msg_type = 5;         // 消息类型 = 57
+  optional bytes content = 6;          // XML内容 (appmsg XML)
+  optional int64 send_timestamp = 7;   // 发送时间戳
+  optional string client_msg_id = 8;   // 消息ID
+  optional int32 unknown9 = 9;         // 0
+  optional int32 flag = 10;            // 1
+  optional int32 unknown11 = 11;       // 0
+  optional bytes msgsource = 12;       // msgsource XML
+  optional bytes unknown13 = 13;       // 空 (必须显式存在)
+  optional bytes unknown14 = 14;       // 空 (必须显式存在)
+  optional bytes unknown15 = 15;       // 空 (必须显式存在)
+}

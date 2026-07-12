@@ -1,0 +1,59 @@
+syntax = "proto3";
+
+package wxproto;
+
+option go_package = "github.com/yincongcyincong/weixin-macos/onebot/proto;wxproto";
+
+import "wx_msg.proto";
+
+// 发送图片消息的protobuf结构
+message WxSendImgMsg {
+  ImgMsgHeader header = 1;
+  WxString client_msg_id = 2;
+  WxString sender = 3;
+  WxString receiver = 4;
+  int32 unknown5 = 5;
+  int32 msg_type = 6;
+  int32 unknown7 = 7;
+  ImgMsgExtra unknown8 = 8;
+  int32 unknown9 = 9;
+  bytes xml = 10;
+  int32 unknown11 = 11;
+  int32 unknown12 = 12;
+  int32 unknown13 = 13;
+  // field 14 skipped
+  bytes cdn_key = 15;
+  bytes cdn_key2 = 16;
+  bytes aes_key = 17;
+  int32 unknown18 = 18;
+  int32 unknown19 = 19;
+  int32 unknown20 = 20;
+  bytes cdn_key3 = 21;
+  int32 unknown22 = 22;
+  int32 unknown23 = 23;
+  int32 unknown24 = 24;
+  bytes aes_key2 = 25;
+  // field 26 skipped
+  bytes md5_key = 27;
+  int64 unknown28 = 28;
+  // field 29 skipped
+  int32 unknown30 = 30;
+  // fields 31-35 skipped
+  int32 unknown36 = 36;
+  // fields 37-40 skipped
+  int32 unknown41 = 41;
+}
+
+message ImgMsgHeader {
+  bytes flag = 1;
+  int64 session_id = 2;
+  bytes client_proof = 3;
+  int64 device_id = 4;
+  bytes platform = 5;
+  int32 version = 6;
+}
+
+message ImgMsgExtra {
+  int32 field1 = 1;
+  bytes field2 = 2;
+}

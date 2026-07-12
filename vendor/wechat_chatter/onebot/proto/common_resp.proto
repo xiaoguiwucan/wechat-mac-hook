@@ -1,0 +1,43 @@
+syntax = "proto2";
+
+package wxproto;
+
+option go_package = "github.com/yincongcyincong/weixin-macos/onebot/proto;wxproto";
+
+// 通用响应: BaseResponse 在 field 1 (适用于 text/video/image/file/reply 等)
+message SendMsgResponse {
+  optional BaseResponse baseResponse = 1;
+}
+
+// 语音响应: BaseResponse 在 field 10
+message SendVoiceMsgResponse {
+  optional string senderWxid = 1;
+  optional string receiverWxid = 2;
+  optional uint64 field3 = 3;
+  optional uint64 field4 = 4;
+  optional uint64 field5 = 5;
+  optional string clientMsgId = 6;
+  optional uint64 newMsgId = 7;
+  optional uint64 field8 = 8;
+  optional uint64 field9 = 9;
+  optional BaseResponse baseResponse = 10;
+  optional uint64 field11 = 11;
+  optional uint64 msgSvrId = 12;
+  optional uint64 field13 = 13;
+}
+
+// sendfileuploadmsg 专用响应
+message SendFileUploadMsgResponse {
+  optional BaseResponse baseResponse = 1;
+  optional string fileUploadToken = 2;
+  optional uint64 msgSvrId = 3;
+}
+
+message BaseResponse {
+  optional int32 ret = 1;
+  optional BaseErrMsg errMsg = 2;
+}
+
+message BaseErrMsg {
+  optional string msg = 1;
+}

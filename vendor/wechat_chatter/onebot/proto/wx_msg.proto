@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+package wxproto;
+
+option go_package = "github.com/yincongcyincong/weixin-macos/onebot/proto;wxproto";
+
+// 最外层消息
+message WxRecvMsg {
+  int32 recv_type = 1;
+  WxRecvMsgWrapper wrapper = 2;
+}
+
+// 第二层
+message WxRecvMsgWrapper {
+  int32 msg_type = 1;
+  WxRecvMsgBody body = 2;
+}
+
+// 第三层: 包含消息类型
+message WxRecvMsgBody {
+  int32 msg_type = 1;
+  WxRecvMsgContent content = 2;
+}
+
+// 第四层
+message WxRecvMsgContent {
+  int32 data_len = 1;
+  WxRecvMsgData data = 2;
+}
+
+// 第五层: 实际消息数据
+message WxRecvMsgData {
+  int64 id = 1;
+  WxString sender = 2;
+  WxString receiver = 3;
+  int32 flag = 4;
+  WxString content = 5;
+  int32 content_type = 6;
+  int32 sub_type = 7;
+  bytes media_content = 8;
+  int64 create_time = 9;
+  bytes xml = 10;
+  bytes user_content = 11;
+  int64 msg_id = 12;
+  int64 msg_order = 13;
+  bytes extra_xml = 14;
+  int32 unknown15 = 15;
+}
+
+// 字符串包装
+message WxString {
+  string value = 1;
+}

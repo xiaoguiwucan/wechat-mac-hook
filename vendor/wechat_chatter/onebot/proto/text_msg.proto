@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package wxproto;
+
+option go_package = "github.com/yincongcyincong/weixin-macos/onebot/proto;wxproto";
+
+import "wx_msg.proto";
+
+// 发送文本消息的protobuf结构
+message WxSendTextMsg {
+  int32 type = 1;
+  WxSendTextBody body = 2;
+}
+
+message WxSendTextBody {
+  WxString receiver = 1;
+  bytes content = 2;
+  int32 flag = 3;
+  int64 timestamp = 4;
+  int64 msg_id = 5;
+  bytes xml = 6;
+}

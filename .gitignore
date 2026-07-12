@@ -1,0 +1,45 @@
+# macOS / editor
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Python / Node caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+node_modules/
+
+# Runtime secrets and local state
+.env
+*.env
+!*.env.example
+config/ai_reply.env
+config/ai_reply_config.json
+*.pid
+*.log
+logs/
+
+# Build outputs / packaged apps / proprietary binaries
+build/*
+!build/manager_launcher/
+!build/manager_launcher/**
+dist/
+downloads/
+bin/
+*.app
+*.dmg
+*.dylib
+*.tar.gz
+*.xz
+
+# Generated media / local verification artifacts
+artifacts/
+outputs/
+
+# Runtime OneBot extracted assets
+external/
+tools/onebot/onebot/onebot
+tools/onebot/onebot/log/
+tools/onebot/onebot/image/

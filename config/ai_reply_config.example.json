@@ -1,0 +1,54 @@
+{
+  "enabled": false,
+  "dry_run": true,
+  "listen_host": "127.0.0.1",
+  "listen_port": 36060,
+  "onebot_api": "http://127.0.0.1:58080",
+  "target_groups": [
+    {
+      "id": "1234567890@chatroom",
+      "name": "值班群"
+    }
+  ],
+  "allowed_user_ids": [],
+  "ignored_user_ids": [],
+  "ignore_prefixes": ["AI：", "AI:", "🤖"],
+  "ignore_self_messages": true,
+  "log_all_group_messages": true,
+  "require_keyword": false,
+  "trigger_keywords": [],
+  "reply_prefix": "AI：",
+  "max_context_messages": 8,
+  "max_reply_chars": 600,
+  "min_seconds_between_replies_per_group": 2.0,
+  "send_delay_seconds": 0.2,
+  "personality": "专业、克制、直接。回答简洁，不说空话。",
+  "ai": {
+    "provider": "openai_compatible",
+    "base_url": "https://api.deepseek.com/v1",
+    "api_key_env": "AI_REPLY_CHANNEL_PRIMARY_API_KEY",
+    "model": "deepseek-chat",
+    "temperature": 0.3,
+    "max_tokens": 600,
+    "timeout_seconds": 30,
+    "system_prompt": "你是微信群值班助手。只根据群聊最新消息和少量上下文，用中文简洁回复；不确定时先澄清；不要编造事实；不要输出多余客套；回复适合直接发到群里。",
+    "channels": [
+      {
+        "id": "primary",
+        "name": "DeepSeek",
+        "provider": "openai_compatible",
+        "base_url": "https://api.deepseek.com/v1",
+        "api_key_env": "AI_REPLY_CHANNEL_PRIMARY_API_KEY",
+        "model": "deepseek-chat",
+        "timeout_seconds": 30,
+        "enabled": true,
+        "priority": 0
+      }
+    ],
+    "active_channel_id": "primary",
+    "auto_failover": true,
+    "auto_health_check": true,
+    "health_check_interval_seconds": 300,
+    "failure_cooldown_seconds": 60
+  }
+}
