@@ -7,6 +7,10 @@
 	"autoBufferWriteFunc": "0x3E7FA8C",
 
 	"uploadImageAddr": "0x529bd7c",
+	"uploadServiceNameCtorAddr": "0x50a1c74",
+	"uploadServiceLookupAddr": "0x50a15d0",
+	"uploadServiceResolveAddr": "0x5259290",
+	"uploadServiceObjectOffset": "0x40",
 	"cndOnCompleteAddr": "0x3E1575C",
 	"uploadGetCallbackWrapperAddr": "0x525ab20",
 	"uploadGetCallbackWrapperFuncAddr": "0x3E14FF8",
@@ -18,4 +22,3 @@
 	"downloadFileAddr": "0x535ea98",
 	"downloadVideoAddr": "0x5378a18"
 }
-

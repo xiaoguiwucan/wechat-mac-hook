@@ -9,6 +9,8 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"regexp"
 	"runtime/debug"
 	"strings"
 	"syscall"
@@ -28,7 +30,11 @@ func main() {
 	}
 	go SendWorker()
 	go cleanExpiredDownloads()
+	go mediaProbeLoop()
 
+	http.HandleFunc("/health", onebotHealthHandler)
+	http.HandleFunc("/status", onebotHealthHandler)
+	http.HandleFunc("/media_probe", mediaProbeHandler)
 	http.HandleFunc("/send_private_msg", sendHandler)
 	http.HandleFunc("/send_group_msg", sendHandler)
 
@@ -65,6 +71,11 @@ func initFlag() {
 	flag.StringVar(&config.ConnType, "conn_type", "http", "连接类型: http | websocket")
 	flag.IntVar(&config.SendInterval, "send_interval", 1000, "发送间隔: ms")
 	flag.IntVar(&config.WechatPid, "wechat_pid", 0, "微信进程 PID，不设置则自动查找")
+	flag.BoolVar(&config.MediaProbeEnabled, "media_probe", envBool("ONEBOT_MEDIA_PROBE", true), "媒体通道自检：自动向文件传输助手发送极小占位图探测/修复")
+	flag.StringVar(&config.MediaProbeTarget, "media_probe_target", getenvDefault("ONEBOT_MEDIA_PROBE_TARGET", "filehelper"), "媒体通道探针目标，默认文件传输助手 filehelper")
+	flag.IntVar(&config.MediaProbeIntervalSeconds, "media_probe_interval", envInt("ONEBOT_MEDIA_PROBE_INTERVAL", 60), "媒体通道自检间隔秒")
+	flag.IntVar(&config.MediaProbeCooldownSeconds, "media_probe_cooldown", envInt("ONEBOT_MEDIA_PROBE_COOLDOWN", 45), "媒体通道自动修复冷却秒")
+	flag.IntVar(&config.MediaProbeTimeoutSeconds, "media_probe_timeout", envInt("ONEBOT_MEDIA_PROBE_TIMEOUT", 90), "媒体通道真实探针超时秒")
 	flag.StringVar(&logLevel, "log_level", "info", "log level")
 
 	flag.Parse()
@@ -92,7 +103,20 @@ func initFlag() {
 	fmt.Println("ConnType", config.ConnType)
 	fmt.Println("SendInterval", config.SendInterval)
 	fmt.Println("WechatPid", config.WechatPid)
+	fmt.Println("MediaProbeEnabled", config.MediaProbeEnabled)
+	fmt.Println("MediaProbeTarget", config.MediaProbeTarget)
+	fmt.Println("MediaProbeIntervalSeconds", config.MediaProbeIntervalSeconds)
+	fmt.Println("MediaProbeCooldownSeconds", config.MediaProbeCooldownSeconds)
+	fmt.Println("MediaProbeTimeoutSeconds", config.MediaProbeTimeoutSeconds)
 	fmt.Println("LogLevel", logLevel)
+}
+
+func getenvDefault(name string, def string) string {
+	v := strings.TrimSpace(os.Getenv(name))
+	if v == "" {
+		return def
+	}
+	return v
 }
 
 func initFridaGadget() {
@@ -150,9 +174,70 @@ func attachWechat() {
 		Fatal("Attach 失败 (请检查 SIP 状态或权限)", "err", err)
 	}
 	Info("成功 Attach 微信进程", "PID", pid)
+	currentWechatPid = pid
 
 	loadJs()
 	MonitorProcess(pid)
+}
+
+func uploadX0CacheFile() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, "Library", "Application Support", "WeChatSecond", "state", "upload_x0.json")
+}
+
+func validUploadX0(v string) bool {
+	return regexp.MustCompile(`^0x[0-9a-fA-F]+$`).MatchString(strings.TrimSpace(v))
+}
+
+func cachedUploadGlobalX0() string {
+	if v := strings.TrimSpace(os.Getenv("ONEBOT_INITIAL_UPLOAD_X0")); validUploadX0(v) {
+		return v
+	}
+	cacheFile := uploadX0CacheFile()
+	if cacheFile != "" {
+		if raw, err := os.ReadFile(cacheFile); err == nil {
+			var cache struct {
+				PID int    `json:"pid"`
+				X0  string `json:"x0"`
+			}
+			if json.Unmarshal(raw, &cache) == nil && cache.PID == currentWechatPid && validUploadX0(cache.X0) {
+				return cache.X0
+			}
+		}
+	}
+	// UploadMedia X0 points into one specific WeChat process. Plain logs do not
+	// carry enough process identity to prove that an address is still valid.
+	return "0x0"
+}
+
+func persistUploadGlobalX0(payload string) {
+	if !strings.Contains(payload, "捕获到真实 UploadMedia 调用") {
+		return
+	}
+	re := regexp.MustCompile(`X0[：:]\s*(0x[0-9a-fA-F]+)`)
+	m := re.FindStringSubmatch(payload)
+	if len(m) < 2 || !validUploadX0(m[1]) || currentWechatPid <= 0 {
+		return
+	}
+	cacheFile := uploadX0CacheFile()
+	if cacheFile == "" {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(cacheFile), 0755); err != nil {
+		return
+	}
+	data := map[string]interface{}{
+		"pid":        currentWechatPid,
+		"x0":         m[1],
+		"updated_at": time.Now().Format(time.RFC3339),
+		"source":     "real_upload_media_hook",
+	}
+	if raw, err := json.MarshalIndent(data, "", "  "); err == nil {
+		_ = os.WriteFile(cacheFile, append(raw, '\n'), 0644)
+	}
 }
 
 func loadJs() {
@@ -166,6 +251,7 @@ func loadJs() {
 	if err = json.Unmarshal(jsonData, &wechatHookConf); err != nil {
 		Fatal("解析 JSON 失败", "err", err)
 	}
+	wechatHookConf["initialUploadGlobalX0"] = cachedUploadGlobalX0()
 
 	codeTemplate, err := os.ReadFile("./script.js")
 	if err != nil {
@@ -213,6 +299,14 @@ func loadJs() {
 					payloadJson, _ := json.Marshal(pMap)
 					if t, ok := pMap["type"]; ok {
 						switch t.(string) {
+						case "upload_x0_recovered":
+							if x0Str, ok := pMap["x0"].(string); ok {
+								where := "unknown"
+								if whereInter, ok := pMap["where"]; ok {
+									where = whereInter.(string)
+								}
+								Info("[Frida RPC] 上传通道已恢复", "x0", x0Str, "where", where)
+							}
 						case "protobuf_msg":
 							go HandleProtobufMsgAndSend(pMap)
 						case "send":
@@ -328,9 +422,20 @@ func loadJs() {
 							}
 							msgChan <- m
 						case "download":
+							if x0Str, ok := pMap["x0"].(string); ok {
+								where := "unknown"
+								if whereInter, ok := pMap["where"]; ok {
+									where = whereInter.(string)
+								}
+								Info("[Frida RPC] 上传通道已恢复", "x0", x0Str, "where", where)
+							}
 							err = Download(payloadJson)
 							if err != nil {
 								Error("下载失败", "err", err)
+							}
+						case "voice_transcript_ui":
+							if os.Getenv("ENABLE_UI_VOICE_TRANSCRIPT") == "1" {
+								go handleVoiceTranscriptUICandidate(pMap)
 							}
 						}
 
@@ -338,7 +443,10 @@ func loadJs() {
 				}
 			}
 		case "log":
+			payload := fmt.Sprintf("%v", msg["payload"])
+			persistUploadGlobalX0(payload)
 			Info("[JS日志]", "payload", msg["payload"])
+
 		case "error":
 			Error("[JS日志报错]", "err", msg["description"], "stack", msg["stack"])
 		}

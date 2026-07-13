@@ -37,6 +37,22 @@ func SendWorker() {
 }
 
 func SendWechatMsg(m *SendMsg) {
+	// 媒体上传前检查 X0 是否就绪，无效则自动恢复
+	if isMediaTask(m.Type) && !isFinalMediaTask(m.Type) {
+		targetId := m.UserId
+		if m.GroupID != "" {
+			targetId = m.GroupID
+		}
+		state := fridaHookState()
+		if uploadReady, _ := state["upload_x0_ready"].(bool); !uploadReady {
+			Info("[自愈] 媒体上传前 X0 未就绪，触发自动恢复", "type", m.Type, "target_id", targetId)
+			_, recoverErr := runMediaProbe("pre_upload_auto_recover:"+m.Type, true)
+			if recoverErr != nil {
+				Warn("[自愈] 自动恢复失败", "err", recoverErr)
+			}
+		}
+	}
+
 	var sendErr error
 	defer func() {
 		if m.ResultChan != nil {
@@ -89,6 +105,13 @@ func SendWechatMsg(m *SendMsg) {
 		uploadPayloadHex := BuildUploadPayload("img")
 		result := fridaScript.ExportsCall("triggerUploadImg", targetId, md5Str, targetPath, uploadPayloadHex)
 		Info("📩 上传图片任务执行结果", "result", result, "target_id", targetId, "md5", md5Str, "path", targetPath)
+		if result == "need_probe" {
+			Info("[自愈] 图片上传返回 need_probe，触发自动恢复", "target_id", targetId)
+			_, _ = runMediaProbe("image_need_probe", true)
+			// 恢复后重试一次
+			result = fridaScript.ExportsCall("triggerUploadImg", targetId, md5Str, targetPath, uploadPayloadHex)
+			Info("📩 上传图片重试结果", "result", result, "target_id", targetId, "md5", md5Str)
+		}
 		if result != "0" {
 			Error("上传图片失败", "target_id", targetId, "md5", md5Str, "result", result)
 			sendErr = errors.New("upload image failed")
@@ -219,6 +242,13 @@ func SendWechatMsg(m *SendMsg) {
 		uploadPayloadHex := BuildVoiceUploadPayload()
 		result := fridaScript.ExportsCall("triggerUploadVoice", targetId, targetPath, uploadPayloadHex, audioHex, voiceDurationMs)
 		Info("📩 上传语音任务执行结果", "result", result, "target_id", targetId, "path", targetPath, "silk_len", len(silkData), "duration_ms", voiceDurationMs)
+		if result == "need_probe" {
+			Info("[自愈] 语音上传返回 need_probe，触发自动恢复", "target_id", targetId)
+			_, _ = runMediaProbe("voice_need_probe", true)
+			// 恢复后重试一次
+			result = fridaScript.ExportsCall("triggerUploadVoice", targetId, targetPath, uploadPayloadHex, audioHex, voiceDurationMs)
+			Info("📩 上传语音重试结果", "result", result, "target_id", targetId)
+		}
 		if result != "0" {
 			Error("上传语音失败", "target_id", targetId, "result", result)
 			sendErr = errors.New("upload voice failed")
@@ -347,14 +377,34 @@ func HandleMsg(jsonData []byte) ([]byte, error) {
 	if m.GroupId != "" {
 		userID2NicknameMap.Store(m.GroupId+"_"+m.UserID, m.Sender.Nickname)
 	}
+	rememberRecentRecordMessage(m)
 
 	for _, msg := range m.Message {
 		switch msg.Type {
 		case "record":
 			path, err := SaveAudioFile(msg.Data.Media)
 			if err != nil {
-				Error("保存音频失败", "err", err)
-				return nil, err
+				Warn("record 回调未携带原始音频，尝试从下载缓存解密", "err", err)
+				var voiceMsg VoiceMsg
+				if xmlErr := xml.Unmarshal([]byte(msg.Data.Text), &voiceMsg); xmlErr == nil && voiceMsg.VoiceMsg != nil {
+					extHint := "silk"
+					totalLen := voiceMsg.VoiceMsg.Length
+					path, err = GetDownloadPath(voiceMsg.VoiceMsg.VoiceURL, voiceMsg.VoiceMsg.AESKey, extHint, totalLen)
+					if err != nil {
+						Error("从下载缓存解密语音失败", "err", err, "voice_url", voiceMsg.VoiceMsg.VoiceURL, "length", voiceMsg.VoiceMsg.Length)
+					} else {
+						Info("从下载缓存解密语音成功", "path", path, "voice_url", voiceMsg.VoiceMsg.VoiceURL, "length", voiceMsg.VoiceMsg.Length)
+					}
+				} else if xmlErr != nil {
+					Error("语音 XML 解析失败", "err", xmlErr)
+				}
+			}
+			if err != nil {
+				// record 抓取失败不应中断整条消息回调；否则 AI 服务和后台图库完全看不到语音泡。
+				// 保留 XML 文本并继续发送，让上层至少能建立 record 索引和错误可观测性。
+				msg.Data.URL = ""
+				msg.Data.Media = nil
+				continue
 			}
 			msg.Data.URL = "file://" + path
 			msg.Data.Media = nil
@@ -547,4 +597,11 @@ func HandleBuf2Resp(msgType string, data []byte) {
 		MsgType: msgType,
 		Data:    data,
 	}
+}
+
+func targetId(m *SendMsg) string {
+	if m.GroupID != "" {
+		return m.GroupID
+	}
+	return m.UserId
 }

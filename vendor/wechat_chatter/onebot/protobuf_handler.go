@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -283,12 +284,11 @@ func classifyMessage(content string, mediaContent []byte) *Message {
 		return &Message{Type: "image", Data: &SendRequestData{Text: content}}
 	case strings.HasPrefix(content, "<msg><voicemsg"):
 		if mediaContent != nil {
-			// 找到 silk 音频数据起始位置
-			for i, b := range mediaContent {
-				if b == 0x02 {
-					mediaContent = mediaContent[i:]
-					break
-				}
+			// 找到真正的 tencent silk 音频数据起始位置。
+			// 旧逻辑只找第一个 0x02，容易截到正文里的随机字节，随后 DecodeSilk EOF，
+			// 导致整条 record 消息不再回调给 AI 服务。
+			if idx := bytes.Index(mediaContent, []byte("\x02#!SILK_V3")); idx >= 0 {
+				mediaContent = mediaContent[idx:]
 			}
 			return &Message{Type: "record", Data: &SendRequestData{Text: content, Media: mediaContent}}
 		}

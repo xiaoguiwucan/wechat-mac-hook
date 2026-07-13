@@ -5,7 +5,7 @@
 **macOS 第二微信隔离运行、OneBot 接入与 AI 群聊值班后台**
 
 <p>
-  <img alt="version" src="https://img.shields.io/badge/version-V0.0.1-25b77b?style=for-the-badge">
+  <img alt="version" src="https://img.shields.io/badge/version-V0.0.2-25b77b?style=for-the-badge">
   <img alt="macOS" src="https://img.shields.io/badge/macOS-Apple%20Silicon%20%7C%20Intel-111827?style=for-the-badge&logo=apple">
   <img alt="wechat" src="https://img.shields.io/badge/WeChat-4.1.11.53-07c160?style=for-the-badge&logo=wechat">
   <img alt="ai" src="https://img.shields.io/badge/AI-OpenAI%20Compatible-7c3aed?style=for-the-badge">
@@ -25,7 +25,7 @@
 - **接入大模型**：支持 OpenAI-compatible / DeepSeek / 第三方 API 中转站，多渠道健康检查与失败自动切换。
 - **提供 Web 管理后台**：在浏览器里完成运行状态、模型渠道、群权限、机器人性格、测试中心和实时日志管理。
 
-> 当前版本：`V0.0.1`，适配重点为 **微信 macOS 4.1.11.53**。
+> 当前版本：`V0.0.2`，适配重点为 **微信 macOS 4.1.11.53**。
 
 ---
 
@@ -40,7 +40,15 @@
 | 多模型渠道 | 支持多个 OpenAI-compatible 渠道、手动测试、自动健康检查、失败冷却与自动切换 |
 | 群聊权限 | 从真实 OneBot 事件发现群 ID，勾选授权后才允许 AI 回复 |
 | 机器人性格 | 独立人格/风格编辑器，写入系统提示词并严格参与回复生成 |
-| Web 后台 | 暗色高密度运维 UI，总览、模型配置、群策略、测试中心、完整日志 |
+| 长期记忆 | SQLite 消息库、成员画像、群记忆、全文检索、向量检索、导入导出 |
+| 图片理解 | 图片图库、OCR / Vision 自动分析、标签、关键词、摘要与人工标注 |
+| 语音理解 | 原始语音提取、SILK 转 WAV、ASR 自动转写与语音内容检索 |
+| 语音包 | 目录 / ZIP 批量导入、分类、搜索、推荐、预览和 AI 自动选取发送 |
+| 表情包 | 表情素材索引、OCR、搜索、标注和 AI 显式请求发送 |
+| 媒体发送 | 文本、@、引用、图片、文件、视频、语音完整 OneBot 发送链路 |
+| 媒体自修复 | 自动解析当前微信 UploadMedia 服务，按 PID 缓存并在失败时重试 |
+| 链路诊断 | trace ID、最近链路、完整消息测试、OneBot 健康监控与恢复 |
+| Web 后台 | 暗色高密度运维 UI，总览、模型、群策略、媒体、记忆、测试与日志 |
 
 ---
 
@@ -51,9 +59,12 @@ wechat-mac-hook/
 ├── ai_reply/                  # OneBot -> AI -> OneBot 回复桥接服务
 ├── config/                    # 地址配置和示例配置；真实密钥文件不提交
 ├── desktop_app/               # 早期桌面管理器源码
+├── memory_store.py            # SQLite 消息、成员、人格、媒体与语音包记忆层
 ├── scripts/                   # 构建、启动、停止、状态检查和测试脚本
 ├── src/                       # macOS 第二微信隔离 Hook 源码
 ├── tools/onebot/              # OneBot 脚本与微信版本地址配置；二进制不提交
+├── tools/voice_transcript_ocr/ # 可选微信 UI 语音文字观察器源码
+├── tools/voice_transcript_sidecar/ # 可选语音转文字 sidecar 源码
 ├── vendor/wechat_chatter/     # 参考项目源码快照
 └── web_admin/                 # Web 管理后台
 ```
@@ -211,7 +222,6 @@ flowchart LR
 
 ## 📌 版本状态
 
-`V0.0.1` 已包含基础可运行能力：第二微信隔离、OneBot 接入、AI 群聊回复、多模型渠道、群权限、机器人性格和 Web 后台。
+`V0.0.2` 在基础链路上加入长期记忆、成员人格、图片 OCR、语音 ASR、语音包、表情包、全媒体发送、链路追踪和 UploadMedia 自动修复。
 
 后续计划见 [CHANGELOG.md](CHANGELOG.md)。项目规则见 [RULES.md](RULES.md)。
-

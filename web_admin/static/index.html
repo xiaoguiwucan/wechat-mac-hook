@@ -16,6 +16,11 @@
         <button class="nav-item" data-page="ai"><span class="nav-icon">AI</span><span>模型配置</span></button>
         <button class="nav-item" data-page="groups"><span class="nav-icon">#</span><span>群聊策略</span></button>
         <button class="nav-item" data-page="tests"><span class="nav-icon">✓</span><span>测试中心</span></button>
+        <button class="nav-item" data-page="media"><span class="nav-icon">IMG</span><span>图片图库</span></button>
+        <button class="nav-item" data-page="voice-records"><span class="nav-icon">ASR</span><span>语音内容</span></button>
+        <button class="nav-item" data-page="voices"><span class="nav-icon">VOX</span><span>语音包管理</span></button>
+        <button class="nav-item" data-page="faces"><span class="nav-icon">GIF</span><span>表情包管理</span></button>
+        <button class="nav-item" data-page="memory"><span class="nav-icon">DB</span><span>记忆数据库</span></button>
         <button class="nav-item" data-page="logs"><span class="nav-icon">›_</span><span>完整日志</span><i id="logPulse"></i></button>
       </nav>
     </div>
@@ -44,7 +49,7 @@
               </article>
               <article class="status-card" data-service="onebot">
                 <div class="card-top"><div class="service-name"><span class="service-mark ob">OB</span><div><h3>OneBot 核心</h3><small>Frida 本地控制通道</small></div></div><span class="status-badge state-text">检查中</span></div>
-                <dl><div><dt>PID</dt><dd class="pid">--</dd></div><div><dt>端口</dt><dd>58080</dd></div><div><dt>Hook</dt><dd class="hook">--</dd></div></dl>
+                <dl><div><dt>PID</dt><dd class="pid">--</dd></div><div><dt>端口</dt><dd>58080</dd></div><div><dt>Hook</dt><dd class="hook">--</dd></div><div><dt>媒体上传</dt><dd class="media-hook">--</dd></div></dl>
                 <div class="card-actions"><button class="btn ghost action-btn" data-action="stop_onebot">停止</button><button class="btn subtle action-btn" data-action="start_onebot">启动 / 重载</button></div>
               </article>
               <article class="status-card" data-service="ai">
@@ -55,6 +60,19 @@
             </div>
 
             <div class="isolation-panel"><div class="isolation-icon">✓</div><div><strong>主微信隔离环境</strong><small id="isolationPath">读取隔离路径中</small></div><span>强制保护</span></div>
+
+            <div class="panel trace-panel">
+              <div class="panel-head"><div><h2>链路诊断</h2><p>OneBot 回调 → AI 生成 → 微信发送</p></div><button class="btn ghost" id="refreshTraceBtn">刷新诊断</button></div>
+              <div class="trace-grid">
+                <div><span id="diagReceived">--</span><small>最近收到消息</small></div>
+                <div><span id="diagGenerated">--</span><small>最近 AI 生成</small></div>
+                <div><span id="diagSendLatency">--</span><small>最近发送耗时</small></div>
+                <div><span id="diagSendResult">--</span><small>最近发送结果</small></div>
+                <div><span id="diagRecvStatus">--</span><small>OneBot 接收通道</small></div>
+                <div><span id="diagSendStatus">--</span><small>OneBot 发送通道</small></div>
+              </div>
+              <div class="trace-foot"><code id="diagTraceId">trace_id: --</code></div>
+            </div>
 
             <div class="panel operations">
               <div class="panel-head"><div><h2>后台操作</h2><p>仅作用于第二微信实例</p></div></div>
@@ -77,7 +95,7 @@
 
       <section class="page" id="page-ai">
         <form id="aiForm">
-          <div class="page-bar"><div><h2>模型供应与推理参数</h2><p>配置保存后自动重载 AI 服务</p></div><div class="bar-actions"><span id="saveState" class="save-state">配置同步中</span><button class="btn primary" type="submit">保存并应用</button></div></div>
+          <div class="page-bar"><div><h2>模型配置</h2><p>配置对话、图片 OCR 与语音 ASR 模型；保存后自动重载 AI 服务</p></div><div class="bar-actions"><span id="saveState" class="save-state">配置同步中</span><button class="btn primary" type="submit">保存并应用</button></div></div>
           <div class="model-layout">
             <aside class="provider-panel panel">
               <div class="panel-head"><div><h2>模型渠道</h2><p>选择首选服务源</p></div><button type="button" class="icon-btn add-channel" id="addChannelBtn" title="添加模型渠道">＋</button></div>
@@ -108,18 +126,46 @@
                 </div>
               </div>
 
-              <div class="panel form-panel">
-                <div class="panel-head"><div><h2>推理参数</h2><p>生成强度与返回上限</p></div></div>
-                <div class="form-grid panel-body compact">
-                  <div class="field"><label for="temperature">Temperature <output id="temperatureValue">0.3</output></label><input id="temperature" type="range" min="0" max="2" step="0.1"></div>
-                  <div class="field"><label for="maxTokens">Max Tokens</label><input id="maxTokens" type="number" min="1" max="100000"></div>
-                  <div class="field span-2"><label for="systemPrompt">System Prompt</label><textarea id="systemPrompt" rows="7"></textarea><span class="char-count"><b id="promptCount">0</b> chars</span></div>
-                </div>
-              </div>
+              <input id="temperature" type="hidden" value="0.3"><output id="temperatureValue" hidden>0.3</output>
+              <input id="maxTokens" type="hidden" value="600">
+              <textarea id="systemPrompt" hidden></textarea><span class="char-count" hidden><b id="promptCount">0</b> chars</span>
 
               <div class="panel form-panel personality-panel">
                 <div class="panel-head"><div><h2>机器人性格</h2><p>作为最高优先级回复风格严格执行</p></div><span class="route-status">STRICT STYLE</span></div>
                 <div class="panel-body"><div class="field"><label for="personality">性格与表达规则</label><textarea id="personality" rows="5" placeholder="例如：专业、冷静、直接；优先给结论；不使用夸张语气；遇到不确定信息先澄清。"></textarea><span class="char-count"><b id="personalityCount">0</b> chars</span></div></div>
+              </div>
+
+              <div class="panel form-panel ocr-panel">
+                <div class="panel-head"><div><h2>图片 OCR / 视觉模型</h2><p>用于图片文字识别、图片摘要，支持第三方中转与视觉模型</p></div><span class="route-status">VISION OCR</span></div>
+                <div class="form-grid panel-body compact">
+                  <label class="toggle-row span-2"><span><strong>启用 OCR 模型</strong><small>图片解析入口会使用该配置</small></span><span class="switch"><input id="ocrEnabled" type="checkbox"><i></i></span></label>
+                  <div class="field span-2"><label for="ocrBaseUrl">OCR API Base URL</label><input id="ocrBaseUrl" type="url" placeholder="https://api.openai.com/v1"></div>
+                  <div class="field span-2"><label for="ocrApiKey">OCR API Key</label><div class="input-action"><input id="ocrApiKey" type="password" autocomplete="new-password"><button type="button" id="toggleOcrKey" title="显示或隐藏密钥">◉</button></div></div>
+                  <div class="field"><label for="ocrModel">OCR / Vision Model ID</label><input id="ocrModel" placeholder="例如 gpt-4o-mini / qwen-vl-plus"></div>
+                  <div class="field"><label for="ocrTimeout">OCR 超时</label><div class="unit-input"><input id="ocrTimeout" type="number" min="3" max="300"><span>SEC</span></div></div>
+                  <label class="toggle-row span-2"><span><strong>自动解析入库图片</strong><small>后续接入自动 OCR 队列时使用</small></span><span class="switch"><input id="ocrAutoAnalyze" type="checkbox"><i></i></span></label>
+                  <div class="field span-2"><label for="ocrPrompt">OCR Prompt</label><textarea id="ocrPrompt" rows="4" placeholder="请提取图片中文字并给出简短摘要"></textarea></div>
+                  <div class="field"><label for="ocrTestImage">测试图片路径 / URL</label><input id="ocrTestImage" placeholder="/tmp/test.png 或 https://..."></div>
+                  <div class="field"><label>模型测试</label><button type="button" class="btn subtle wide" id="ocrTestBtn">测试 OCR 模型</button></div>
+                  <div class="field span-2"><div id="ocrResult" class="test-result idle"><strong>READY</strong><span>等待 OCR 测试</span></div></div>
+                </div>
+              </div>
+
+              <div class="panel form-panel asr-panel">
+                <div class="panel-head"><div><h2>语音 ASR 模型</h2><p>直接读取 OneBot 抓到的语音原始文件，调用 ASR 转文字，不再依赖微信 UI 识别</p></div><span class="route-status">VOICE ASR</span></div>
+                <div class="form-grid panel-body compact">
+                  <label class="toggle-row span-2"><span><strong>启用 ASR 模型</strong><small>语音泡入库后自动转文字并作为文本进入回复链路</small></span><span class="switch"><input id="asrEnabled" type="checkbox"><i></i></span></label>
+                  <div class="field span-2"><label for="asrBaseUrl">ASR API Base URL</label><input id="asrBaseUrl" type="url" placeholder="https://api.20250424.xyz/v1"></div>
+                  <div class="field span-2"><label for="asrApiKey">ASR API Key</label><div class="input-action"><input id="asrApiKey" type="password" autocomplete="new-password"><button type="button" id="toggleAsrKey" title="显示或隐藏密钥">◉</button></div></div>
+                  <div class="field"><label for="asrModel">ASR Model ID</label><input id="asrModel" placeholder="TeleAI/TeleSpeechASR"></div>
+                  <div class="field"><label for="asrTimeout">ASR 超时</label><div class="unit-input"><input id="asrTimeout" type="number" min="3" max="300"><span>SEC</span></div></div>
+                  <div class="field"><label for="asrLanguage">语言</label><input id="asrLanguage" placeholder="zh"></div>
+                  <label class="toggle-row"><span><strong>自动转写语音</strong><small>收到 record 后进入 ASR 队列</small></span><span class="switch"><input id="asrAutoTranscribe" type="checkbox"><i></i></span></label>
+                  <div class="field span-2"><label for="asrPrompt">ASR Prompt（可选）</label><input id="asrPrompt" placeholder="可留空"></div>
+                  <div class="field"><label for="asrTestAudio">测试语音路径 / URL</label><input id="asrTestAudio" placeholder="/tmp/test.wav 或 file:///.../audio.silk"></div>
+                  <div class="field"><label>模型测试</label><button type="button" class="btn subtle wide" id="asrTestBtn">测试 ASR 模型</button></div>
+                  <div class="field span-2"><div id="asrResult" class="test-result idle"><strong>READY</strong><span>等待 ASR 测试</span></div></div>
+                </div>
               </div>
 
               <div class="connection-strip"><div><strong>当前渠道测试</strong><small>保存后执行真实 Chat Completions</small></div><textarea id="quickPrompt" rows="1">只回复：连接成功</textarea><button type="button" class="btn subtle" id="quickTestBtn">手动测试</button><div id="quickResult" class="test-result idle"><strong>READY</strong><span>等待测试</span></div></div>
@@ -130,7 +176,7 @@
 
       <section class="page" id="page-groups">
         <form id="groupForm">
-          <div class="page-bar"><div><h2>群聊权限矩阵</h2><p>仅对勾选的微信群启用 AI 与未来扩展能力</p></div><div class="bar-actions"><button type="button" class="btn subtle" id="refreshGroupsBtn">刷新群列表</button><button class="btn primary" type="submit">保存并应用</button></div></div>
+          <div class="page-bar"><div><h2>群聊权限矩阵</h2><p>仅对勾选的微信群启用 AI 与未来扩展能力</p></div><div class="bar-actions"><button type="button" class="btn ghost" id="syncUiGroupsBtn">同步 UI 群名</button><button type="button" class="btn subtle" id="saveAliasesBtn">保存别名</button><button type="button" class="btn subtle" id="refreshGroupsBtn">刷新群列表</button><button class="btn primary" type="submit">保存并应用</button></div></div>
           <div class="panel route-panel">
             <div class="route-summary"><div><span id="groupCount">0</span><small>已授权群</small></div><div><span id="routeMode">全消息</span><small>触发模式</small></div><div><span id="routePrefix">无</span><small>回复前缀</small></div><div><span id="routeCooldown">2s</span><small>冷却时间</small></div></div>
             <div class="group-discovery-bar"><div class="field"><label for="groupQuickSelect">微信群下拉选择</label><select id="groupQuickSelect"></select></div><button type="button" class="btn subtle" id="enableSelectedGroupBtn">勾选此群</button><span id="groupDiscoveryState" class="save-state">等待获取群列表</span></div>
@@ -163,25 +209,194 @@
               <div class="field"><label for="testAiPrompt">AI 独立测试消息</label><textarea id="testAiPrompt" rows="3">只回复：AI 接口正常</textarea></div>
               <div class="field"><label for="testOnebotText">OneBot 发送消息</label><textarea id="testOnebotText" rows="3">第二微信 OneBot 通道测试</textarea></div>
               <div class="field"><label for="testCallbackText">完整回调模拟消息</label><textarea id="testCallbackText" rows="3">请简短回复本次值班测试</textarea></div>
+              <div class="field"><label for="mediaPath">图片/文件路径或 URL</label><input id="mediaPath" placeholder="/tmp/test.png 或 https://..."></div>
+              <div class="field"><label for="videoPath">视频路径或 URL</label><input id="videoPath" placeholder="/tmp/test.mp4 或 https://..."></div>
+              <div class="field"><label for="recordPath">语音路径或 URL</label><input id="recordPath" placeholder="/tmp/test.wav 或 https://..."></div>
+              <div class="field"><label for="atUserId">@ 成员 user_id</label><input id="atUserId" placeholder="可选，OneBot user_id"></div>
+              <div class="field"><label for="replyMessageId">引用 message_id</label><input id="replyMessageId" placeholder="可选，消息 ID"></div>
             </div>
           </div>
           <div class="test-pipeline">
             <button class="pipeline-step test-run" data-test="ai"><span>01</span><div><strong>AI MODEL</strong><small>Chat Completions</small></div><b>运行</b></button><i></i>
             <button class="pipeline-step test-run" data-test="onebot"><span>02</span><div><strong>ONEBOT SEND</strong><small>58080 → WeChat</small></div><b>发送</b></button><i></i>
-            <button class="pipeline-step test-run" data-test="callback"><span>03</span><div><strong>FULL CALLBACK</strong><small>Event → AI → ACK</small></div><b>运行</b></button>
+            <button class="pipeline-step test-run" data-test="callback"><span>03</span><div><strong>FULL CALLBACK</strong><small>Event → AI → ACK</small></div><b>运行</b></button><i></i>
+            <button class="pipeline-step test-run" data-test="probe"><span>04</span><div><strong>SEND PROBE</strong><small>诊断探针</small></div><b>发送</b></button><i></i>
+            <button class="pipeline-step test-run" data-test="recover"><span>05</span><div><strong>修复 OneBot</strong><small>仅重启 OneBot</small></div><b>修复</b></button><i></i>
+            <button class="pipeline-step test-run" data-test="wechat2"><span>06</span><div><strong>重启第二微信</strong><small>只操作 WeChat2.app</small></div><b>重启</b></button><i></i>
+            <button class="pipeline-step test-run" data-test="at"><span>07</span><div><strong>@ 群成员</strong><small>at 消息</small></div><b>发送</b></button><i></i>
+            <button class="pipeline-step test-run" data-test="reply"><span>08</span><div><strong>引用回复</strong><small>reply 消息</small></div><b>发送</b></button><i></i>
+            <button class="pipeline-step test-run" data-test="image"><span>09</span><div><strong>发送图片</strong><small>image 消息</small></div><b>发送</b></button><i></i>
+            <button class="pipeline-step test-run" data-test="file"><span>10</span><div><strong>发送文件</strong><small>file 消息</small></div><b>发送</b></button><i></i>
+            <button class="pipeline-step test-run" data-test="video"><span>11</span><div><strong>发送视频</strong><small>video 消息</small></div><b>发送</b></button><i></i>
+            <button class="pipeline-step test-run" data-test="record"><span>12</span><div><strong>发送语音</strong><small>record 消息</small></div><b>发送</b></button>
           </div>
           <div class="panel test-console">
             <div class="console-head"><div><span></span><span></span><span></span><strong>test-session.log</strong></div><button class="link-btn" id="clearTestConsole">CLEAR</button></div>
             <div class="console-body" id="testConsole"><p class="muted">// 测试控制台就绪</p></div>
-            <div class="hidden-results"><div id="result-ai"></div><div id="result-onebot"></div><div id="result-callback"></div></div>
+            <div class="hidden-results"><div id="result-ai"></div><div id="result-onebot"></div><div id="result-callback"></div><div id="result-probe"></div><div id="result-recover"></div><div id="result-wechat2"></div><div id="result-at"></div><div id="result-reply"></div><div id="result-image"></div><div id="result-file"></div><div id="result-video"></div><div id="result-record"></div></div>
           </div>
+        </div>
+      </section>
+
+      <section class="page" id="page-media">
+        <div class="page-bar">
+          <div><h2>图片图库</h2><p>群图片 OCR、文件/视频索引在这里管理；语音内容已拆到单独菜单</p></div>
+          <div class="bar-actions"><span id="mediaStatusChip" class="health-chip">等待刷新</span><button class="btn subtle" id="mediaRefreshBtn">刷新图库</button><button class="btn primary" id="mediaOpenMemoryBtn">去记忆库</button></div>
+        </div>
+        <div class="media-center-layout">
+          <aside class="panel media-filter-panel">
+            <div class="panel-head"><div><h2>筛选</h2><p>选择群、类型、状态或关键词</p></div><span class="route-status">MEDIA</span></div>
+            <div class="panel-body memory-controls">
+              <div class="field"><label for="mediaGroup">目标群</label><select id="mediaGroup"></select></div>
+              <div class="field"><label for="mediaType">媒体类型</label><select id="mediaType"><option value="image">图片 image</option><option value="file">文件 file</option><option value="video">视频 video</option></select></div>
+              <div class="field"><label for="mediaStatus">处理状态</label><select id="mediaStatus"><option value="">全部状态</option><option value="indexed">已入库 indexed</option><option value="ocr_running">OCR 中</option><option value="ocr_done">OCR 完成</option><option value="ocr_failed">OCR 失败</option><option value="annotated">人工标注</option></select></div>
+              <div class="field"><label for="mediaQuery">关键词</label><input id="mediaQuery" placeholder="哈士奇、截图文字、发送者、标签"></div>
+              <button class="btn primary wide" id="mediaSearchBtn">查询媒体</button>
+              <div class="media-help-card">
+                <strong>当前逻辑</strong>
+                <p>群里发图片后会自动入库并进入 OCR；问“刚才那张图 / 那张哈士奇 / 截图里写了什么”时，AI 会优先使用这里的解析结果。</p>
+                <p>这里只展示图片、文件和视频索引；收到的语音泡请到左侧“语音内容”里做 ASR 转写和文本管理。</p>
+              </div>
+            </div>
+          </aside>
+          <section class="panel media-gallery-panel">
+            <div class="panel-head"><div><h2 id="mediaCenterTitle">群媒体记录</h2><p id="mediaCenterSub">图片可放大、重新 OCR、编辑摘要/标签/关键词</p></div><span class="route-status" id="mediaCenterMode">READY</span></div>
+            <div class="memory-results media-center-results" id="mediaCenterResults"><div class="terminal-empty">正在读取媒体记录…</div></div>
+          </section>
+        </div>
+      </section>
+
+      <section class="page" id="page-voice-records">
+        <div class="page-bar">
+          <div><h2>语音内容</h2><p>专门管理群聊收到的语音泡、原始音频文件和 ASR 转写文本</p></div>
+          <div class="bar-actions"><span id="voiceRecordsStatusChip" class="health-chip">等待刷新</span><button class="btn subtle" id="voiceRecordsBatchAsrBtn">批量 ASR 转写</button><button class="btn subtle" id="voiceRecordsRefreshBtn">刷新语音</button><button class="btn primary" id="voiceRecordsOpenMemoryBtn">去记忆库</button></div>
+        </div>
+        <div class="media-center-layout">
+          <aside class="panel media-filter-panel">
+            <div class="panel-head"><div><h2>筛选</h2><p>按群、ASR 状态和转写文本筛语音泡</p></div><span class="route-status">ASR</span></div>
+            <div class="panel-body memory-controls">
+              <div class="field"><label for="voiceRecordsGroup">来源群</label><select id="voiceRecordsGroup"></select></div>
+              <div class="field"><label for="voiceRecordsStatus">处理状态</label><select id="voiceRecordsStatus"><option value="">全部状态</option><option value="indexed">已入库 indexed</option><option value="waiting_audio">待音频文件</option><option value="waiting_transcript">待转文字</option><option value="asr_running">ASR 中</option><option value="asr_failed">ASR 失败</option><option value="transcribed">语音已转文字</option><option value="annotated">人工标注</option></select></div>
+              <div class="field"><label for="voiceRecordsQuery">关键词</label><input id="voiceRecordsQuery" placeholder="转写内容、发送者、文件名、标签"></div>
+              <div class="field"><label for="voiceRecordsManualText">手动兜底转写</label><textarea id="voiceRecordsManualText" rows="3" placeholder="可选：ASR 不可用时粘贴转写文本，只会写入最近一条未转写语音。"></textarea></div>
+              <button class="btn primary wide" id="voiceRecordsSearchBtn">查询语音内容</button>
+              <div class="media-help-card">
+                <strong>语音内容逻辑</strong>
+                <p>这里管理的是群里收到的 record 语音泡，会显示本地 silk/wav 音频、ASR 转写、摘要、标签和错误状态。</p>
+                <p>“语音包管理”只负责导入和发送素材包；两者已经完全分开。</p>
+              </div>
+            </div>
+          </aside>
+          <section class="panel media-gallery-panel">
+            <div class="panel-head"><div><h2 id="voiceRecordsTitle">群语音记录</h2><p id="voiceRecordsSub">可试听、ASR 转写、编辑转写文本/标签</p></div><span class="route-status" id="voiceRecordsMode">READY</span></div>
+            <div class="memory-results media-center-results" id="voiceRecordsResults"><div class="terminal-empty">正在读取语音记录…</div></div>
+          </section>
+        </div>
+      </section>
+
+      <section class="page" id="page-voices">
+        <div class="page-bar">
+          <div><h2>语音包管理</h2><p>先扫描来源，再导入；文件名就是语音内容</p></div>
+          <div class="bar-actions"><span id="voiceStatusChip" class="health-chip">等待加载</span><button class="btn subtle" id="voiceRefreshBtn">刷新列表</button></div>
+        </div>
+        <div class="voice-layout">
+          <aside class="panel voice-control-panel">
+            <div class="panel-head"><div><h2>导入语音包</h2><p>支持总目录、zip、zip1 和单个 silk</p></div><span class="route-status">IMPORT</span></div>
+            <div class="panel-body memory-controls">
+              <div class="field"><label for="voiceImportPaths">来源路径</label><textarea id="voiceImportPaths" rows="3" placeholder="~/Downloads/voice-packs"></textarea><small class="field-note">一行一个路径。选总目录会自动识别里面的每个 zip / zip1 / 子目录。</small></div>
+              <div class="field"><label for="voiceImportCategory">统一分类（可选）</label><input id="voiceImportCategory" placeholder="留空则使用目录名称"></div>
+              <div class="voice-import-actions"><button class="btn subtle wide" id="voicePlanBtn">扫描来源</button><button class="btn primary wide" id="voiceImportBtn">确认导入</button></div>
+              <div class="voice-import-plan" id="voiceImportPlan"><strong>尚未扫描</strong><span>填写路径后点击“扫描来源”，确认内容和数量再导入。</span></div>
+              <div class="field"><label for="voiceTargetGroup">发送测试目标群</label><select id="voiceTargetGroup"></select></div>
+              <div class="field"><label for="voiceCategory">文件夹分类</label><select id="voiceCategory"><option value="">全部文件夹</option></select></div>
+              <div class="field"><label for="voicePackFilter">语音包</label><select id="voicePackFilter"><option value="">全部语音包</option></select></div>
+              <div class="field"><label for="voiceQuery">快速找语音</label><input id="voiceQuery" placeholder="直接输入想说的话，如：别着急、谢谢、说句搞笑的"></div>
+              <div class="voice-search-actions"><button class="btn subtle wide" id="voiceSearchBtn">智能搜索</button><button class="btn ghost wide" id="voiceRecommendBtn">推荐候选</button></div>
+              <div class="voice-stats" id="voiceStats"><div><strong>--</strong><small>语音包</small></div><div><strong>--</strong><small>语音条</small></div><div><strong>--</strong><small>文件夹</small></div></div>
+              <div class="media-help-card">
+                <strong>导入规则</strong>
+                <p>总目录里的每个压缩包或子目录会成为独立语音包；例如“PDD .zip1”会显示为“PDD”。</p>
+                <p>文件名去掉扩展名后就是语音内容，只清理末尾的 p1 / p2 编号和“音频1”这类技术后缀。</p>
+                <p>重复文件自动跳过；试听会临时转 wav，发送仍使用原始 silk。</p>
+                <strong class="help-subhead">快速回复</strong>
+                <p>搜索框输入对方问题或你想表达的意思，系统先按完整内容找，再按同义意图推荐少量候选；确认试听后点击发送。</p>
+              </div>
+            </div>
+          </aside>
+          <section class="panel voice-gallery-panel">
+            <div class="panel-head"><div><h2 id="voiceTitle">语音素材列表</h2><p id="voiceSub">点击内容可展开全文，试听和发送都在同一行</p></div><span class="route-status" id="voiceMode">READY</span></div>
+            <div class="memory-results voice-results" id="voiceResults"><div class="terminal-empty">正在读取语音包…</div></div>
+          </section>
+        </div>
+      </section>
+
+      <section class="page" id="page-faces">
+        <div class="page-bar">
+          <div><h2>表情包管理</h2><p>自动收藏 face / GIF 动图，去重保存，支持解析、编辑标签和按原文件发送</p></div>
+          <div class="bar-actions"><span id="faceStatusChip" class="health-chip">等待加载</span><button class="btn subtle" id="faceRefreshBtn">刷新表情包</button></div>
+        </div>
+        <div class="voice-layout face-layout">
+          <aside class="panel voice-control-panel">
+            <div class="panel-head"><div><h2>筛选与发送</h2><p>只展示 OneBot 捕获到的 face 表情</p></div><span class="route-status">FACE</span></div>
+            <div class="panel-body memory-controls">
+              <div class="field"><label for="faceTargetGroup">发送测试目标群</label><select id="faceTargetGroup"></select></div>
+              <div class="field"><label for="faceGroup">表情来源群</label><select id="faceGroup"></select></div>
+              <div class="field"><label for="faceQuery">搜索摘要 / OCR / 标签</label><input id="faceQuery" placeholder="走开、别拍我、婴儿、搞笑"></div>
+              <button class="btn primary wide" id="faceSearchBtn">搜索表情</button>
+              <div class="media-help-card">
+                <strong>当前逻辑</strong>
+                <p>同一个表情包按 md5 / 文件哈希去重展示，重复收到不会在管理页刷屏。</p>
+                <p>GIF / WEBP 发送时保留原始动图二进制，不再给动图追加 salt，避免变成静态首帧。</p>
+              </div>
+            </div>
+          </aside>
+          <section class="panel voice-gallery-panel">
+            <div class="panel-head"><div><h2 id="faceTitle">表情素材库</h2><p id="faceSub">可预览、重解析、编辑摘要/OCR/标签/关键词</p></div><span class="route-status" id="faceMode">READY</span></div>
+            <div class="memory-results voice-results" id="faceResults"><div class="terminal-empty">正在读取表情包…</div></div>
+          </section>
+        </div>
+      </section>
+
+      <section class="page" id="page-memory">
+        <div class="page-bar"><div><h2>长期记忆数据库</h2><p>聊天记录、人物画像、向量记忆、媒体解析的本地中枢</p></div><div class="bar-actions"><button class="btn subtle" id="rebuildMemoryBtn">重建索引/画像</button><button class="btn subtle" id="exportMemoryBtn">导出 JSON</button><button class="btn primary" id="searchMemoryBtn">查询记录</button></div></div>
+        <div class="memory-hero panel">
+          <div class="memory-stats" id="memoryStats"><div>正在读取...</div></div>
+          <div class="memory-flow">
+            <div><b>01</b><strong>实时入库</strong><small>OneBot 回调和 AI 回复自动保存</small></div>
+            <div><b>02</b><strong>画像重建</strong><small>按群成员生成基础人物画像</small></div>
+            <div><b>03</b><strong>向量检索</strong><small>本地轻量语义检索，后续可替换 Embedding API</small></div>
+            <div><b>04</b><strong>媒体入口</strong><small>图片/文件消息先建索引，后续接 OCR/视觉模型</small></div>
+          </div>
+        </div>
+        <div class="memory-workbench">
+          <aside class="panel memory-control-panel">
+            <div class="panel-head"><div><h2>控制台</h2><p>选择群、检索、导入、编辑长期记忆</p></div></div>
+            <div class="panel-body memory-controls">
+              <div class="field"><label for="memoryGroup">目标群</label><select id="memoryGroup"></select></div>
+              <div class="field"><label for="memoryQuery">关键词 / 语义问题</label><input id="memoryQuery" placeholder="例如：上次谁说过值班安排"></div>
+              <div class="memory-button-grid">
+                <button class="btn subtle" id="refreshMemoryBtn">刷新统计</button>
+                <button class="btn subtle" id="vectorSearchBtn">向量检索</button>
+                <button class="btn subtle" id="loadMembersBtn">成员画像</button>
+                <button class="btn subtle" id="loadMediaBtn">媒体记录</button>
+              </div>
+              <div class="field"><label for="memorySummary">当前群长期摘要</label><textarea id="memorySummary" rows="7" placeholder="群规则、固定上下文、关键人物关系、AI 应该长期记住的信息。"></textarea></div>
+              <div class="bar-actions"><button class="btn subtle" id="loadGroupMemoryBtn">读取群记忆</button><button class="btn primary" id="saveGroupMemoryBtn">保存群记忆</button></div>
+              <div class="field"><label for="memoryImportBox">导入聊天记录 JSON</label><textarea id="memoryImportBox" rows="8" placeholder='[{"group_id":"573...@chatroom","user_id":"wxid...","sender_name":"张三","text":"聊天内容","event_time":1783860000}]'></textarea></div>
+              <button class="btn subtle wide" id="importMemoryBtn">导入到记忆库</button>
+            </div>
+          </aside>
+          <section class="panel memory-results-panel">
+            <div class="panel-head"><div><h2 id="memoryResultTitle">记忆视图</h2><p id="memoryResultSub">查询结果、画像、媒体索引和导出内容都在这里展示</p></div><span class="route-status" id="memoryMode">READY</span></div>
+            <div class="memory-results" id="memoryResults"><div class="terminal-empty">选择左侧操作开始查看记忆库</div></div>
+          </section>
         </div>
       </section>
 
       <section class="page logs-page" id="page-logs">
         <div class="page-bar"><div><h2>完整运行日志</h2><p>AI 服务与 OneBot 原始事件流</p></div><div class="bar-actions"><button class="btn subtle" id="pauseLogs">暂停</button><button class="btn ghost" id="clearLogs">清空视图</button></div></div>
         <div class="full-terminal">
-          <div class="log-toolbar"><div class="source-tabs"><button class="active" data-source="all">ALL</button><button data-source="ai">AI SERVICE</button><button data-source="onebot">ONEBOT</button></div><div class="level-filters"><label><input type="checkbox" value="debug" checked><i class="debug"></i>DEBUG</label><label><input type="checkbox" value="info" checked><i class="info"></i>INFO</label><label><input type="checkbox" value="warning" checked><i class="warning"></i>WARN</label><label><input type="checkbox" value="error" checked><i class="error"></i>ERROR</label><label><input type="checkbox" value="critical" checked><i class="critical"></i>CRITICAL</label><span class="stream-live"><i></i>LIVE</span></div></div>
+          <div class="log-toolbar"><div class="source-tabs"><button class="active" data-source="all">ALL</button><button data-source="ai">AI SERVICE</button><button data-source="onebot">ONEBOT</button></div><div class="log-search"><input id="logGroupFilter" placeholder="群 ID 筛选"><input id="logTraceFilter" placeholder="trace_id 筛选"><label><input id="logErrorsOnly" type="checkbox">只看错误</label><label><input id="logSendOnly" type="checkbox">发送链路</label></div><div class="level-filters"><label><input type="checkbox" value="debug" checked><i class="debug"></i>DEBUG</label><label><input type="checkbox" value="info" checked><i class="info"></i>INFO</label><label><input type="checkbox" value="warning" checked><i class="warning"></i>WARN</label><label><input type="checkbox" value="error" checked><i class="error"></i>ERROR</label><label><input type="checkbox" value="critical" checked><i class="critical"></i>CRITICAL</label><span class="stream-live"><i></i>LIVE</span></div></div>
           <div class="terminal-title"><div><i></i><i></i><i></i><strong>run.log</strong></div><span id="logCounter">0 events</span></div>
           <div class="log-output" id="logOutput"><div class="terminal-empty">正在连接日志流…</div></div>
         </div>
@@ -204,6 +419,14 @@
     </div>
     <div class="dialog-actions"><button type="button" class="btn ghost" id="cancelChannelDialog">取消</button><button type="submit" class="btn primary">添加渠道</button></div>
   </form>
+</dialog>
+<dialog id="mediaPreviewDialog" class="media-preview-dialog">
+  <div class="dialog-head"><div><h2 id="mediaPreviewTitle">图片预览</h2><p>群图库原图预览</p></div><button type="button" class="icon-btn" onclick="document.getElementById('mediaPreviewDialog').close()" title="关闭">×</button></div>
+  <div class="media-preview-stage"><img id="mediaPreviewImage" alt="media preview"></div>
+</dialog>
+<dialog id="contentPreviewDialog" class="content-preview-dialog">
+  <div class="dialog-head"><div><h2 id="contentPreviewTitle">内容详情</h2><p>完整文本内容</p></div><button type="button" class="icon-btn" onclick="document.getElementById('contentPreviewDialog').close()" title="关闭">×</button></div>
+  <pre id="contentPreviewBody" class="content-preview-body"></pre>
 </dialog>
 <script src="/static/app.js"></script>
 </body>

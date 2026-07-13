@@ -11,9 +11,28 @@ PID_FILE="$SECOND_HOME/onebot-wechat2.pid"
 RECEIVE_HOST="${ONEBOT_RECEIVE_HOST:-127.0.0.1:58080}"
 SEND_URL="${ONEBOT_SEND_URL:-http://127.0.0.1:36060/onebot}"
 IMAGE_PATH="${ONEBOT_IMAGE_PATH:-$HOME/Library/Containers/com.tencent.xinWeChat.instance2/Data/Documents/xwechat_files}"
+MEDIA_PROBE="${ONEBOT_MEDIA_PROBE:-false}"
 APP="${WECHAT2_APP:-$HOME/Applications/WeChat2.app}"
 EXE="$APP/Contents/MacOS/WeChat"
-mkdir -p "$LOG_DIR" "$IMAGE_PATH"
+TOOL_BIN="$ROOT_DIR/tools/bin"
+mkdir -p "$LOG_DIR" "$IMAGE_PATH" "$TOOL_BIN"
+
+# record/voice 发送需要 ffmpeg 转 SILK。优先使用系统 PATH；没有时使用 Python
+# imageio-ffmpeg 提供的本地二进制，并注入到 OneBot 进程 PATH。
+if ! command -v ffmpeg >/dev/null 2>&1 && [[ ! -x "$TOOL_BIN/ffmpeg" ]]; then
+  FFMPEG_BIN=$(/usr/bin/python3 - <<'PY' 2>/dev/null || true
+try:
+    import imageio_ffmpeg
+    print(imageio_ffmpeg.get_ffmpeg_exe())
+except Exception:
+    pass
+PY
+)
+  if [[ -n "${FFMPEG_BIN:-}" && -x "$FFMPEG_BIN" ]]; then
+    ln -sf "$FFMPEG_BIN" "$TOOL_BIN/ffmpeg"
+  fi
+fi
+export PATH="$TOOL_BIN:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 if [[ ! -x "$ONEBOT_BIN" ]]; then
   echo "找不到 OneBot: $ONEBOT_BIN" >&2
@@ -80,12 +99,12 @@ codesign --force --sign - --timestamp=none "$ONEBOT_BIN" >/dev/null 2>&1 || true
 
 : > "$LOG_FILE"
 # 用 setsid/start_new_session 真正脱离当前执行 shell，避免 Codex/终端回收后台进程时把 OneBot 一起杀掉。
-/usr/bin/python3 - "$ONEBOT_DIR" "$ONEBOT_BIN" "$PID_FILE" "$LOG_FILE" "$PID" "$CONF" "$RECEIVE_HOST" "$SEND_URL" "$IMAGE_PATH" <<'PY'
+/usr/bin/python3 - "$ONEBOT_DIR" "$ONEBOT_BIN" "$PID_FILE" "$LOG_FILE" "$PID" "$CONF" "$RECEIVE_HOST" "$SEND_URL" "$IMAGE_PATH" "$MEDIA_PROBE" <<'PY'
 import os
 import subprocess
 import sys
 
-onebot_dir, onebot_bin, pid_file, log_file, wechat_pid, conf, receive_host, send_url, image_path = sys.argv[1:]
+onebot_dir, onebot_bin, pid_file, log_file, wechat_pid, conf, receive_host, send_url, image_path, media_probe = sys.argv[1:]
 args = [
     onebot_bin,
     '-type=local',
@@ -96,6 +115,7 @@ args = [
     f'-image_path={image_path}',
     '-conn_type=http',
     '-log_level=info',
+    f'-media_probe={media_probe}',
 ]
 log = open(log_file, 'ab', buffering=0)
 proc = subprocess.Popen(
@@ -140,3 +160,9 @@ fi
 echo "OneBot PID=$OPID attached WeChat2 PID=$PID"
 echo "HTTP: http://$RECEIVE_HOST"
 sed -n '1,220p' "$LOG_FILE" || true
+
+# UI 语音转文字观察器已停用：当前方案改为直接抓取语音原始文件并走 ASR。
+# 如需临时恢复旧 UI 识别方案，可手动设置 ENABLE_UI_VOICE_TRANSCRIPT=1。
+if [[ "${ENABLE_UI_VOICE_TRANSCRIPT:-0}" == "1" ]]; then
+  "$ROOT_DIR/scripts/start_voice_transcript_sidecar.sh" "$PID" || true
+fi

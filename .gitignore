@@ -17,6 +17,7 @@ node_modules/
 !*.env.example
 config/ai_reply.env
 config/ai_reply_config.json
+config/ai_reply_config.before-*.json
 *.pid
 *.log
 logs/
@@ -41,5 +42,10 @@ outputs/
 # Runtime OneBot extracted assets
 external/
 tools/onebot/onebot/onebot
+tools/onebot/onebot/onebot.backup*
 tools/onebot/onebot/log/
 tools/onebot/onebot/image/
+tools/onebot/onebot/file/
+tools/runtime/
+tools/voice_transcript_ocr/voice-transcript-ocr
+tools/voice_transcript_sidecar/voice-transcript-sidecar

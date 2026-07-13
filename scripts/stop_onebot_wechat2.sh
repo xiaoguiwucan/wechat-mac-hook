@@ -7,6 +7,7 @@ ONEBOT_BIN="$ROOT_DIR/tools/onebot/onebot/onebot"
 PORT="${ONEBOT_RECEIVE_HOST:-127.0.0.1:58080}"
 PORT="${PORT##*:}"
 STOPPED=0
+"$ROOT_DIR/scripts/stop_voice_transcript_sidecar.sh" || true
 PID="$(cat "$PID_FILE" 2>/dev/null || true)"
 if [[ -n "$PID" ]] && kill -0 "$PID" 2>/dev/null; then
   CMD="$(ps -p "$PID" -o command= 2>/dev/null || true)"

@@ -12,7 +12,11 @@
   ],
   "allowed_user_ids": [],
   "ignored_user_ids": [],
-  "ignore_prefixes": ["AI：", "AI:", "🤖"],
+  "ignore_prefixes": [
+    "AI：",
+    "AI:",
+    "🤖"
+  ],
   "ignore_self_messages": true,
   "log_all_group_messages": true,
   "require_keyword": false,
@@ -23,6 +27,31 @@
   "min_seconds_between_replies_per_group": 2.0,
   "send_delay_seconds": 0.2,
   "personality": "专业、克制、直接。回答简洁，不说空话。",
+  "group_aliases": {
+    "1234567890@chatroom": "值班群"
+  },
+  "memory": {
+    "enabled": true,
+    "max_turns": 12,
+    "summary_enabled": true
+  },
+  "tools": {
+    "enabled": true,
+    "allowed": [
+      "get_status",
+      "get_recent_logs",
+      "list_groups",
+      "test_model_channel",
+      "send_probe",
+      "search_messages",
+      "get_group_memory",
+      "vector_search",
+      "list_personas",
+      "list_media",
+      "send_voice_pack",
+      "send_face_pack"
+    ]
+  },
   "ai": {
     "provider": "openai_compatible",
     "base_url": "https://api.deepseek.com/v1",
@@ -50,5 +79,34 @@
     "auto_health_check": true,
     "health_check_interval_seconds": 300,
     "failure_cooldown_seconds": 60
+  },
+  "media_auto_repair": {
+    "enabled": true,
+    "filehelper_id": "filehelper",
+    "cooldown_seconds": 45,
+    "poll_seconds": 8
+  },
+  "onebot_monitor": {
+    "enabled": true,
+    "auto_recover": true
+  },
+  "vision_ocr": {
+    "enabled": false,
+    "auto_analyze": true,
+    "base_url": "https://api.example.com/v1",
+    "api_key_env": "AI_REPLY_VISION_OCR_API_KEY",
+    "model": "your-vision-model",
+    "timeout_seconds": 60,
+    "prompt": "请提取图片中的可见文字，并用中文给出一句简短摘要。"
+  },
+  "asr": {
+    "enabled": false,
+    "base_url": "https://api.example.com/v1",
+    "api_key_env": "AI_REPLY_ASR_API_KEY",
+    "model": "your-asr-model",
+    "timeout_seconds": 90,
+    "language": "zh",
+    "prompt": "",
+    "auto_transcribe": true
   }
 }

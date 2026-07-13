@@ -257,4 +257,3 @@ func extractFileName(s string) string {
 	}
 	return s
 }
-

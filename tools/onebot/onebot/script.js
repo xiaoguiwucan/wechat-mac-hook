@@ -1,15 +1,25 @@
 var module = null;
-try { module = Process.getModuleByName("wechat.dylib"); } catch (e) {}
-if (!module) {
-    module = Process.enumerateModules().find(function(m) {
-        return m.name === "wechat.dylib" || m.path.indexOf("/Contents/Frameworks/wechat.dylib") >= 0 || m.path.indexOf("/Contents/Resources/wechat.dylib") >= 0;
+var wechatModules = Process.enumerateModules().filter(function(m) {
+    return m.name === "wechat.dylib" ||
+        m.path.indexOf("/Contents/Frameworks/wechat.dylib") >= 0 ||
+        m.path.indexOf("/Contents/Resources/wechat.dylib") >= 0;
+});
+if (wechatModules.length > 0) {
+    // WeChat 4.1.11.x 同时加载一个很小的 Frameworks/wechat.dylib 壳和真正的
+    // Resources/wechat.dylib。发送相关 offset 属于后者，必须优先选大模块。
+    wechatModules.sort(function(a, b) {
+        var ar = a.path.indexOf("/Contents/Resources/wechat.dylib") >= 0 ? 1 : 0;
+        var br = b.path.indexOf("/Contents/Resources/wechat.dylib") >= 0 ? 1 : 0;
+        if (ar !== br) return br - ar;
+        return b.size - a.size;
     });
+    module = wechatModules[0];
 }
 if (!module) {
     throw new Error("[-] Cannot find wechat.dylib in current process");
 }
 var moduleBase = module.base;
-console.log("[+] WeChat core module: " + module.path + " base=" + moduleBase);
+console.log("[+] WeChat core module: " + module.path + " base=" + moduleBase + " size=" + module.size);
 
 // Enumerate readable ranges within 500MB from module base to search for "req2buf"
 var searchSize = 1000 * 1024 * 1024;
@@ -19,14 +29,18 @@ var baseAddr = null;
 
 function findExecutableBaseFallback() {
     var sendOffset = ptr({{.sendFuncAddr}});
-    var candidates = ranges.filter(function(r) { return r.size > 100 * 1024 * 1024; });
+    var candidates = [moduleBase];
+    ranges.filter(function(r) { return r.size > 100 * 1024 * 1024; }).forEach(function(r) {
+        candidates.push(r.base);
+    });
     for (var i = 0; i < candidates.length; i++) {
         try {
-            var target = candidates[i].base.add(sendOffset);
+            var base = candidates[i];
+            var target = base.add(sendOffset);
             var targetRange = Process.findRangeByAddress(target);
             if (targetRange && targetRange.protection.indexOf('x') !== -1) {
-                console.log("[+] Base fallback validated by executable sendFunc: " + candidates[i].base);
-                return candidates[i].base;
+                console.log("[+] Base fallback validated by executable sendFunc: " + base + " target=" + target);
+                return base;
             }
         } catch (e) {}
     }
@@ -69,7 +83,11 @@ ranges.forEach(function(r) {
                     if (baseAddr === null) {
                         throw new Error("[-] Cannot locate runtime base by keyword or executable offset");
                     }
-                    initAddresses();
+                    try {
+                        initAddresses();
+                    } catch (e) {
+                        console.error("[-] initAddresses failed after fallback: " + e.stack);
+                    }
                     return;
                 }
 
@@ -78,7 +96,11 @@ ranges.forEach(function(r) {
                 console.log("[+] Base address from range: " + baseAddr);
                 console.log("[+] Range size: " + foundRange.size);
 
-                initAddresses();
+                try {
+                    initAddresses();
+                } catch (e) {
+                    console.error("[-] initAddresses failed after scan: " + e.stack);
+                }
             }
         }
     });
@@ -96,6 +118,10 @@ function initAddresses() {
     buf2RespAddr = baseAddr.add({{.buf2RespAddr}});
 
     uploadImageAddr = baseAddr.add({{.uploadImageAddr}});
+    uploadServiceNameCtorAddr = baseAddr.add({{.uploadServiceNameCtorAddr}});
+    uploadServiceLookupAddr = baseAddr.add({{.uploadServiceLookupAddr}});
+    uploadServiceResolveAddr = baseAddr.add({{.uploadServiceResolveAddr}});
+    uploadServiceObjectOffset = ptr({{.uploadServiceObjectOffset}}).toInt32();
     cndOnCompleteAddr = baseAddr.add({{.cndOnCompleteAddr}});
 
     uploadGetCallbackWrapperAddr = baseAddr.add({{.uploadGetCallbackWrapperAddr}});
@@ -123,11 +149,14 @@ function initAddresses() {
     setImmediate(attachReq2buf);
     setImmediate(setupSendImgMessageDynamic);
     setImmediate(attachUploadMedia);
+    setImmediate(discoverUploadGlobalX0);
     setImmediate(patchCdnOnComplete);
     setImmediate(attachGetCallbackFromWrapper);
     setImmediate(setupSendReplyMessageDynamic);
     setImmediate(setupDownloadFileDynamic);
     setImmediate(setReceiver);
+    // UI 语音转文字 Hook 默认停用：改用原始语音文件 + ASR。
+    if (typeof ENABLE_UI_VOICE_TRANSCRIPT !== 'undefined' && ENABLE_UI_VOICE_TRANSCRIPT) setImmediate(setupVoiceTranscriptUiHook);
 }
 
 // -------------------------基础函数分区-------------------------
@@ -229,8 +258,9 @@ function sendDownloadChunks(dataPtr, dataLen, fileId, cdnUrl) {
 
 function fillUploadX1AndStart(idAddr, pathAddr, x1Buffer, receiver, md5, filePath, payloadHex) {
     if (uploadGlobalX0.equals(ptr(0))) {
-        console.error("[!] uploadGlobalX0 尚未初始化，请等待 hook 捕获");
-        return "fail";
+        console.error("[!] uploadGlobalX0 尚未初始化，尝试通过发送触发 hook 捕获...");
+        // 不直接 fail，返回 need_probe 让 Go 侧触发恢复流程
+        return "need_probe";
     }
 
     const payload = hexToByteArray(payloadHex);
@@ -251,7 +281,128 @@ function fillUploadX1AndStart(idAddr, pathAddr, x1Buffer, receiver, md5, filePat
     x1Buffer.add(0x200).writePointer(uploadAesKeyAddr);
 
     const startUploadMedia = new NativeFunction(uploadImageAddr, 'int64', ['pointer', 'pointer']);
-    return startUploadMedia(uploadGlobalX0, x1Buffer);
+    manualUploadInProgress = true;
+    try {
+        return startUploadMedia(uploadGlobalX0, x1Buffer);
+    } finally {
+        manualUploadInProgress = false;
+    }
+}
+
+
+// ------------------------- 语音转文字 UI Hook -------------------------
+var voiceTranscriptUiHookInstalled = false;
+var voiceTranscriptLastSent = {};
+function isLikelyVoiceTranscriptText(s) {
+    try {
+        if (!s) return false;
+        s = ('' + s).replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
+        var len = Array.from(s).length;
+        if (len < 4 || len > 160) return false;
+        if (!/[\u4e00-\u9fff]/.test(s)) return false;
+        if (/@chatroom|wxid_|file_id=|https?:\/\//.test(s)) return false;
+        var noise = ['语音输入','按住说话','松开发送','转文字','语音转文字','在群聊中发了一段语音',
+            '图片/语音图库','聊天记录','文件传输助手','值班群','扯淡群','微信','WeChat','系统设置','辅助功能','朋友圈','通讯录','收藏','搜索'];
+        for (var i = 0; i < noise.length; i++) {
+            if (s === noise[i] || (s.indexOf(noise[i]) >= 0 && len <= Array.from(noise[i]).length + 4)) return false;
+        }
+        return true;
+    } catch (e) { return false; }
+}
+function emitVoiceTranscriptCandidate(s, source) {
+    try {
+        s = ('' + s).replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
+        if (!isLikelyVoiceTranscriptText(s)) return;
+        var now = Date.now();
+        var key = s;
+        if (voiceTranscriptLastSent[key] && now - voiceTranscriptLastSent[key] < 15000) return;
+        voiceTranscriptLastSent[key] = now;
+        send({type: 'voice_transcript_ui', text: s, source: source || 'appkit', ts: now});
+    } catch (e) {}
+}
+var voiceTranscriptHookedImps = {};
+function findGlobalExport(name) {
+    try {
+        if (Module.findGlobalExportByName) return Module.findGlobalExportByName(name);
+    } catch (e) {}
+    try {
+        if (Module.getGlobalExportByName) return Module.getGlobalExportByName(name);
+    } catch (e) {}
+    try { return Module.findExportByName(null, name); } catch (e) { return null; }
+}
+function makeObjCRuntime() {
+    console.log('[+] Voice transcript resolving Objective-C runtime exports');
+    var objcGetClassPtr = findGlobalExport('objc_getClass');
+    var selRegisterNamePtr = findGlobalExport('sel_registerName');
+    var classGetInstanceMethodPtr = findGlobalExport('class_getInstanceMethod');
+    var methodGetImplementationPtr = findGlobalExport('method_getImplementation');
+    var objcMsgSendPtr = findGlobalExport('objc_msgSend');
+    console.log('[+] Voice transcript runtime exports objc_getClass=' + objcGetClassPtr +
+        ' sel_registerName=' + selRegisterNamePtr + ' class_getInstanceMethod=' + classGetInstanceMethodPtr +
+        ' method_getImplementation=' + methodGetImplementationPtr + ' objc_msgSend=' + objcMsgSendPtr);
+    if (!objcGetClassPtr || !selRegisterNamePtr || !classGetInstanceMethodPtr || !methodGetImplementationPtr || !objcMsgSendPtr) {
+        return null;
+    }
+    return {
+        getClass: new NativeFunction(objcGetClassPtr, 'pointer', ['pointer']),
+        registerSelector: new NativeFunction(selRegisterNamePtr, 'pointer', ['pointer']),
+        getInstanceMethod: new NativeFunction(classGetInstanceMethodPtr, 'pointer', ['pointer', 'pointer']),
+        getImplementation: new NativeFunction(methodGetImplementationPtr, 'pointer', ['pointer']),
+        msgSendPointer: new NativeFunction(objcMsgSendPtr, 'pointer', ['pointer', 'pointer'])
+    };
+}
+function nsStringToJs(runtime, value) {
+    try {
+        if (!value || value.isNull()) return '';
+        var utf8Sel = runtime.registerSelector(Memory.allocUtf8String('UTF8String'));
+        var cstr = runtime.msgSendPointer(value, utf8Sel);
+        if (!cstr || cstr.isNull()) return '';
+        return cstr.readUtf8String() || '';
+    } catch (e) { return ''; }
+}
+function hookObjCStringSetter(runtime, className, selector, argIndex) {
+    try {
+        var klass = runtime.getClass(Memory.allocUtf8String(className));
+        if (!klass || klass.isNull()) return false;
+        var selectorPtr = runtime.registerSelector(Memory.allocUtf8String(selector));
+        var method = runtime.getInstanceMethod(klass, selectorPtr);
+        if (!method || method.isNull()) return false;
+        var impl = runtime.getImplementation(method);
+        if (!impl || impl.isNull()) return false;
+        var impKey = impl.toString();
+        if (voiceTranscriptHookedImps[impKey]) return false;
+        voiceTranscriptHookedImps[impKey] = true;
+        Interceptor.attach(impl, {
+            onEnter: function(args) {
+                var s = nsStringToJs(runtime, args[argIndex || 2]);
+                emitVoiceTranscriptCandidate(s, className + ' ' + selector);
+            }
+        });
+        console.log('[+] Voice transcript runtime hook installed: ' + className + ' ' + selector + ' imp=' + impl);
+        return true;
+    } catch (e) {
+        console.log('[-] Voice transcript runtime hook failed: ' + className + ' ' + selector + ' err=' + e);
+        return false;
+    }
+}
+function setupVoiceTranscriptUiHook() {
+    if (voiceTranscriptUiHookInstalled) return;
+    voiceTranscriptUiHookInstalled = true;
+    console.log('[+] Voice transcript Objective-C runtime hook setup starting');
+    var runtime = makeObjCRuntime();
+    if (!runtime) {
+        console.log('[-] Objective-C runtime exports unavailable, skip voice transcript UI hook');
+        return;
+    }
+    var count = 0;
+    count += hookObjCStringSetter(runtime, 'NSTextField', 'setStringValue:', 2) ? 1 : 0;
+    count += hookObjCStringSetter(runtime, 'NSCell', 'setStringValue:', 2) ? 1 : 0;
+    count += hookObjCStringSetter(runtime, 'NSTextView', 'setString:', 2) ? 1 : 0;
+    count += hookObjCStringSetter(runtime, 'NSAttributedString', 'initWithString:', 2) ? 1 : 0;
+    count += hookObjCStringSetter(runtime, 'NSAttributedString', 'initWithString:attributes:', 2) ? 1 : 0;
+    count += hookObjCStringSetter(runtime, 'NSMutableAttributedString', 'initWithString:', 2) ? 1 : 0;
+    count += hookObjCStringSetter(runtime, 'NSMutableAttributedString', 'initWithString:attributes:', 2) ? 1 : 0;
+    console.log('[+] Voice transcript Objective-C runtime hook total=' + count);
 }
 
 // -------------------------基础函数分区-------------------------
@@ -289,6 +440,10 @@ var sendMsgType = "";
 var buf2RespAddr;
 
 var uploadImageAddr;
+var uploadServiceNameCtorAddr;
+var uploadServiceLookupAddr;
+var uploadServiceResolveAddr;
+var uploadServiceObjectOffset = 0;
 var cndOnCompleteAddr;
 var imgMessageCallbackFunc;
 var videoMessageCallbackFunc;
@@ -312,7 +467,16 @@ var uploadImageX1 = ptr(0);
 var imgCgiAddr = ptr(0);
 var sendImgMessageAddr = ptr(0);
 var imgMessageAddr = ptr(0);
-var uploadGlobalX0 = ptr(0)
+var initialUploadGlobalX0 = "{{.initialUploadGlobalX0}}";
+var uploadGlobalX0 = (initialUploadGlobalX0 && initialUploadGlobalX0 !== "<no value>" && initialUploadGlobalX0 !== "0x0")
+    ? ptr(initialUploadGlobalX0)
+    : ptr(0)
+if (!uploadGlobalX0.equals(ptr(0))) {
+    console.log("[+] 使用缓存 UploadMedia X0：" + uploadGlobalX0);
+}
+var manualUploadInProgress = false
+var uploadGlobalX0CapturedAt = 0
+var uploadGlobalX0DiscoveryAttempts = 0
 var uploadFunc1Addr = ptr(0)
 var uploadFunc2Addr = ptr(0)
 var imageIdAddr = ptr(0)
@@ -851,7 +1015,7 @@ function triggerUploadVideo(receiver, md5, videoPath, payloadHex) {
 
 function triggerUploadVoice(receiver, voicePath, payloadHex, audioDataHex, durationMs) {
     if (uploadGlobalX0.equals(ptr(0))) {
-        console.error("[!] uploadGlobalX0 尚未初始化，请等待 hook 捕获");
+        console.error("[!] uploadGlobalX0 尚未初始化，语音上传需要先恢复通道");
         return "fail";
     }
 
@@ -882,15 +1046,90 @@ function triggerUploadVoice(receiver, voicePath, payloadHex, audioDataHex, durat
 
     const startUploadMedia = new NativeFunction(uploadImageAddr, 'int64', ['pointer', 'pointer']);
 
-    return startUploadMedia(uploadGlobalX0, uploadVoiceX1);
+    manualUploadInProgress = true;
+    try {
+        return startUploadMedia(uploadGlobalX0, uploadVoiceX1);
+    } finally {
+        manualUploadInProgress = false;
+    }
+}
+
+function captureRealUploadX0(ctx, where) {
+    try {
+        if (!ctx.x0 || ctx.x0.isNull()) {
+            return;
+        }
+        // 当 X0 尚未初始化时，即使是手动触发的 UploadMedia 也允许捕获
+        // 这样 OneBot 主动发占位图时就能自动恢复通道
+        if (manualUploadInProgress && !uploadGlobalX0.equals(ptr(0))) {
+            console.log("[+] 忽略手动触发的 UploadMedia 回调，X0 已有值 where=" + where + " X0=" + ctx.x0);
+            return;
+        }
+        uploadGlobalX0 = ctx.x0;
+        uploadGlobalX0CapturedAt = Date.now();
+        console.log("[+] 捕获到真实 UploadMedia 调用，where=" + where + " X0：" + uploadGlobalX0);
+        // 通过 send 通知 Go 侧 X0 已恢复
+        send({ type: "upload_x0_recovered", x0: uploadGlobalX0.toString(), where: where });
+    } catch (e) {
+        console.error("[!] 捕获 UploadMedia X0 失败: " + e);
+    }
+}
+
+function discoverUploadGlobalX0() {
+    if (!uploadGlobalX0.equals(ptr(0)) && isReadablePointer(uploadGlobalX0.add(0x18))) {
+        return uploadGlobalX0.toString();
+    }
+    uploadGlobalX0 = ptr(0);
+    uploadGlobalX0DiscoveryAttempts++;
+    try {
+        const nameStorage = Memory.alloc(0x20);
+        nameStorage.writeByteArray(new Array(0x20).fill(0));
+        const defaultName = Memory.allocUtf8String("default");
+        const constructName = new NativeFunction(uploadServiceNameCtorAddr, 'pointer', ['pointer', 'pointer']);
+        const lookupServiceRegistry = new NativeFunction(uploadServiceLookupAddr, 'pointer', ['pointer']);
+        const resolveUploadService = new NativeFunction(uploadServiceResolveAddr, 'pointer', ['pointer']);
+        constructName(nameStorage, defaultName);
+        const registry = lookupServiceRegistry(nameStorage);
+        if (!registry || registry.isNull() || !isReadablePointer(registry)) {
+            throw new Error("upload service registry unavailable");
+        }
+        const service = resolveUploadService(registry);
+        if (!service || service.isNull() || !isReadablePointer(service.add(uploadServiceObjectOffset))) {
+            throw new Error("upload service unavailable");
+        }
+        const resolved = service.add(uploadServiceObjectOffset).readPointer();
+        if (!resolved || resolved.isNull() || !isReadablePointer(resolved.add(0x18))) {
+            throw new Error("upload service context unavailable");
+        }
+        uploadGlobalX0 = resolved;
+        uploadGlobalX0CapturedAt = Date.now();
+        console.log("[+] 捕获到真实 UploadMedia 调用，where=service_locator X0：" + uploadGlobalX0);
+        send({ type: "upload_x0_recovered", x0: uploadGlobalX0.toString(), where: "service_locator" });
+        return uploadGlobalX0.toString();
+    } catch (e) {
+        console.warn("[!] 自动解析 UploadMedia X0 失败 attempt=" + uploadGlobalX0DiscoveryAttempts + " error=" + e);
+        if (uploadGlobalX0DiscoveryAttempts < 15) {
+            setTimeout(discoverUploadGlobalX0, 1000);
+        }
+        return "0x0";
+    }
 }
 
 function attachUploadMedia() {
-    Interceptor.attach(uploadImageAddr.add(0x10), {
-        onEnter: function (args) {
-			uploadGlobalX0 = this.context.x0;
-		}
-    })
+    try {
+        Interceptor.attach(uploadImageAddr, {
+            onEnter: function (args) { captureRealUploadX0(this.context, "entry"); }
+        });
+    } catch (e) {
+        console.error("[!] hook UploadMedia entry failed: " + e);
+    }
+    try {
+        Interceptor.attach(uploadImageAddr.add(0x10), {
+            onEnter: function (args) { captureRealUploadX0(this.context, "entry+0x10"); }
+        });
+    } catch (e) {
+        console.error("[!] hook UploadMedia entry+0x10 failed: " + e);
+    }
 }
 
 
@@ -1062,6 +1301,53 @@ function triggerSendVoiceMessage(taskId, sender, receiver, protoHex, payloadHex)
 }
 // -------------------------发送语音消息分区-------------------------
 
+
+// -------------------------上传通道自愈分区-------------------------
+function getUploadStatus() {
+    if (uploadGlobalX0.equals(ptr(0))) {
+        discoverUploadGlobalX0();
+    }
+    // send_ready: 总是 true，让 runMediaProbe 能走到发占位图的逻辑
+    // 即使 X0=0，也允许通过发送占位图来触发 hook 捕获
+    return JSON.stringify({
+        upload_x0: uploadGlobalX0.toString(),
+        upload_x0_ready: !uploadGlobalX0.equals(ptr(0)),
+        send_ready: true,
+        captured_at: uploadGlobalX0CapturedAt,
+        base_addr: baseAddr ? baseAddr.toString() : "unknown",
+        manual_upload_in_progress: manualUploadInProgress
+    });
+}
+
+// recoverUploadX0: 纯后台通过 triggerUploadImg 向 filehelper 发送占位图
+// 目的：触发微信内部 UploadMedia 调用，让 hook 捕获真实 X0
+// 注意：不操作任何 UI，不切换聊天窗口
+function recoverUploadX0(receiver) {
+    if (!receiver) {
+        receiver = "filehelper";
+    }
+    console.log("[*] recoverUploadX0: 向 " + receiver + " 发送占位图以恢复上传通道");
+
+    if (uploadGlobalX0.equals(ptr(0))) {
+        console.log("[*] X0 当前为 0，需要先通过微信自然调用恢复");
+        // 返回 need_probe，让 Go 侧知道需要触发发送
+        return JSON.stringify({
+            action: "need_probe",
+            receiver: receiver,
+            message: "X0=0, need to send probe image via OneBot API"
+        });
+    }
+
+    // X0 已有值，直接返回就绪状态
+    console.log("[+] X0 已就绪: " + uploadGlobalX0);
+    return JSON.stringify({
+        action: "ready",
+        upload_x0: uploadGlobalX0.toString(),
+        message: "upload channel ready"
+    });
+}
+// -------------------------上传通道自愈分区-------------------------
+
 rpc.exports = {
     triggerSendImgMessage: triggerSendImgMessage,
     triggerUploadImg: triggerUploadImg,
@@ -1076,6 +1362,9 @@ rpc.exports = {
     triggerSendFileUploadMessage: triggerSendFileUploadMessage,
     triggerUploadFile: triggerUploadFile,
     triggerUploadAppAttach: triggerUploadAppAttach,
+    getUploadStatus: getUploadStatus,
+    recoverUploadX0: recoverUploadX0,
+    discoverUploadGlobalX0: discoverUploadGlobalX0,
 };
 
 // -------------------------发送图片消息分区-------------------------

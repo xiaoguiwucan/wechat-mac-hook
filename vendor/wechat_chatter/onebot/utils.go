@@ -35,8 +35,13 @@ func SaveBase64Image(base64Data string) (string, string, error) {
 	if err != nil {
 		return "", "", fmt.Errorf("base64 decode failed: %v", err)
 	}
-	salt := []byte(fmt.Sprintf("\n#md5_salt_%d_%d#", time.Now().UnixNano(), rand.Intn(10000)))
-	data = append(data, salt...)
+	// GIF/WEBP 动图不能追加 salt，否则部分微信路径会只取首帧或破坏动图语义；
+	// 普通静态图片继续追加 salt，避免同图重复发送被客户端/CDN 去重。
+	origExt := DetectFileFormat(data)
+	if origExt != "gif" && origExt != "webp" {
+		salt := []byte(fmt.Sprintf("\n#md5_salt_%d_%d#", time.Now().UnixNano(), rand.Intn(10000)))
+		data = append(data, salt...)
+	}
 
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	randomNumber := r.Intn(1000) // 生成 0-999 的随机数
@@ -186,9 +191,29 @@ func mimeToExt(mimeType string) string {
 // 如果输入已经是该格式，则直接返回
 // 返回: silkData, 时长(毫秒), error
 func ConvertToSilk(audioData []byte) ([]byte, int32, error) {
-	// 已经是tencent SILK格式 (\x02#!SILK_V3)，直接返回，时长未知设为0
+	// 已经是 tencent SILK 格式时直接返回原始数据，但必须计算时长；
+	// 微信发送语音 duration=0 会出现 1s 空语音/ret=-2/无声等问题。
 	if len(audioData) > 10 && audioData[0] == 0x02 && bytes.HasPrefix(audioData[1:], []byte("#!SILK_V3")) {
-		return audioData, 0, nil
+		pcm, err := silk.DecodeSilkBuffToPcm(audioData, 16000)
+		if err != nil {
+			return nil, 0, fmt.Errorf("decode silk duration error: %v", err)
+		}
+		durationMs := int32(int64(len(pcm)) * 1000 / (16000 * 2))
+		if durationMs <= 0 {
+			durationMs = 1000
+		}
+		return audioData, durationMs, nil
+	}
+	if len(audioData) > 9 && bytes.HasPrefix(audioData, []byte("#!SILK_V3")) {
+		pcm, err := silk.DecodeSilkBuffToPcm(audioData, 16000)
+		if err != nil {
+			return nil, 0, fmt.Errorf("decode silk duration error: %v", err)
+		}
+		durationMs := int32(int64(len(pcm)) * 1000 / (16000 * 2))
+		if durationMs <= 0 {
+			durationMs = 1000
+		}
+		return audioData, durationMs, nil
 	}
 
 	// 先用ffmpeg将输入音频转为PCM (s16le, 16000Hz, mono)
@@ -301,24 +326,41 @@ func FileToBase64(filePath string) (string, error) {
 }
 
 func SaveAudioFile(silkBytes []byte) (path string, err error) {
-	mp3Bytes, err := SilkToMp3(silkBytes)
-	if err != nil {
-		return "", err
+	if len(silkBytes) == 0 {
+		return "", fmt.Errorf("empty audio payload")
 	}
-
 	exePath, err := os.Executable()
 	if err != nil {
 		return "", err
 	}
-
+	audioDir := filepath.Dir(exePath) + "/audio"
+	if err := os.MkdirAll(audioDir, 0755); err != nil {
+		return "", err
+	}
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	randomNumber := r.Intn(1000)
 	timestamp := time.Now().Unix()
+
+	// 先把原始 SILK 落盘。即使后续转 MP3 失败，也不能让 record 消息回调失败；
+	// 后台仍可看到“已抓取语音泡”，后续再做识别/转码。
+	rawFileName := fmt.Sprintf("%d_%d.silk", randomNumber, timestamp)
+	rawPath := audioDir + "/" + rawFileName
+	if writeErr := os.WriteFile(rawPath, silkBytes, 0644); writeErr != nil {
+		return "", writeErr
+	}
+
+	mp3Bytes, err := SilkToMp3(silkBytes)
+	if err != nil {
+		Warn("SILK 转 MP3 失败，已保留原始语音泡", "err", err, "path", rawPath, "bytes", len(silkBytes))
+		return rawPath, nil
+	}
+
 	fileName := fmt.Sprintf("%d_%d.mp3", randomNumber, timestamp)
-	targetPath := filepath.Dir(exePath) + "/audio/" + fileName
+	targetPath := audioDir + "/" + fileName
 	err = os.WriteFile(targetPath, mp3Bytes, 0644)
 	if err != nil {
-		return "", err
+		Warn("MP3 写入失败，已保留原始语音泡", "err", err, "path", rawPath)
+		return rawPath, nil
 	}
 
 	return targetPath, nil
