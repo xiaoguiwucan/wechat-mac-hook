@@ -11,9 +11,49 @@ import (
 	"net/http"
 	"net/url"
 	"runtime/debug"
+	"sort"
 	"strings"
 	"time"
 )
+
+func groupMemberListHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "failed", "error": "only GET is supported"})
+		return
+	}
+	groupID := strings.TrimSpace(r.URL.Query().Get("group_id"))
+	if groupID == "" || !strings.HasSuffix(groupID, "@chatroom") {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "failed", "error": "invalid group_id"})
+		return
+	}
+	prefix := groupID + "_"
+	members := make([]map[string]any, 0)
+	userID2NicknameMap.Range(func(key, value any) bool {
+		cacheKey, ok := key.(string)
+		if !ok || !strings.HasPrefix(cacheKey, prefix) {
+			return true
+		}
+		userID := strings.TrimPrefix(cacheKey, prefix)
+		if userID == "" || strings.HasSuffix(userID, "@chatroom") {
+			return true
+		}
+		nickname, _ := value.(string)
+		members = append(members, map[string]any{
+			"group_id": groupID, "user_id": userID, "nickname": strings.TrimSpace(nickname),
+		})
+		return true
+	})
+	sort.Slice(members, func(i, j int) bool {
+		return members[i]["user_id"].(string) < members[j]["user_id"].(string)
+	})
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"status": "ok", "data": members, "count": len(members),
+		"complete": false, "source": "runtime_message_cache", "self_id": myWechatId,
+	})
+}
 
 func sendHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {

@@ -39,11 +39,14 @@ LOG_PATH = DEFAULT_HOME / "logs" / "ai-reply.log"
 PID_PATH = DEFAULT_HOME / "ai-reply.pid"
 SAFETY_STATE_PATH = DEFAULT_HOME / "safety-state.json"
 MEMORY_PATH = DEFAULT_HOME / "ai-group-memory.json"
+EVENTS_PATH = DEFAULT_HOME / "logs" / "brain-events.jsonl"
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from memory_store import MemoryStore  # noqa: E402
+from brain_engine import BrainConfig, FINAL_STATES, OpportunityScorer, ReplyScheduler, ReplyTask, TaskRegistry  # noqa: E402
+from embedding_service import EmbeddingConfig, EmbeddingService  # noqa: E402
 
 
 def now_ts() -> str:
@@ -56,6 +59,7 @@ def ensure_dirs() -> None:
 
 
 _log_lock = threading.Lock()
+_event_lock = threading.Lock()
 
 
 def log(level: str, msg: str, **fields: Any) -> None:
@@ -67,6 +71,14 @@ def log(level: str, msg: str, **fields: Any) -> None:
         with LOG_PATH.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
         print(line, flush=True)
+
+
+def emit_brain_event(event: Dict[str, Any]) -> None:
+    ensure_dirs()
+    line = json.dumps(event, ensure_ascii=False)
+    with _event_lock:
+        with EVENTS_PATH.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
 
 
 def load_json(path: Path) -> Dict[str, Any]:
@@ -195,6 +207,65 @@ class ASRConfig:
 
 
 @dataclass
+class MediaReplyConfig:
+    automatic_enabled: bool = True
+    voice_probability: float = 0.15
+    face_probability: float = 0.20
+    voice_min_fit: float = 55.0
+    face_min_fit: float = 45.0
+    min_candidate_confidence: float = 0.65
+    global_face_assets: bool = True
+    auto_media_replaces_text: bool = True
+    group_overrides: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+
+    @classmethod
+    def from_raw(cls, raw: Dict[str, Any]) -> "MediaReplyConfig":
+        value = raw.get("media_reply") if isinstance(raw.get("media_reply"), dict) else {}
+        legacy_min_fit = float(value.get("min_fit", 70))
+        return cls(
+            automatic_enabled=bool(value.get("automatic_enabled", True)),
+            voice_probability=max(0.0, min(1.0, float(value.get("voice_probability", 0.15)))),
+            face_probability=max(0.0, min(1.0, float(value.get("face_probability", 0.20)))),
+            voice_min_fit=max(0.0, min(100.0, float(value.get("voice_min_fit", legacy_min_fit if "min_fit" in value else 55)))),
+            face_min_fit=max(0.0, min(100.0, float(value.get("face_min_fit", legacy_min_fit if "min_fit" in value else 45)))),
+            min_candidate_confidence=max(0.0, min(1.0, float(value.get("min_candidate_confidence", 0.65)))),
+            global_face_assets=bool(value.get("global_face_assets", True)),
+            auto_media_replaces_text=bool(value.get("auto_media_replaces_text", True)),
+            group_overrides={str(k): dict(v) for k, v in (value.get("group_overrides") or {}).items() if isinstance(v, dict)},
+        )
+
+    def for_group(self, group_id: str) -> Dict[str, Any]:
+        result = {
+            "automatic_enabled": self.automatic_enabled,
+            "voice_probability": self.voice_probability,
+            "face_probability": self.face_probability,
+            "voice_min_fit": self.voice_min_fit,
+            "face_min_fit": self.face_min_fit,
+            "min_candidate_confidence": self.min_candidate_confidence,
+            "global_face_assets": self.global_face_assets,
+            "auto_media_replaces_text": self.auto_media_replaces_text,
+        }
+        override = dict(self.group_overrides.get(str(group_id), {}))
+        if "min_fit" in override:
+            override.setdefault("voice_min_fit", override["min_fit"])
+            override.setdefault("face_min_fit", override["min_fit"])
+            override.pop("min_fit", None)
+        result.update(override)
+        return result
+
+
+@dataclass
+class ReplyDecision:
+    text: str = ""
+    medium: str = "text"
+    voice_fit: float = 0.0
+    face_fit: float = 0.0
+    media_query: str = ""
+    intent: str = ""
+    reason: str = ""
+
+
+@dataclass
 class AppConfig:
     enabled: bool = True
     listen_host: str = "127.0.0.1"
@@ -206,6 +277,7 @@ class AppConfig:
     ignore_prefixes: List[str] = field(default_factory=lambda: ["AI：", "AI:", "🤖"])
     allowed_user_ids: List[str] = field(default_factory=list)
     ignored_user_ids: List[str] = field(default_factory=list)
+    ignored_group_members: Dict[str, List[str]] = field(default_factory=dict)
     ignore_self_messages: bool = False
     trigger_keywords: List[str] = field(default_factory=list)
     require_keyword: bool = False
@@ -221,6 +293,9 @@ class AppConfig:
     ai: AIConfig = field(default_factory=AIConfig)
     vision_ocr: VisionOCRConfig = field(default_factory=VisionOCRConfig)
     asr: ASRConfig = field(default_factory=ASRConfig)
+    media_reply: MediaReplyConfig = field(default_factory=MediaReplyConfig)
+    brain: BrainConfig = field(default_factory=BrainConfig)
+    embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
 
     @classmethod
     def from_file(cls, path: Path) -> "AppConfig":
@@ -308,6 +383,13 @@ class AppConfig:
             ignore_prefixes=list(raw.get("ignore_prefixes", ["AI：", "AI:", "🤖"])),
             allowed_user_ids=[str(x) for x in raw.get("allowed_user_ids", [])],
             ignored_user_ids=[str(x) for x in raw.get("ignored_user_ids", [])],
+            ignored_group_members={
+                str(group_id): sorted({str(user_id) for user_id in user_ids if str(user_id).strip()})
+                for group_id, user_ids in (
+                    raw.get("ignored_group_members", {}) if isinstance(raw.get("ignored_group_members"), dict) else {}
+                ).items()
+                if str(group_id).endswith("@chatroom") and isinstance(user_ids, list)
+            },
             ignore_self_messages=env_bool("AI_REPLY_IGNORE_SELF", bool(raw.get("ignore_self_messages", False))),
             trigger_keywords=[str(x) for x in raw.get("trigger_keywords", [])],
             require_keyword=env_bool("AI_REPLY_REQUIRE_KEYWORD", bool(raw.get("require_keyword", False))),
@@ -347,6 +429,9 @@ class AppConfig:
                 language=str(asr_raw.get("language") or "zh"),
                 prompt=str(asr_raw.get("prompt") or ""),
             ),
+            media_reply=MediaReplyConfig.from_raw(raw),
+            brain=BrainConfig.from_raw(raw),
+            embedding=EmbeddingConfig.from_raw(raw),
         )
 
 
@@ -371,20 +456,39 @@ class OneBotEvent:
 class AIReplyService:
     def __init__(self, cfg: AppConfig):
         self.cfg = cfg
-        self.events: "queue.Queue[OneBotEvent]" = queue.Queue(maxsize=200)
         self.media_events: "queue.Queue[OneBotEvent]" = queue.Queue(maxsize=300)
+        self.culture_events: "queue.Queue[OneBotEvent]" = queue.Queue(maxsize=100)
         self.stop_event = threading.Event()
         self.seen: Dict[str, float] = {}
         self.last_reply_at: Dict[str, float] = {}
         self.channel_unavailable_until: Dict[str, float] = {}
+        self.state_lock = threading.RLock()
+        self.memory_file_lock = threading.RLock()
+        self.channel_state_lock = threading.RLock()
+        self.culture_state_lock = threading.RLock()
+        self.culture_pending: set[str] = set()
+        self.culture_message_counts: Dict[str, int] = collections.defaultdict(int)
+        self.culture_last_run: Dict[str, float] = collections.defaultdict(float)
+        self.history_locks: Dict[str, threading.RLock] = collections.defaultdict(threading.RLock)
+        self.send_locks: Dict[str, threading.RLock] = collections.defaultdict(threading.RLock)
+        self.model_semaphore = threading.BoundedSemaphore(cfg.brain.model_concurrency)
+        self.media_send_semaphore = threading.BoundedSemaphore(1)
         self.histories: Dict[str, Deque[Tuple[str, str]]] = collections.defaultdict(
             lambda: collections.deque(maxlen=max(2, self.cfg.memory.max_turns if self.cfg.memory.enabled else self.cfg.max_context_messages))
         )
         self.recent_errors: Deque[Dict[str, Any]] = collections.deque(maxlen=30)
         self.store = MemoryStore()
+        try:
+            self.store.rebuild_face_assets()
+        except Exception as exc:
+            log("warning", "face_index_bootstrap_failed", error=str(exc))
         self.load_memory()
-        self.worker = threading.Thread(target=self._worker_loop, name="ai-reply-worker", daemon=True)
+        self.task_registry = TaskRegistry(self.store, emit_brain_event)
+        self.scorer = OpportunityScorer(cfg.brain)
+        self.embedding_service = EmbeddingService(self.store, cfg.embedding, emit_brain_event)
+        self.scheduler = ReplyScheduler(cfg.brain, self.task_registry)
         self.media_worker = threading.Thread(target=self._media_worker_loop, name="ai-media-worker", daemon=True)
+        self.culture_worker = threading.Thread(target=self._culture_worker_loop, name="culture-learner", daemon=True)
 
     def load_memory(self) -> None:
         if not self.cfg.memory.enabled:
@@ -404,15 +508,64 @@ class AIReplyService:
     def save_memory(self) -> None:
         if not self.cfg.memory.enabled:
             return
-        ensure_dirs()
-        data = {"updated_at": now_ts(), "histories": {gid: list(rows)[-self.cfg.memory.max_turns:] for gid, rows in self.histories.items()}}
-        tmp = MEMORY_PATH.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp, MEMORY_PATH)
+        with self.memory_file_lock:
+            ensure_dirs()
+            data = {"updated_at": now_ts(), "histories": {gid: list(rows)[-self.cfg.memory.max_turns:] for gid, rows in self.histories.items()}}
+            tmp = MEMORY_PATH.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(tmp, MEMORY_PATH)
 
     def start(self) -> None:
-        self.worker.start()
+        self.scheduler.start()
+        self.embedding_service.start()
         self.media_worker.start()
+        self.culture_worker.start()
+
+    def stop(self) -> None:
+        self.stop_event.set()
+        self.scheduler.stop()
+        self.embedding_service.stop()
+
+    def reload_config(self, cfg: AppConfig) -> Dict[str, Any]:
+        """Apply mutable configuration without replacing the running process."""
+        with self.state_lock:
+            old_brain = self.cfg.brain
+            self.cfg = cfg
+            self.scorer.cfg = cfg.brain
+            self.scheduler.reconfigure(cfg.brain)
+            self.embedding_service.cfg = cfg.embedding
+            if old_brain.model_concurrency != cfg.brain.model_concurrency:
+                self.model_semaphore = threading.BoundedSemaphore(cfg.brain.model_concurrency)
+        emit_brain_event({"type": "service_status", "time": time.time(), "event": "config_reloaded",
+                          "brain": self.brain_status(), "pid": os.getpid()})
+        return {"pid": os.getpid(), "brain": self.brain_status()}
+
+    def brain_status(self) -> Dict[str, Any]:
+        scheduler = self.scheduler.snapshot()
+        tasks = self.task_registry.snapshot(200)
+        return {
+            "scheduler": scheduler,
+            "tasks": tasks,
+            "embedding": self.embedding_service.snapshot(),
+            "media_queue": self.media_events.qsize(),
+            "culture_queue": self.culture_events.qsize(),
+            "media_channel_waiting": max(0, sum(
+                1 for item in tasks.get("items", []) if item.get("state") == "waiting_media_channel"
+            )),
+            "reply_strategy": {
+                "mode": self.cfg.brain.mode,
+                "threshold": self.cfg.brain.threshold,
+                "scoring_mode": self.cfg.brain.scoring_mode,
+                "rerank_candidates": self.cfg.brain.rerank_candidates,
+                "factor_weights": self.cfg.brain.factor_weights,
+                "modifiers": self.cfg.brain.modifiers,
+            },
+            "retrieval": {
+                "vector_limit": self.cfg.embedding.vector_limit, "fts_limit": self.cfg.embedding.fts_limit,
+                "fusion_limit": self.cfg.embedding.fusion_limit, "adaptive_rerank": self.cfg.embedding.adaptive_rerank,
+            },
+            "media_reply": self.cfg.media_reply.for_group(""),
+        }
 
     def enqueue_raw(self, raw: Dict[str, Any], signature: str = "") -> Tuple[bool, str]:
         evt, reason = self.parse_event(raw)
@@ -433,14 +586,10 @@ class AIReplyService:
             self.apply_voice_transcript(evt)
             if not self.should_reply(evt):
                 return False, "voice_transcript_indexed"
-            try:
-                self.events.put_nowait(evt)
-                log("info", "voice_transcript_queued", group_id=evt.group_id,
-                    message_id=evt.message_id, trace_id=evt.trace_id, text=transcript[:240])
-                return True, "voice_transcript_queued"
-            except queue.Full:
-                log("error", "queue_full", group_id=evt.group_id, message_id=evt.message_id, trace_id=evt.trace_id)
-                return False, "queue_full"
+            task = self.scheduler.submit(evt, self.handle_brain_task)
+            log("info", "voice_transcript_queued", group_id=evt.group_id,
+                message_id=evt.message_id, trace_id=evt.trace_id, task_id=task.task_id, text=transcript[:240])
+            return True, "voice_transcript_queued"
         self.persist_incoming(evt)
         if self.should_queue_media_analysis(evt):
             try:
@@ -453,12 +602,8 @@ class AIReplyService:
             return False, "media_only_indexed"
         if not self.should_reply(evt):
             return False, "ignored"
-        try:
-            self.events.put_nowait(evt)
-            return True, "queued"
-        except queue.Full:
-            log("error", "queue_full", group_id=evt.group_id, message_id=evt.message_id)
-            return False, "queue_full"
+        task = self.scheduler.submit(evt, self.handle_brain_task)
+        return True, "queued:" + task.task_id
 
     def persist_incoming(self, evt: OneBotEvent) -> None:
         sender = evt.raw.get("sender") if isinstance(evt.raw.get("sender"), dict) else {}
@@ -484,6 +629,7 @@ class AIReplyService:
             })
             if inserted:
                 log("debug", "message_persisted", group_id=evt.group_id, trace_id=evt.trace_id, message_id=evt.message_id)
+                self.schedule_culture_learning(evt)
         except Exception as exc:
             log("error", "message_persist_error", group_id=evt.group_id, trace_id=evt.trace_id, error=str(exc))
 
@@ -559,6 +705,12 @@ class AIReplyService:
             return None, "no_text"
 
         sender = raw.get("sender") or {}
+        user_id = str(raw.get("user_id") or sender.get("user_id") or "")
+        sender_name = self.store.resolve_member_name(
+            group_id,
+            user_id,
+            str(sender.get("nickname") or sender.get("card") or ""),
+        )
         message_id = str(raw.get("message_id") or "")
         raw_message = str(raw.get("raw_message") or "")
         event_id_src = f"{group_id}|{message_id}|{raw.get('time')}|{text}|{','.join(media_types)}"
@@ -569,8 +721,8 @@ class AIReplyService:
             group_id=group_id,
             group_name=self.cfg.target_groups.get(group_id, group_id),
             self_id=str(raw.get("self_id") or ""),
-            user_id=str(raw.get("user_id") or sender.get("user_id") or ""),
-            sender_name=str(sender.get("nickname") or sender.get("card") or raw.get("user_id") or ""),
+            user_id=user_id,
+            sender_name=sender_name,
             text=text,
             raw_message=raw_message,
             message_id=message_id,
@@ -583,14 +735,14 @@ class AIReplyService:
 
     def should_reply(self, evt: OneBotEvent) -> bool:
         now = time.time()
-        # Compact dedupe cache.
-        if len(self.seen) > 1000:
-            cutoff = now - 3600
-            self.seen = {k: v for k, v in self.seen.items() if v >= cutoff}
-        if evt.event_id in self.seen:
-            log("debug", "duplicate_event", group_id=evt.group_id, message_id=evt.message_id, trace_id=evt.trace_id)
-            return False
-        self.seen[evt.event_id] = now
+        with self.state_lock:
+            if len(self.seen) > 1000:
+                cutoff = now - 3600
+                self.seen = {k: v for k, v in self.seen.items() if v >= cutoff}
+            if evt.event_id in self.seen:
+                log("debug", "duplicate_event", group_id=evt.group_id, message_id=evt.message_id, trace_id=evt.trace_id)
+                return False
+            self.seen[evt.event_id] = now
 
         if self.cfg.log_all_group_messages:
             log("info", "group_message_seen", group_id=evt.group_id, group_name=evt.group_name,
@@ -614,6 +766,12 @@ class AIReplyService:
         if self.cfg.ignored_user_ids and evt.user_id in self.cfg.ignored_user_ids:
             log("info", "sender_ignored_skip", group_id=evt.group_id, user_id=evt.user_id, trace_id=evt.trace_id)
             return False
+        group_ignored = self.cfg.ignored_group_members.get(evt.group_id, [])
+        if evt.user_id in group_ignored:
+            log("info", "group_member_blacklisted_skip", group_id=evt.group_id,
+                group_name=evt.group_name, user_id=evt.user_id, sender=evt.sender_name,
+                message_id=evt.message_id, trace_id=evt.trace_id)
+            return False
         stripped = evt.text.strip()
         for p in self.cfg.ignore_prefixes:
             if p and stripped.startswith(p):
@@ -623,12 +781,6 @@ class AIReplyService:
             if not any(k and k in stripped for k in self.cfg.trigger_keywords):
                 log("info", "keyword_skip", group_id=evt.group_id, text=stripped[:120], trace_id=evt.trace_id)
                 return False
-        # If keywords are configured but not required, remove keyword from prompt only logically; still reply to all.
-        last = self.last_reply_at.get(evt.group_id, 0.0)
-        if now - last < self.cfg.min_seconds_between_replies_per_group:
-            log("info", "cooldown_skip", group_id=evt.group_id, seconds=round(now - last, 3), trace_id=evt.trace_id)
-            return False
-        self.last_reply_at[evt.group_id] = now
         return True
 
     def should_queue_media_analysis(self, evt: OneBotEvent) -> bool:
@@ -638,19 +790,205 @@ class AIReplyService:
         has_record = any(x == "record" for x in evt.media_types)
         return (has_image and self.cfg.vision_ocr.auto_analyze) or (has_record and self.cfg.asr.auto_transcribe)
 
-    def _worker_loop(self) -> None:
+    def schedule_culture_learning(self, evt: OneBotEvent) -> None:
+        """Extract permanent aliases, relationships and memes every 30 messages/15 minutes."""
+        with self.culture_state_lock:
+            self.culture_message_counts[evt.group_id] += 1
+            due_count = self.culture_message_counts[evt.group_id] >= 30
+            due_time = time.time() - self.culture_last_run[evt.group_id] >= 900
+            if (not due_count and not due_time) or evt.group_id in self.culture_pending:
+                return
+            try:
+                self.culture_events.put_nowait(evt)
+            except queue.Full:
+                return
+            self.culture_pending.add(evt.group_id)
+            self.culture_message_counts[evt.group_id] = 0
+
+    def _culture_worker_loop(self) -> None:
         while not self.stop_event.is_set():
             try:
-                evt = self.events.get(timeout=0.5)
+                evt = self.culture_events.get(timeout=0.5)
             except queue.Empty:
                 continue
             try:
-                self.handle_event(evt)
-            except Exception as e:
-                self.recent_errors.append({"time": now_ts(), "error": str(e), "group_id": evt.group_id, "trace_id": evt.trace_id})
-                log("error", "handle_event_exception", error=str(e), traceback=traceback.format_exc(), trace_id=evt.trace_id, group_id=evt.group_id)
+                self.learn_group_culture(evt)
+            except Exception as exc:
+                log("error", "culture_learning_failed", group_id=evt.group_id, error=str(exc), trace_id=evt.trace_id)
             finally:
-                self.events.task_done()
+                with self.culture_state_lock:
+                    self.culture_pending.discard(evt.group_id)
+                    self.culture_last_run[evt.group_id] = time.time()
+                self.culture_events.task_done()
+
+    def learn_group_culture(self, evt: OneBotEvent) -> None:
+        rows = self.store.recent_context(evt.group_id, 100)
+        if len(rows) < 3:
+            return
+        transcript = "\n".join(
+            f"[{row.get('message_id')}] {row.get('user_id')}({row.get('sender_name')}): "
+            f"{str(row.get('text') or row.get('raw_message') or '')[:400]}"
+            for row in rows
+        )
+        prompt = (
+            "从微信群记录中提取可永久保存的群文化。只输出JSON，结构为"
+            '{"aliases":[{"user_id":"","alias":"","confidence":0-1,"evidence":[]}],'
+            '"relations":[{"from_user_id":"","to_user_id":"","relation":"","confidence":0-1,"evidence":[]}],'
+            '"memes":[{"name":"","meaning":"","triggers":[],"confidence":0-1,"evidence":[],"related_media":[]}]}。'
+            "置信度仅用于排序，所有有文本证据的结果都保留；不要根据否定反馈删除或停用旧记录。\n" + transcript
+        )
+        reply, model = self.request_messages([
+            {"role": "system", "content": "你是群聊历史整理器，保留外号、关系、群梗与经典说法。"},
+            {"role": "user", "content": prompt},
+        ], 1200, 0.0, evt)
+        if not reply:
+            return
+        cleaned = re.sub(r"^```(?:json)?|```$", "", reply.strip(), flags=re.I).strip()
+        start, end = cleaned.find("{"), cleaned.rfind("}")
+        obj = json.loads(cleaned[start:end + 1])
+        counts = {"aliases": 0, "relations": 0, "memes": 0}
+        for item in obj.get("aliases") or []:
+            if item.get("user_id") and item.get("alias"):
+                self.store.upsert_alias(evt.group_id, str(item["user_id"]), str(item["alias"]),
+                                        float(item.get("confidence") or 0), list(item.get("evidence") or []))
+                counts["aliases"] += 1
+        for item in obj.get("relations") or []:
+            if item.get("from_user_id") and item.get("to_user_id") and item.get("relation"):
+                self.store.upsert_relation(evt.group_id, str(item["from_user_id"]), str(item["to_user_id"]),
+                                           str(item["relation"]), float(item.get("confidence") or 0),
+                                           list(item.get("evidence") or []))
+                counts["relations"] += 1
+        for item in obj.get("memes") or []:
+            if item.get("name"):
+                self.store.upsert_meme(evt.group_id, str(item["name"]), str(item.get("meaning") or ""),
+                                       list(item.get("triggers") or []), list(item.get("evidence") or []),
+                                       list(item.get("related_media") or []), float(item.get("confidence") or 0))
+                counts["memes"] += 1
+        emit_brain_event({"type": "model_task", "time": time.time(), "event": "culture_learned",
+                          "group_id": evt.group_id, "model": model, "counts": counts})
+
+    def handle_brain_task(self, task: ReplyTask, evt: OneBotEvent) -> None:
+        registry = self.task_registry
+        pipeline_started = time.monotonic()
+        explicit_command = re.search(r"(?:^|\s)/(?:发语音|发表情)\b", str(evt.text or ""))
+        if explicit_command:
+            evt.raw["_brain_task_id"] = task.task_id
+            registry.update(task, "selecting_voice" if "发语音" in explicit_command.group(0) else "selecting_face")
+            self.handle_event(evt)
+            if task.state not in FINAL_STATES:
+                registry.update(task, "completed", result=task.result or "media_sent")
+            return
+        registry.update(task, "scoring", threshold=self.cfg.brain.threshold)
+        recent = self.store.recent_context(evt.group_id, 30)
+        last_outgoing = next((x for x in reversed(recent) if x.get("direction") == "outgoing"), None)
+        last_bot_reply = None
+        recent_tasks = self.store.reply_tasks(evt.group_id, 100)
+        latest_completed = next((x for x in recent_tasks if x.get("state") == "completed"), None)
+        if last_outgoing:
+            last_bot_reply = {"user_id": str((latest_completed or {}).get("user_id") or ""),
+                              "event_time": last_outgoing.get("event_time")}
+
+        prefilter_started = time.monotonic()
+        prefilter = self.scorer.local_score(evt, recent, {"items": [], "culture": {}}, last_bot_reply)
+        prefilter_ms = (time.monotonic() - prefilter_started) * 1000
+        prefilter_threshold = min(20.0, float(self.cfg.brain.threshold))
+        if not prefilter["mandatory"] and float(prefilter["pre_score"]) < prefilter_threshold:
+            registry.update(task, "skipped", score=float(prefilter["pre_score"]), details={
+                "local": prefilter, "reason": "local_prefilter", "prefilter_threshold": prefilter_threshold,
+                "timings_ms": {"prefilter": round(prefilter_ms, 1), "pre_generation_total": round((time.monotonic() - pipeline_started) * 1000, 1)},
+            })
+            return
+
+        registry.update(task, "retrieving_memory")
+        memory = self.embedding_service.search(
+            evt.text, evt.group_id, 12,
+            stage_callback=lambda state: registry.update(task, state),
+            rerank_candidates=self.cfg.brain.rerank_candidates,
+            context_messages=recent[-4:],
+            sender_name=evt.sender_name,
+        )
+        task.details = {**task.details, "memory_count": len(memory.get("items") or []),
+                        "embedding_error": memory.get("error", "")}
+        scoring_started = time.monotonic()
+        local = self.scorer.local_score(evt, recent, memory, last_bot_reply)
+        if self.cfg.brain.scoring_mode == "model_deep":
+            factors, score_reason, score_model = self.score_reply_opportunity(evt, recent, memory, local)
+        else:
+            factors, score_reason = self.scorer.local_factors(evt, recent, memory, local, last_bot_reply)
+            score_model = "local-fast"
+        score = self.scorer.final_score(factors, local.get("reasons") or [])
+        scoring_ms = (time.monotonic() - scoring_started) * 1000
+        timings = {"prefilter": round(prefilter_ms, 1), **(memory.get("timings_ms") or {}),
+                   "scoring": round(scoring_ms, 1),
+                   "pre_generation_total": round((time.monotonic() - pipeline_started) * 1000, 1)}
+        task.details = {"local": local, "factors": factors, "score_reason": score_reason,
+                        "scoring_mode": self.cfg.brain.scoring_mode, "timings_ms": timings,
+                        "recalled_count": memory.get("recalled_count", 0),
+                        "reranked_count": memory.get("reranked_count", 0),
+                        "route_counts": memory.get("route_counts", {}),
+                        "pinned_count": memory.get("pinned_count", 0),
+                        "expanded_second_batch": memory.get("expanded_second_batch", False),
+                        "rerank_skipped_reason": memory.get("rerank_skipped_reason", ""),
+                        "rerank_cache_hits": memory.get("rerank_cache_hits", 0),
+                        "memory": [{k: v for k, v in x.items() if k != "vector_blob"} for x in (memory.get("items") or [])[:12]]}
+        registry.update(task, "scoring", score=score, threshold=self.cfg.brain.threshold, model=score_model, details=task.details)
+        if score < self.cfg.brain.threshold:
+            task.details = {
+                **task.details,
+                "threshold_gate": "below_threshold",
+                "below_threshold": True,
+                "trigger_was_mandatory": bool(local.get("mandatory")),
+            }
+            registry.update(task, "skipped", result="score_below_threshold", details=task.details)
+            log("info", "score_below_threshold_skip", group_id=evt.group_id,
+                user_id=evt.user_id, sender=evt.sender_name, score=score,
+                threshold=self.cfg.brain.threshold, mandatory=bool(local.get("mandatory")),
+                alias_hit=str(local.get("alias_hit") or ""), task_id=task.task_id,
+                message_id=evt.message_id, trace_id=evt.trace_id)
+            return
+
+        evt.raw["_brain_memory"] = memory
+        evt.raw["_brain_score"] = {"score": score, "factors": factors, "reason": score_reason}
+        evt.raw["_brain_task_id"] = task.task_id
+        registry.update(task, "generating")
+        self.handle_event(evt)
+        if task.state not in FINAL_STATES:
+            registry.update(task, "completed", result=task.result or "sent")
+
+    def score_reply_opportunity(self, evt: OneBotEvent, recent: List[Dict[str, Any]],
+                                memory: Dict[str, Any], local: Dict[str, Any]) -> Tuple[Dict[str, float], str, str]:
+        defaults = {key: float(local.get("pre_score") or 50) for key in self.cfg.brain.factor_weights}
+        context = []
+        for row in recent[-12:]:
+            context.append(f"{row.get('sender_name') or row.get('user_id')}: {str(row.get('text') or row.get('raw_message') or '')[:240]}")
+        recalled = [str(x.get("text") or x.get("raw_message") or "")[:300] for x in (memory.get("items") or [])[:8]]
+        culture = memory.get("culture") or {}
+        prompt = (
+            "你是微信群社交机会评分器。只输出一个JSON对象，不要Markdown。评分均为0到100。"
+            "不要因为消息指向其他成员、机器人刚说过话、机器人消息占比、严肃语境、素材或梗近期使用过而扣分。"
+            "字段必须是 involvement,continuity,memory,value,humor,emotion,timing,reason。\n"
+            "involvement评估提到机器人、承接其观点及对成员/话题熟悉度；continuity评估追问、未结束问题、语义承接和引用；"
+            "memory评估外号、关系、群梗、经典原话、旧图片语音和历史事件；value评估新观点、补充、纠错和有价值反应；"
+            "humor评估反差、包袱、回怼、翻旧梗、新梗空间和熟人关系；emotion只判断怎样表达符合气氛，不直接扣接话分；"
+            "timing评估消息是否说完、上下文是否完整及是否值得等待。\n"
+            f"当前消息：{evt.sender_name}: {evt.text}\n最近对话：\n" + "\n".join(context) +
+            "\n相关永久记忆：\n" + "\n".join(recalled) +
+            "\n外号/关系/群梗：" + json.dumps(culture, ensure_ascii=False)[:2500]
+        )
+        reply, model = self.request_messages([
+            {"role": "system", "content": "你只负责评估是否值得像群内熟人一样接话。"},
+            {"role": "user", "content": prompt},
+        ], max_tokens=320, temperature=0.0, evt=evt)
+        if not reply:
+            return defaults, "model_score_unavailable", model
+        try:
+            cleaned = re.sub(r"^```(?:json)?|```$", "", reply.strip(), flags=re.I).strip()
+            start, end = cleaned.find("{"), cleaned.rfind("}")
+            obj = json.loads(cleaned[start:end + 1])
+            factors = {key: max(0.0, min(100.0, float(obj.get(key, defaults[key])))) for key in defaults}
+            return factors, str(obj.get("reason") or ""), model
+        except Exception:
+            return defaults, "model_score_parse_fallback", model
 
     def _media_worker_loop(self) -> None:
         while not self.stop_event.is_set():
@@ -878,11 +1216,12 @@ class AIReplyService:
         if not self.should_reply(voice_evt):
             return
         try:
-            self.events.put_nowait(voice_evt)
+            task = self.scheduler.submit(voice_evt, self.handle_brain_task)
             log("info", "voice_asr_transcript_queued", group_id=evt.group_id, media_id=media_id,
-                message_id=evt.message_id, trace_id=voice_evt.trace_id, text=transcript[:240])
-        except queue.Full:
-            log("error", "queue_full", group_id=evt.group_id, message_id=evt.message_id, trace_id=voice_evt.trace_id)
+                message_id=evt.message_id, trace_id=voice_evt.trace_id, task_id=task.task_id, text=transcript[:240])
+        except Exception as exc:
+            log("error", "voice_asr_queue_failed", group_id=evt.group_id, message_id=evt.message_id,
+                trace_id=voice_evt.trace_id, error=str(exc))
 
     def analyze_event_media(self, evt: OneBotEvent) -> None:
         image_items = [x for x in self.store.media_by_event(evt.event_id) if x.get("media_type") == "image"]
@@ -1039,7 +1378,7 @@ class AIReplyService:
             candidates = self.store.search_voice_items(query, limit=max(1, limit))
         return candidates
 
-    def select_voice_pack_item(self, query: str) -> Dict[str, Any]:
+    def select_voice_pack_item(self, query: str, evt: Optional[OneBotEvent] = None) -> Dict[str, Any]:
         raw_query = re.sub(r"^/发语音", "", str(query or "")).strip()
         if raw_query:
             exact_rows = self.store.voice_items(query=raw_query, limit=30)
@@ -1063,18 +1402,53 @@ class AIReplyService:
         candidates = self.voice_pack_candidates(query, limit=1)
         if candidates:
             return candidates[0]
+        memory = evt.raw.get("_brain_memory") if evt and isinstance(evt.raw, dict) else {}
+        vector_candidates = [
+            row for row in (memory.get("asset_candidates") or []) if isinstance(memory, dict)
+            if row.get("object_type") == "voice_pack"
+            and float(row.get("vector_score") or 0) >= self.cfg.media_reply.min_candidate_confidence
+        ]
+        vector_candidates.sort(key=lambda row: float(row.get("vector_score") or 0), reverse=True)
+        if vector_candidates:
+            return {**vector_candidates[0], "match_score": 0, "match_reason": "向量语义匹配"}
         return {}
 
-    def send_voice_pack_tool(self, evt: OneBotEvent, query: str, quiet: bool = False) -> str:
+    @staticmethod
+    def voice_candidate_confidence(item: Dict[str, Any]) -> float:
+        if not item:
+            return 0.0
+        lexical = float(item.get("match_score") or 0)
+        vector = max(0.0, float(item.get("vector_score") or 0))
+        if lexical >= 1200:
+            return 1.0
+        if lexical >= 900:
+            return 0.94
+        if lexical >= 280:
+            return 0.80
+        if lexical >= 150:
+            return 0.72
+        if lexical >= 75:
+            return 0.65
+        return min(0.9, vector) if vector else 0.0
+
+    def send_voice_pack_tool(self, evt: OneBotEvent, query: str, quiet: bool = False,
+                             selected_item: Optional[Dict[str, Any]] = None) -> str:
         if not self.tool_allowed("send_voice_pack"):
-            return "语音包发送工具未启用。"
+            return "__MEDIA_FAILED__" if quiet else "语音包发送工具未启用。"
         requested = (query or evt.text or "").strip()
         q = "你好" if self.generic_voice_pack_request(requested) else (self.clean_voice_pack_query(requested) or requested)
-        item = self.select_voice_pack_item(q)
+        item = selected_item or self.select_voice_pack_item(q, evt)
         if not item:
-            return f"没有匹配到“{q[:80]}”对应的语音内容，请换一个更接近文件名的说法。"
+            return "__MEDIA_FAILED__" if quiet else f"没有匹配到“{q[:80]}”对应的语音内容，请换一个更接近文件名的说法。"
+        task = self._task_for_event(evt)
+        if task:
+            self.task_registry.update(task, "selecting_voice", medium="voice")
+            self.task_registry.update(task, "waiting_media_channel")
         try:
-            self.post_web_admin("/api/voicepacks/send", {"group_id": evt.group_id, "id": item["id"]}, timeout=90)
+            with self.media_send_semaphore:
+                if task:
+                    self.task_registry.update(task, "sending", medium="voice")
+                self.post_web_admin("/api/voicepacks/send", {"group_id": evt.group_id, "id": item["id"]}, timeout=90)
             log("info", "voice_pack_sent", group_id=evt.group_id, voice_id=item["id"],
                 title=item.get("title"), query=q, trace_id=evt.trace_id)
             if quiet:
@@ -1093,9 +1467,14 @@ class AIReplyService:
             ))
             if recoverable_media_error:
                 try:
-                    self.post_web_admin("/api/onebot/media-repair", {}, timeout=30)
-                    time.sleep(1.5)
-                    self.post_web_admin("/api/voicepacks/send", {"group_id": evt.group_id, "id": item["id"]}, timeout=90)
+                    if task:
+                        self.task_registry.update(task, "waiting_media_channel", error="首次上传失败，正在自修复")
+                    with self.media_send_semaphore:
+                        self.post_web_admin("/api/onebot/media-repair", {}, timeout=30)
+                        time.sleep(1.5)
+                        if task:
+                            self.task_registry.update(task, "sending", medium="voice", error="")
+                        self.post_web_admin("/api/voicepacks/send", {"group_id": evt.group_id, "id": item["id"]}, timeout=90)
                     log("info", "voice_pack_sent_after_media_repair", group_id=evt.group_id, voice_id=item["id"],
                         title=item.get("title"), query=q, trace_id=evt.trace_id)
                     if quiet:
@@ -1104,46 +1483,76 @@ class AIReplyService:
                 except Exception as retry_exc:
                     log("error", "voice_pack_send_retry_failed", group_id=evt.group_id, voice_id=item.get("id"),
                         error=str(retry_exc), trace_id=evt.trace_id)
-                    if quiet:
-                        return "__NO_TEXT_REPLY__"
-                    return "语音通道已触发后台自修复；本次语音发送仍未完成。"
-            return "语音通道暂时不可用，已降级为文字回复。"
+                    return "__MEDIA_FAILED__" if quiet else "语音通道自修复后仍未发送成功。"
+            return "__MEDIA_FAILED__" if quiet else "语音通道暂时不可用。"
 
-    def send_face_pack_tool(self, evt: OneBotEvent, query: str, quiet: bool = False) -> str:
+    def select_face_pack_item(self, evt: OneBotEvent, query: str) -> Dict[str, Any]:
+        q = re.sub(r"^/发表情", "", str(query or "")).strip() or "搞笑"
+        rows = self.store.search_face_assets(
+            q, evt.group_id, limit=8, global_shared=self.cfg.media_reply.global_face_assets
+        )
+        if rows:
+            return rows[0]
+        memory = evt.raw.get("_brain_memory") if isinstance(evt.raw, dict) else {}
+        candidates = []
+        for row in (memory.get("asset_candidates") or []) if isinstance(memory, dict) else []:
+            if row.get("object_type") != "face_asset":
+                continue
+            score = float(row.get("vector_score") or 0)
+            if score >= self.cfg.media_reply.min_candidate_confidence:
+                candidates.append({**row, "match_score": score, "match_reason": "向量语义匹配"})
+        candidates.sort(key=lambda row: float(row.get("match_score") or 0), reverse=True)
+        return candidates[0] if candidates else {}
+
+    def send_face_pack_tool(self, evt: OneBotEvent, query: str, quiet: bool = False,
+                            selected_item: Optional[Dict[str, Any]] = None) -> str:
         if not self.tool_allowed("send_face_pack"):
-            return "表情包发送工具未启用。"
+            return "__MEDIA_FAILED__" if quiet else "表情包发送工具未启用。"
         q = (query or evt.text or "").strip()
         q = re.sub(r"^/发表情", "", q).strip()
-        rows = self.store.media(evt.group_id, "image", limit=1, query=q or "表情包")
-        if not rows:
-            rows = self.store.media(evt.group_id, "image", limit=1)
-        if not rows:
-            return "当前群还没有可用的表情/图片素材。"
-        item = rows[0]
+        item = selected_item or self.select_face_pack_item(evt, q)
+        if not item:
+            log("warning", "face_pack_no_match", group_id=evt.group_id, query=q, trace_id=evt.trace_id)
+            return "__MEDIA_FAILED__" if quiet else "没有找到语义足够匹配的表情素材。"
         file_value = str(item.get("file") or item.get("url") or "")
         if not file_value:
-            return "选中的表情素材没有本地文件，无法发送。"
+            return "__MEDIA_FAILED__" if quiet else "选中的表情素材没有本地文件，无法发送。"
+        task = self._task_for_event(evt)
+        if task:
+            self.task_registry.update(task, "selecting_face", medium="face")
+            self.task_registry.update(task, "waiting_media_channel")
         try:
-            self.post_web_admin("/api/faces/send", {"group_id": evt.group_id, "id": item["id"]}, timeout=90)
-            log("info", "face_pack_sent", group_id=evt.group_id, media_id=item["id"],
+            with self.media_send_semaphore:
+                if task:
+                    self.task_registry.update(task, "sending", medium="face")
+                result = self.post_web_admin("/api/faces/send", {
+                    "group_id": evt.group_id, "face_id": item["id"], "trace_id": evt.trace_id,
+                    "query": q, "reason": item.get("match_reason", ""),
+                }, timeout=22)
+                if str(result.get("state") or "") not in {"sent", "timeout_confirmed"}:
+                    raise RuntimeError(str(result.get("error") or "表情发送未确认"))
+            log("info", "face_pack_sent", group_id=evt.group_id, face_id=item["id"],
+                media_id=item.get("canonical_media_id"), send_state=result.get("state"),
                 summary=str(item.get("image_summary") or "")[:120], trace_id=evt.trace_id)
             if quiet:
                 return "__NO_TEXT_REPLY__"
             desc = item.get("image_summary") or item.get("ocr_text") or f"#{item.get('id')}"
             return f"已发送表情素材：{str(desc)[:60]}"
         except Exception as exc:
-            log("error", "face_pack_send_failed", group_id=evt.group_id, media_id=item.get("id"),
+            log("error", "face_pack_send_failed", group_id=evt.group_id, face_id=item.get("id"),
                 error=str(exc), trace_id=evt.trace_id)
-            return f"表情发送失败：{str(exc)[:160]}"
+            return "__MEDIA_FAILED__" if quiet else f"表情发送失败：{str(exc)[:160]}"
 
     def command_reply(self, evt: OneBotEvent) -> Optional[str]:
         text = evt.text.strip()
+        text = re.sub(r"^@\S+\s*", "", text).strip()
         if not text.startswith("/"):
             return None
         if text == "/状态" and self.tool_allowed("get_status"):
+            scheduler = self.scheduler.snapshot()
             return (
                 f"状态：AI={'启用' if self.cfg.enabled else '停用'}，dry_run={self.cfg.dry_run}，"
-                f"队列={self.events.qsize()}，授权群={len(self.cfg.target_groups)}，"
+                f"队列={scheduler['queued']}，活动线程={scheduler['active_threads']}，授权群={len(self.cfg.target_groups)}，"
                 f"当前模型={self.cfg.ai.model}，渠道={self.cfg.ai.active_channel_id}"
             )
         if text == "/日志" and self.tool_allowed("get_recent_logs"):
@@ -1177,7 +1586,8 @@ class AIReplyService:
         return None
 
     def build_messages(self, evt: OneBotEvent) -> List[Dict[str, str]]:
-        hist = self.histories[evt.group_id]
+        with self.history_locks[evt.group_id]:
+            hist = list(self.histories[evt.group_id])
         personality_rule = (
             "机器人性格（最高优先级，必须严格遵守）：\n" + self.cfg.personality.strip()
             if self.cfg.personality.strip() else ""
@@ -1205,6 +1615,28 @@ class AIReplyService:
                         lines.append(f"{who}: {txt}")
                 if lines:
                     messages.append({"role": "system", "content": "数据库最近消息（用于连续对话，不要逐字复述）：\n" + "\n".join(lines[-12:])})
+            persona = self.store.effective_persona_context(evt.group_id, evt.user_id, 12) if evt.user_id else {}
+            if persona:
+                claim_lines = []
+                for claim in persona.get("claims") or []:
+                    evidence = claim.get("evidence") or []
+                    proof = ""
+                    if evidence:
+                        first = evidence[0]
+                        proof = f"（证据 {first.get('time','')} message_id={first.get('message_id') or first.get('event_id','')}：{str(first.get('text') or '')[:120]}）"
+                    claim_lines.append(f"- [{claim.get('category')}] {claim.get('value')}{proof}")
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "当前发言人在本群的永久用户画像（严格限定当前群；人工内容优先；只在自然相关时使用，不要向群友解释画像来源）：\n"
+                        f"姓名/群昵称：{persona.get('name') or evt.sender_name or '群成员'}\n"
+                        f"外号：{'、'.join(str(x) for x in persona.get('aliases') or []) or '无'}\n"
+                        f"摘要：{persona.get('summary') or '无'}\n"
+                        f"人工及永久事实：{json.dumps(persona.get('facts') or [], ensure_ascii=False)}\n"
+                        f"兴趣/标签：{json.dumps(persona.get('tags') or [], ensure_ascii=False)}\n"
+                        "有原话证据的画像结论：\n" + ("\n".join(claim_lines) if claim_lines else "无")
+                    )[:5000],
+                })
             image_words = ("图", "图片", "照片", "截图", "表情", "画面", "看见", "刚才", "之前", "那张", "这张", "哈士奇", "狗", "猫", "识别", "内容")
             need_images = any(w in evt.text for w in image_words)
             image_rows = self.store.media(evt.group_id, "image", limit=12, query=evt.text if need_images else "")
@@ -1246,71 +1678,170 @@ class AIReplyService:
                         lines.append(f"- record#{x.get('id')} {x.get('created_at')} {who}: 转文字={transcript or '无'} 摘要={summary or '无'}")
                 if lines:
                     messages.append({"role": "system", "content": "当前群语音泡记忆（回答语音相关问题时优先参考）：\n" + "\n".join(lines)})
+            brain_memory = evt.raw.get("_brain_memory") if isinstance(evt.raw, dict) else None
+            vector_assets = (brain_memory.get("asset_candidates") or []) if isinstance(brain_memory, dict) else []
             voice_pack_rows = self.voice_pack_candidates(evt.text, limit=8)
+            known_voice_ids = {int(row.get("id") or 0) for row in voice_pack_rows}
+            for asset in vector_assets:
+                if asset.get("object_type") == "voice_pack" and int(asset.get("id") or 0) not in known_voice_ids:
+                    voice_pack_rows.append(asset)
+                    known_voice_ids.add(int(asset.get("id") or 0))
             if voice_pack_rows:
                 lines = []
                 for v in voice_pack_rows[:8]:
                     lines.append(f"- voice#{v.get('id')} [{v.get('category')}/{v.get('pack_name')}]: 内容=\"{v.get('title') or v.get('text')}\"")
-                messages.append({"role": "system", "content": "可用语音包素材：每条语音的“名称/标题”就是这条语音真实说出的内容，可直接当作回复内容理解和选择。默认使用文字回复；只有最新消息明确要求语音/语音包，或某条语音内容与问题高度匹配且可以直接作答时才使用语音。需要使用时只能输出：/发语音 <语音内容>，不要输出[语音包]、[语音]或任何解释；系统会发送对应语音且不再发送文字。\n" + "\n".join(lines)})
-            face_words = ("表情", "表情包", "梗图", "动图", "斗图", "搞笑")
-            if any(w in evt.text for w in face_words):
-                face_rows = self.store.media(evt.group_id, "image", limit=6, query=evt.text)
-                if not face_rows:
-                    face_rows = self.store.media(evt.group_id, "image", limit=6, query="表情包")
-                if face_rows:
-                    lines = []
-                    for f in face_rows[:6]:
-                        lines.append(f"- face#{f.get('id')}: {str(f.get('image_summary') or f.get('ocr_text') or f.get('raw_message') or '')[:120]}")
-                    messages.append({"role": "system", "content": "可用表情包/图片素材（如果用户明确要求发表情，后台可用 /发表情 关键词 调用）：\n" + "\n".join(lines)})
+                messages.append({"role": "system", "content": "可用语音包素材：标题是语音真实说出的内容。根据完整语境评估语音是否比文字更自然，不要输出任何斜杠命令。\n" + "\n".join(lines[:8])})
+            face_rows = self.store.search_face_assets(
+                evt.text, evt.group_id, limit=8, global_shared=self.cfg.media_reply.global_face_assets
+            )
+            known_face_ids = {int(row.get("id") or 0) for row in face_rows}
+            for asset in vector_assets:
+                if asset.get("object_type") == "face_asset" and int(asset.get("id") or 0) not in known_face_ids:
+                    face_rows.append(asset)
+                    known_face_ids.add(int(asset.get("id") or 0))
+            if face_rows:
+                lines = []
+                for face in face_rows[:8]:
+                    desc = str(face.get("searchable_text") or face.get("image_summary") or face.get("ocr_text") or "")[:180]
+                    lines.append(f"- face#{face.get('id')}: {desc}")
+                messages.append({"role": "system", "content": "可用收藏表情：根据完整对话判断表情是否能自然接话。只能根据下列 OCR、摘要、标签和关键词理解素材，不要输出任何斜杠命令。\n" + "\n".join(lines)})
+            if isinstance(brain_memory, dict):
+                remembered = []
+                for item in (brain_memory.get("items") or [])[:12]:
+                    text = str(item.get("text") or item.get("raw_message") or "").replace("\n", " ")[:360]
+                    if text:
+                        remembered.append(f"- [{item.get('object_type') or item.get('source')}] {text}")
+                culture = brain_memory.get("culture") or {}
+                if remembered or any(culture.get(key) for key in ("aliases", "memes", "relations")):
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            "永久群文化记忆：只能在与当前语境相关时自然使用；允许大胆嘴贫、翻旧梗和使用外号，"
+                            "不要解释记忆来源，不要编造未提供的历史。\n" + "\n".join(remembered) +
+                            "\n人物外号/关系/群梗：" + json.dumps(culture, ensure_ascii=False)[:3500]
+                        ),
+                    })
         except Exception as exc:
             log("warning", "memory_context_error", group_id=evt.group_id, trace_id=evt.trace_id, error=str(exc))
         sender = evt.sender_name or evt.user_id or "群成员"
+        messages.append({
+            "role": "system",
+            "content": (
+                "你的最终输出必须是单个 JSON 对象，不要 Markdown，不要斜杠命令。字段为 "
+                '{"text":"适合直接发到群里的文字回复","medium":"text|voice|face",'
+                '"voice_fit":0,"face_fit":0,"media_query":"用于匹配素材的简短语义描述",'
+                '"intent":"当前情绪或接话意图","reason":"一句话理由"}。'
+                "voice_fit 和 face_fit 均为 0-100，只有相应媒介明显比文字更像群友接话时才给 70 以上。"
+                "text 始终提供可用的文字备选，系统会在后台决定最终媒介。"
+            ),
+        })
         user_content = f"群：{evt.group_name}({evt.group_id})\n发言人：{sender}\n最新消息：{evt.text}"
         messages.append({"role": "user", "content": user_content})
         return messages
+
+    def _task_for_event(self, evt: OneBotEvent) -> Optional[ReplyTask]:
+        task_id = str(evt.raw.get("_brain_task_id") or "") if isinstance(evt.raw, dict) else ""
+        with self.task_registry.lock:
+            return self.task_registry.tasks.get(task_id)
+
+    def _record_history(self, evt: OneBotEvent, ai_text: str) -> None:
+        with self.history_locks[evt.group_id]:
+            hist = self.histories[evt.group_id]
+            hist.append((evt.sender_name or evt.user_id or "群成员", evt.text))
+            hist.append(("AI", ai_text))
+        self.save_memory()
 
     def handle_event(self, evt: OneBotEvent) -> None:
         log("info", "reply_job_start", group_id=evt.group_id, group_name=evt.group_name,
             message_id=evt.message_id, text=evt.text[:300], trace_id=evt.trace_id)
         command = self.command_reply(evt)
         if command == "__NO_TEXT_REPLY__":
-            hist = self.histories[evt.group_id]
-            hist.append((evt.sender_name or evt.user_id or "群成员", evt.text))
-            hist.append(("AI", "[已发送媒体，无文字回复]"))
-            self.save_memory()
+            self._record_history(evt, "[已发送媒体，无文字回复]")
+            return
+        if command == "__MEDIA_FAILED__":
+            task = self._task_for_event(evt)
+            if task:
+                self.task_registry.update(task, "failed", error="显式媒介命令未发送成功")
+            self._record_history(evt, "[媒介命令发送失败，未发送文字]")
             return
         is_asr_transcript = bool(isinstance(evt.raw, dict) and evt.raw.get("asr_voice_transcript"))
         if not is_asr_transcript and command is None and re.search(r"(发|来|整|搞).{0,8}(语音|语音包|声音|音频)", evt.text):
             result = self.send_voice_pack_tool(evt, evt.text, quiet=True)
             if result == "__NO_TEXT_REPLY__":
-                hist = self.histories[evt.group_id]
-                hist.append((evt.sender_name or evt.user_id or "群成员", evt.text))
-                hist.append(("AI", "[已按语音名称匹配并发送语音包]"))
-                self.save_memory()
+                self._record_history(evt, "[已按语音名称匹配并发送语音包]")
                 return
-            if result.startswith("语音包发送失败"):
-                self.send_group_msg(evt.group_id, result, evt.trace_id)
-                hist = self.histories[evt.group_id]
-                hist.append((evt.sender_name or evt.user_id or "群成员", evt.text))
-                hist.append(("AI", result))
-                self.save_memory()
+            if result == "__MEDIA_FAILED__":
+                task = self._task_for_event(evt)
+                if task:
+                    self.task_registry.update(task, "failed", error="显式语音请求未发送成功")
+                self._record_history(evt, "[显式语音请求失败，未发送文字]")
                 return
-        reply = command if command is not None else self.generate_reply(evt)
-        if not reply:
-            return
-        reply = self.clean_reply(reply)
-        if not reply:
-            return
-        voice_query = self.extract_voice_marker(reply)
-        if command is None and voice_query is not None:
-            result = self.send_voice_pack_tool(evt, voice_query, quiet=True)
+        if not is_asr_transcript and command is None and re.search(r"(发|来|整|搞).{0,8}(表情|表情包|梗图|动图)", evt.text):
+            result = self.send_face_pack_tool(evt, evt.text, quiet=True)
             if result == "__NO_TEXT_REPLY__":
-                hist = self.histories[evt.group_id]
-                hist.append((evt.sender_name or evt.user_id or "群成员", evt.text))
-                hist.append(("AI", "[模型选择语音包回复，无文字回复]"))
-                self.save_memory()
+                self._record_history(evt, "[已按语义匹配并发送表情]")
                 return
-            reply = result
+            task = self._task_for_event(evt)
+            if task:
+                self.task_registry.update(task, "failed", error="显式表情请求未发送成功")
+            self._record_history(evt, "[显式表情请求失败，未发送文字]")
+            return
+
+        raw_reply = command if command is not None else self.generate_reply(evt)
+        if not raw_reply:
+            task = self._task_for_event(evt)
+            if task:
+                self.task_registry.update(task, "failed", error="模型没有生成回复")
+            return
+        decision = ReplyDecision(text=str(raw_reply), medium="text") if command is not None else self.parse_reply_decision(raw_reply)
+        task = self._task_for_event(evt)
+        legacy_marker = decision.reason == "legacy_marker"
+        selected_medium = "text"
+        selected_item: Dict[str, Any] = {}
+        media_details: Dict[str, Any] = {}
+        if command is None and not is_asr_transcript:
+            if legacy_marker:
+                selected_medium = decision.medium
+                selected_item = (
+                    self.select_voice_pack_item(decision.media_query, evt) if selected_medium == "voice"
+                    else self.select_face_pack_item(evt, decision.media_query)
+                )
+                media_details = {"legacy_marker_intercepted": True, "selected_medium": selected_medium,
+                                 "selected_asset_id": selected_item.get("id")}
+            else:
+                selected_medium, selected_item, media_details = self.choose_auto_medium(evt, decision)
+            if task:
+                details = {**(task.details or {}), "media_decision": media_details}
+                self.task_registry.update(task, details=details)
+            if selected_medium in {"voice", "face"} and selected_item:
+                if self.cfg.dry_run:
+                    log("info", "dry_run_media_reply", group_id=evt.group_id, medium=selected_medium,
+                        asset_id=selected_item.get("id"), trace_id=evt.trace_id)
+                    self._record_history(evt, f"[演练选择{selected_medium}#{selected_item.get('id')}]")
+                    if task:
+                        self.task_registry.update(task, "completed", medium=selected_medium, result="dry_run")
+                    return
+                result = (
+                    self.send_voice_pack_tool(evt, decision.media_query, quiet=True, selected_item=selected_item)
+                    if selected_medium == "voice"
+                    else self.send_face_pack_tool(evt, decision.media_query, quiet=True, selected_item=selected_item)
+                )
+                if result == "__NO_TEXT_REPLY__":
+                    self._record_history(evt, f"[自动选择{selected_medium}回复，无文字回复]")
+                    if task:
+                        self.task_registry.update(task, "completed", medium=selected_medium,
+                                                  result=f"asset:{selected_item.get('id')}")
+                    return
+                if legacy_marker and not decision.text:
+                    if task:
+                        self.task_registry.update(task, "failed", error="模型媒介 marker 已拦截，但媒介发送失败")
+                    return
+
+        reply = self.clean_reply(decision.text)
+        if not reply:
+            if task:
+                self.task_registry.update(task, "failed", error="没有可用的文字备选")
+            return
         if self.cfg.reply_prefix and not reply.startswith(self.cfg.reply_prefix):
             reply_to_send = self.cfg.reply_prefix + reply
         else:
@@ -1320,14 +1851,12 @@ class AIReplyService:
         else:
             if self.cfg.send_delay_seconds > 0:
                 time.sleep(self.cfg.send_delay_seconds)
-            self.send_group_msg(evt.group_id, reply_to_send, evt.trace_id)
-            # 明确请求时再附加语音/表情，不做随机发送，避免群里刷屏。
-            if not is_asr_transcript and command is None and re.search(r"(发|来|整|搞).{0,4}(表情|表情包|梗图|动图)", evt.text):
-                self.send_face_pack_tool(evt, evt.text, quiet=True)
-        hist = self.histories[evt.group_id]
-        hist.append((evt.sender_name or evt.user_id or "群成员", evt.text))
-        hist.append(("AI", reply_to_send))
-        self.save_memory()
+            if task:
+                self.task_registry.update(task, "sending", medium="text")
+            self.send_group_msg(evt.group_id, reply_to_send, evt.trace_id, evt)
+        self._record_history(evt, reply_to_send)
+        if task:
+            self.task_registry.update(task, "completed", medium=task.medium or "text", result=reply_to_send[:500])
 
     def get_api_key(self, channel: AIChannel) -> str:
         key = os.getenv(channel.api_key_env, "")
@@ -1341,34 +1870,98 @@ class AIReplyService:
         if not self.cfg.ai.auto_failover:
             return enabled[:1]
         now = time.time()
-        available = [x for x in enabled if self.channel_unavailable_until.get(x.id, 0) <= now]
+        with self.channel_state_lock:
+            available = [x for x in enabled if self.channel_unavailable_until.get(x.id, 0) <= now]
         return available or enabled
 
-    def generate_reply(self, evt: OneBotEvent) -> str:
-        channels = self.channel_order()
-        if not channels:
-            log("error", "no_enabled_ai_channels", group_id=evt.group_id, trace_id=evt.trace_id)
-            return ""
+    def request_messages(self, messages: List[Dict[str, str]], max_tokens: int,
+                         temperature: float, evt: OneBotEvent) -> Tuple[str, str]:
         failures: List[str] = []
-        for index, channel in enumerate(channels):
-            reply, error = self.request_channel(channel, evt)
+        for channel in self.channel_order():
+            with self.model_semaphore:
+                reply, error = self.request_channel_messages(channel, messages, max_tokens, temperature, evt)
             if reply:
-                self.channel_unavailable_until.pop(channel.id, None)
-                if index:
-                    log("warning", "channel_failover", group_id=evt.group_id,
-                        channel_id=channel.id, channel_name=channel.name, failed_channels=failures, trace_id=evt.trace_id)
-                log("info", "channel_success", group_id=evt.group_id, channel_id=channel.id,
-                    channel_name=channel.name, model=channel.model, trace_id=evt.trace_id)
-                return reply
-            failures.append(channel.id)
-            self.channel_unavailable_until[channel.id] = time.time() + self.cfg.ai.failure_cooldown_seconds
-            log("error", "channel_failed", group_id=evt.group_id, channel_id=channel.id,
-                channel_name=channel.name, error=error, trace_id=evt.trace_id)
-            self.recent_errors.append({"time": now_ts(), "error": error, "group_id": evt.group_id, "trace_id": evt.trace_id})
+                with self.channel_state_lock:
+                    self.channel_unavailable_until.pop(channel.id, None)
+                return reply, channel.model
+            failures.append(f"{channel.id}:{error}")
+            with self.channel_state_lock:
+                self.channel_unavailable_until[channel.id] = time.time() + self.cfg.ai.failure_cooldown_seconds
         log("error", "all_channels_failed", group_id=evt.group_id, channels=failures, trace_id=evt.trace_id)
-        return ""
+        return "", ""
+
+    def extract_persona_claims(self, raw: Dict[str, Any]) -> Dict[str, Any]:
+        messages = raw.get("messages") if isinstance(raw.get("messages"), list) else []
+        if not messages:
+            return {"claims": [], "model": "", "reason": "empty_batch"}
+        # Reserve two slots momentarily, then release one. This job therefore
+        # never consumes the final slot needed by realtime group replies.
+        if not self.model_semaphore.acquire(blocking=False):
+            raise RuntimeError("realtime_model_capacity_busy")
+        if not self.model_semaphore.acquire(blocking=False):
+            self.model_semaphore.release()
+            raise RuntimeError("last_model_slot_reserved_for_replies")
+        self.model_semaphore.release()
+        evt = OneBotEvent(
+            event_id=f"persona-{raw.get('job_id')}", group_id=str(raw.get("group_id") or ""), group_name="画像分析",
+            self_id="", user_id=str(raw.get("user_id") or ""), sender_name="", text="", raw_message="",
+            message_id="", timestamp=int(time.time()), raw={}, trace_id=f"persona-{raw.get('job_id')}",
+        )
+        compact = [{"event_id": str(x.get("event_id") or ""), "message_id": str(x.get("message_id") or ""),
+                    "time": str(x.get("time") or ""), "text": str(x.get("text") or "")[:500]}
+                   for x in messages[:100] if isinstance(x, dict) and str(x.get("text") or "").strip()]
+        prompt = (
+            "分析同一微信群成员的这一批历史发言，提取可长期使用的用户画像结论。只输出 JSON 对象，格式为 "
+            '{"claims":[{"category":"fact|interest|habit|style|role|topic|quote","value":"简洁结论",'
+            '"confidence":0.0,"evidence_ids":["必须来自输入的 event_id 或 message_id"]}]}。'
+            "禁止性格雷达、禁止无证据推断、禁止把单次随口发言夸大为永久事实；每条结论至少引用一个输入 ID。\n消息：\n" +
+            json.dumps(compact, ensure_ascii=False)
+        )
+        failures = []
+        try:
+            for channel in self.channel_order():
+                reply, error = self.request_channel_messages(channel, [{"role": "user", "content": prompt}], 1600, 0, evt)
+                if not reply:
+                    failures.append(f"{channel.id}:{error}")
+                    continue
+                clean = reply.strip()
+                if clean.startswith("```"):
+                    clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", clean, flags=re.I | re.S)
+                try:
+                    parsed = json.loads(clean)
+                    claims = parsed.get("claims") if isinstance(parsed, dict) and isinstance(parsed.get("claims"), list) else []
+                    return {"claims": claims, "model": channel.model, "reason": "ok"}
+                except ValueError as exc:
+                    failures.append(f"{channel.id}:invalid_json:{exc}")
+            raise RuntimeError("; ".join(failures)[:1000] or "persona_model_unavailable")
+        finally:
+            self.model_semaphore.release()
+
+    def generate_reply(self, evt: OneBotEvent) -> str:
+        started = time.monotonic()
+        reply, model = self.request_messages(
+            self.build_messages(evt), self.cfg.ai.max_tokens, self.cfg.ai.temperature, evt
+        )
+        generation_ms = round((time.monotonic() - started) * 1000, 1)
+        task = self._task_for_event(evt)
+        if task:
+            timings = dict((task.details or {}).get("timings_ms") or {})
+            timings["generation"] = generation_ms
+            timings["estimated_total"] = round(float(timings.get("pre_generation_total") or 0) + generation_ms, 1)
+            details = {**(task.details or {}), "timings_ms": timings}
+            self.task_registry.update(task, model=model or task.model, details=details)
+        if reply:
+            log("info", "channel_success", group_id=evt.group_id, model=model, trace_id=evt.trace_id)
+        return reply
 
     def request_channel(self, channel: AIChannel, evt: OneBotEvent) -> Tuple[str, str]:
+        return self.request_channel_messages(
+            channel, self.build_messages(evt), self.cfg.ai.max_tokens, self.cfg.ai.temperature, evt
+        )
+
+    def request_channel_messages(self, channel: AIChannel, messages: List[Dict[str, str]],
+                                 max_tokens: int, temperature: float,
+                                 evt: OneBotEvent) -> Tuple[str, str]:
         if channel.provider != "openai_compatible":
             return "", f"unsupported provider: {channel.provider}"
         api_key = self.get_api_key(channel)
@@ -1377,9 +1970,9 @@ class AIReplyService:
         url = channel.base_url.rstrip("/") + "/chat/completions"
         payload = {
             "model": channel.model,
-            "messages": self.build_messages(evt),
-            "temperature": self.cfg.ai.temperature,
-            "max_tokens": self.cfg.ai.max_tokens,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
         }
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(url, data=data, method="POST")
@@ -1423,6 +2016,133 @@ class AIReplyService:
                 return query
         return None
 
+    def extract_face_marker(self, reply: str) -> Optional[str]:
+        """Intercept legacy face commands before they can reach text sending."""
+        value = str(reply or "").strip()
+        patterns = (
+            r"^(?:@\S+\s*)?/发表情\s*(.*)$",
+            r"^\[表情(?:包)?\]\s*(.*)$",
+            r"^(?:表情包|表情回复)\s*[:：]\s*(.*)$",
+        )
+        for pattern in patterns:
+            match = re.match(pattern, value, flags=re.S | re.I)
+            if match:
+                query = match.group(1).strip().strip("\"'“”‘’ ")
+                query = re.sub(r"[.。！？!！]+$", "", query).strip()
+                log("debug", "face_marker_detected", marker=value[:30], query=query[:160])
+                return query
+        return None
+
+    def parse_reply_decision(self, raw_reply: str) -> ReplyDecision:
+        raw = str(raw_reply or "").strip()
+        voice_query = self.extract_voice_marker(raw)
+        if voice_query is not None:
+            return ReplyDecision(medium="voice", voice_fit=100, media_query=voice_query,
+                                 intent="legacy_marker", reason="legacy_marker")
+        face_query = self.extract_face_marker(raw)
+        if face_query is not None:
+            return ReplyDecision(medium="face", face_fit=100, media_query=face_query,
+                                 intent="legacy_marker", reason="legacy_marker")
+        cleaned = re.sub(r"^```(?:json)?|```$", "", raw, flags=re.I).strip()
+        start, end = cleaned.find("{"), cleaned.rfind("}")
+        if start >= 0 and end > start:
+            try:
+                obj = json.loads(cleaned[start:end + 1])
+                medium = str(obj.get("medium") or "text").lower()
+                if medium not in {"text", "voice", "face"}:
+                    medium = "text"
+                return ReplyDecision(
+                    text=str(obj.get("text") or "").strip(), medium=medium,
+                    voice_fit=max(0.0, min(100.0, float(obj.get("voice_fit") or 0))),
+                    face_fit=max(0.0, min(100.0, float(obj.get("face_fit") or 0))),
+                    media_query=str(obj.get("media_query") or "").strip(),
+                    intent=str(obj.get("intent") or "").strip(), reason=str(obj.get("reason") or "").strip(),
+                )
+            except (ValueError, TypeError, json.JSONDecodeError):
+                pass
+        return ReplyDecision(text=raw, medium="text")
+
+    @staticmethod
+    def _probability_pass(evt: OneBotEvent, medium: str, probability: float) -> bool:
+        probability = max(0.0, min(1.0, float(probability)))
+        if probability <= 0:
+            return False
+        if probability >= 1:
+            return True
+        seed = f"{evt.trace_id}|{evt.message_id}|{medium}".encode("utf-8", "ignore")
+        value = int.from_bytes(hashlib.sha256(seed).digest()[:8], "big") / float(2 ** 64 - 1)
+        return value < probability
+
+    @staticmethod
+    def _probability_value(evt: OneBotEvent, medium: str) -> float:
+        seed = f"{evt.trace_id}|{evt.message_id}|{medium}".encode("utf-8", "ignore")
+        return int.from_bytes(hashlib.sha256(seed).digest()[:8], "big") / float(2 ** 64 - 1)
+
+    def choose_auto_medium(self, evt: OneBotEvent, decision: ReplyDecision) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
+        settings = self.cfg.media_reply.for_group(evt.group_id)
+        task = self._task_for_event(evt)
+        if task:
+            self.task_registry.update(task, "media_deciding")
+        details: Dict[str, Any] = {
+            "voice_fit": decision.voice_fit, "face_fit": decision.face_fit,
+            "media_query": decision.media_query, "intent": decision.intent,
+            "automatic_enabled": bool(settings.get("automatic_enabled", True)),
+        }
+        if not settings.get("automatic_enabled", True):
+            return "text", {}, details
+        query = decision.media_query or decision.intent or evt.text
+        voice_min_fit = float(settings.get("voice_min_fit", 55))
+        face_min_fit = float(settings.get("face_min_fit", 45))
+        min_confidence = float(settings.get("min_candidate_confidence", 0.65))
+        voice_probability = float(settings.get("voice_probability", 0.15))
+        face_probability = float(settings.get("face_probability", 0.20))
+        details.update({
+            "voice_min_fit": voice_min_fit, "face_min_fit": face_min_fit,
+            "min_candidate_confidence": min_confidence,
+            "voice_probability": voice_probability, "face_probability": face_probability,
+        })
+        options: List[Tuple[float, str, Dict[str, Any], float]] = []
+        if decision.voice_fit >= voice_min_fit:
+            voice = self.select_voice_pack_item(query, evt)
+            voice_confidence = self.voice_candidate_confidence(voice)
+            details["voice_candidate"] = {"id": voice.get("id"), "confidence": voice_confidence,
+                                            "title": voice.get("title"), "reason": voice.get("match_reason", "")}
+            voice_draw = self._probability_value(evt, "voice")
+            details["voice_sample"] = {"draw": round(voice_draw, 4), "probability": voice_probability,
+                                         "passed": voice_draw < voice_probability}
+            if voice_confidence < min_confidence:
+                details["voice_gate"] = "candidate_below_threshold"
+            elif voice_draw >= voice_probability:
+                details["voice_gate"] = "probability_miss"
+            else:
+                options.append((decision.voice_fit / 100.0 * voice_confidence, "voice", voice, voice_confidence))
+        else:
+            details["voice_gate"] = "fit_below_threshold"
+        if decision.face_fit >= face_min_fit:
+            face = self.select_face_pack_item(evt, query)
+            face_confidence = float(face.get("match_score") or face.get("vector_score") or 0)
+            details["face_candidate"] = {"id": face.get("id"), "confidence": face_confidence,
+                                           "summary": face.get("image_summary"), "reason": face.get("match_reason", "")}
+            face_draw = self._probability_value(evt, "face")
+            details["face_sample"] = {"draw": round(face_draw, 4), "probability": face_probability,
+                                        "passed": face_draw < face_probability}
+            if face_confidence < min_confidence:
+                details["face_gate"] = "candidate_below_threshold"
+            elif face_draw >= face_probability:
+                details["face_gate"] = "probability_miss"
+            else:
+                options.append((decision.face_fit / 100.0 * face_confidence, "face", face, face_confidence))
+        else:
+            details["face_gate"] = "fit_below_threshold"
+        if not options:
+            details["selected_medium"] = "text"
+            return "text", {}, details
+        options.sort(key=lambda item: item[0], reverse=True)
+        score, medium, item, confidence = options[0]
+        details.update({"selected_medium": medium, "selected_asset_id": item.get("id"),
+                        "selected_utility": round(score, 4), "selected_confidence": confidence})
+        return medium, item, details
+
     def clean_reply(self, reply: str) -> str:
         r = reply.strip()
         # Remove surrounding quotes occasionally produced by models.
@@ -1432,11 +2152,27 @@ class AIReplyService:
             r = r[: self.cfg.max_reply_chars].rstrip() + "…"
         return r
 
-    def send_group_msg(self, group_id: str, text: str, trace_id: str = "") -> None:
+    def send_group_msg(self, group_id: str, text: str, trace_id: str = "",
+                       evt: Optional[OneBotEvent] = None) -> None:
+        with self.send_locks[group_id]:
+            self._send_group_msg_locked(group_id, text, trace_id, evt)
+
+    def _send_group_msg_locked(self, group_id: str, text: str, trace_id: str,
+                               evt: Optional[OneBotEvent]) -> None:
         url = self.cfg.onebot_api.rstrip("/") + "/send_group_msg"
+        message: List[Dict[str, Any]] = []
+        if evt and evt.user_id and evt.user_id != evt.self_id:
+            display_name = self.store.resolve_member_name(evt.group_id, evt.user_id, evt.sender_name)
+            message.append({"type": "at", "data": {
+                "qq": evt.user_id,
+                "user_id": evt.user_id,
+                "name": display_name,
+            }})
+            message.append({"type": "text", "data": {"text": " "}})
+        message.append({"type": "text", "data": {"text": text}})
         payload = {
             "group_id": group_id,
-            "message": [{"type": "text", "data": {"text": text}}],
+            "message": message,
         }
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         delays = [0, 0, 1.2]
@@ -1449,6 +2185,7 @@ class AIReplyService:
             started = time.monotonic()
             log("info", "send_group_start", group_id=group_id, attempt=attempt, trace_id=trace_id, text=text[:300])
             try:
+                parsed: Any = {}
                 with urllib.request.urlopen(req, timeout=25) as resp:
                     body = resp.read().decode("utf-8", "replace")
                     status = resp.status
@@ -1471,7 +2208,7 @@ class AIReplyService:
                             "group_name": self.cfg.target_groups.get(group_id, group_id),
                             "user_id": "AI",
                             "sender_name": "AI",
-                            "message_id": "",
+                            "message_id": str((parsed.get("data") or {}).get("message_id") or parsed.get("message_id") or "") if isinstance(parsed, dict) else "",
                             "event_time": int(time.time()),
                             "text": text,
                             "raw_message": text,
@@ -1493,6 +2230,7 @@ class AIReplyService:
                 last_error = str(e)
                 log("error", "send_group_error", group_id=group_id, error=str(e), attempt=attempt, trace_id=trace_id)
         self.recent_errors.append({"time": now_ts(), "error": last_error, "group_id": group_id, "trace_id": trace_id})
+        raise RuntimeError(last_error or "OneBot send failed")
 
 
 SERVICE: Optional[AIReplyService] = None
@@ -1523,16 +2261,58 @@ class Handler(BaseHTTPRequestHandler):
                 "enabled": CONFIG.enabled,
                 "dry_run": CONFIG.dry_run,
                 "target_groups": CONFIG.target_groups,
-                "queue_size": SERVICE.events.qsize(),
+                "queue_size": SERVICE.scheduler.snapshot()["queued"],
                 "active_channel_id": CONFIG.ai.active_channel_id,
                 "enabled_channels": [x.id for x in CONFIG.ai.channels if x.enabled],
                 "memory": {"enabled": CONFIG.memory.enabled, "max_turns": CONFIG.memory.max_turns},
                 "tools": {"enabled": CONFIG.tools.enabled, "allowed": CONFIG.tools.allowed},
+                "brain": SERVICE.brain_status(),
             })
         else:
             self._send_json(404, {"status": "not_found"})
 
     def do_POST(self) -> None:
+        if self.path in {"/embedding/pause", "/embedding/resume"}:
+            assert SERVICE is not None
+            paused = self.path.endswith("/pause")
+            SERVICE.embedding_service.set_paused(paused)
+            self._send_json(200, {"status": "ok", "data": SERVICE.embedding_service.snapshot()})
+            return
+        if self.path == "/embedding/test":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                raw = json.loads(self.rfile.read(length).decode("utf-8", "replace")) if length else {}
+                assert SERVICE is not None
+                started = time.monotonic()
+                result = SERVICE.embedding_service.search(str(raw.get("query") or ""),
+                                                          str(raw.get("group_id") or ""), 12)
+                result["latency_ms"] = round((time.monotonic() - started) * 1000)
+                self._send_json(200, {"status": "ok", "data": result})
+            except Exception as exc:
+                self._send_json(400, {"status": "failed", "error": str(exc)})
+            return
+        if self.path == "/persona/extract":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                raw = json.loads(self.rfile.read(length).decode("utf-8", "replace")) if length else {}
+                assert SERVICE is not None
+                self._send_json(200, {"status": "ok", "data": SERVICE.extract_persona_claims(raw)})
+            except Exception as exc:
+                self._send_json(409, {"status": "busy", "error": str(exc)})
+            return
+        if self.path == "/config/reload":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                raw = json.loads(self.rfile.read(length).decode("utf-8", "replace")) if length else {}
+                cfg_path = Path(str(raw.get("config") or DEFAULT_CONFIG)).expanduser().resolve()
+                new_cfg = AppConfig.from_file(cfg_path)
+                assert SERVICE is not None
+                global CONFIG
+                CONFIG = new_cfg
+                self._send_json(200, {"status": "ok", "data": SERVICE.reload_config(new_cfg)})
+            except Exception as exc:
+                self._send_json(400, {"status": "failed", "error": str(exc)})
+            return
         if self.path != "/onebot":
             self._send_json(404, {"status": "not_found"})
             return
@@ -1597,7 +2377,7 @@ def main() -> int:
     def _shutdown(signum: int, frame: Any) -> None:
         log("info", "shutdown_signal", signal=signum)
         if SERVICE:
-            SERVICE.stop_event.set()
+            SERVICE.stop()
         remove_pid()
         raise SystemExit(0)
 
@@ -1612,6 +2392,8 @@ def main() -> int:
     try:
         server.serve_forever(poll_interval=0.5)
     finally:
+        if SERVICE:
+            SERVICE.stop()
         remove_pid()
     return 0
 

@@ -5,7 +5,7 @@
 **macOS 第二微信隔离运行、OneBot 接入与 AI 群聊值班后台**
 
 <p>
-  <img alt="version" src="https://img.shields.io/badge/version-V0.0.2-25b77b?style=for-the-badge">
+  <img alt="version" src="https://img.shields.io/badge/version-V0.0.3-25b77b?style=for-the-badge">
   <img alt="macOS" src="https://img.shields.io/badge/macOS-Apple%20Silicon%20%7C%20Intel-111827?style=for-the-badge&logo=apple">
   <img alt="wechat" src="https://img.shields.io/badge/WeChat-4.1.11.53-07c160?style=for-the-badge&logo=wechat">
   <img alt="ai" src="https://img.shields.io/badge/AI-OpenAI%20Compatible-7c3aed?style=for-the-badge">
@@ -25,7 +25,7 @@
 - **接入大模型**：支持 OpenAI-compatible / DeepSeek / 第三方 API 中转站，多渠道健康检查与失败自动切换。
 - **提供 Web 管理后台**：在浏览器里完成运行状态、模型渠道、群权限、机器人性格、测试中心和实时日志管理。
 
-> 当前版本：`V0.0.2`，适配重点为 **微信 macOS 4.1.11.53**。
+> 当前版本：`V0.0.3`，适配重点为 **微信 macOS 4.1.11.53**。
 
 ---
 
@@ -36,11 +36,13 @@
 | 第二微信隔离 | Hook `HOME`、常见文件 API、容器路径与偏好设置路径，避免写入主微信数据目录 |
 | 第二微信启动 | 检查 Bundle ID / Build，默认只启动 `~/Applications/WeChat2.app` |
 | OneBot 接入 | 本地 HTTP 接收端口 `58080`，回调 AI 服务端口 `36060` |
-| AI 回复 | 群聊白名单、上下文窗口、回复前缀、关键词触发、忽略机器人自发消息 |
+| AI 回复 | 七维接话评分、可调门槛、强制触发、多线程生成、引用原消息回复 |
 | 多模型渠道 | 支持多个 OpenAI-compatible 渠道、手动测试、自动健康检查、失败冷却与自动切换 |
 | 群聊权限 | 从真实 OneBot 事件发现群 ID，勾选授权后才允许 AI 回复 |
 | 机器人性格 | 独立人格/风格编辑器，写入系统提示词并严格参与回复生成 |
-| 长期记忆 | SQLite 消息库、成员画像、群记忆、全文检索、向量检索、导入导出 |
+| 永久群聊大脑 | 永久人物/外号/关系/群梗/历史事件，全部历史回填，FTS5 + 4096 维 sqlite-vec + Reranker |
+| 本地向量模型 | oMLX Qwen3-Embedding-8B，4B 性能备用，Qwen3-Reranker-4B，断点回填和在线检索优先 |
+| 多线程回复 | 全局 8、每群 3 个默认并发，同线程串行、跨群并行、群级公平轮询 |
 | 图片理解 | 图片图库、OCR / Vision 自动分析、标签、关键词、摘要与人工标注 |
 | 语音理解 | 原始语音提取、SILK 转 WAV、ASR 自动转写与语音内容检索 |
 | 语音包 | 目录 / ZIP 批量导入、分类、搜索、推荐、预览和 AI 自动选取发送 |
@@ -48,7 +50,7 @@
 | 媒体发送 | 文本、@、引用、图片、文件、视频、语音完整 OneBot 发送链路 |
 | 媒体自修复 | 自动解析当前微信 UploadMedia 服务，按 PID 缓存并在失败时重试 |
 | 链路诊断 | trace ID、最近链路、完整消息测试、OneBot 健康监控与恢复 |
-| Web 后台 | 暗色高密度运维 UI，总览、模型、群策略、媒体、记忆、测试与日志 |
+| Web 后台 | 保留原十个独立功能页面，并新增群聊大脑、实时回复、本地向量三个独立入口；支持任务状态与配置热加载 |
 
 ---
 
@@ -172,7 +174,7 @@ AI 不会对所有群自动回复。后台采用白名单策略：
 
 1. OneBot 收到真实群消息事件。
 2. 后台从日志中发现 `xxxx@chatroom`。
-3. 在「群聊策略」中勾选允许 AI 回复的群。
+3. 在「群聊大脑」中勾选允许 AI 回复的群。
 4. 未勾选群只记录日志，不调用模型、不发消息。
 
 ---
@@ -222,6 +224,6 @@ flowchart LR
 
 ## 📌 版本状态
 
-`V0.0.2` 在基础链路上加入长期记忆、成员人格、图片 OCR、语音 ASR、语音包、表情包、全媒体发送、链路追踪和 UploadMedia 自动修复。
+`V0.0.3` 新增永久群聊大脑、七维接话评分、多线程回复、本地 oMLX 向量检索与重排、自动语音/表情回复、群成员黑名单，以及具备真实消息证据的独立用户画像系统。
 
 后续计划见 [CHANGELOG.md](CHANGELOG.md)。项目规则见 [RULES.md](RULES.md)。

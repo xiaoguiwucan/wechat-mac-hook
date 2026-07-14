@@ -8,6 +8,13 @@ LOG_FILE="$LOG_DIR/ai-reply.log"
 STDOUT_LOG="$LOG_DIR/ai-reply.stdout.log"
 CONFIG="${AI_REPLY_CONFIG:-$ROOT_DIR/config/ai_reply_config.json}"
 ENV_FILE="${AI_REPLY_ENV_FILE:-$ROOT_DIR/config/ai_reply.env}"
+PYTHON_BIN="${WECHAT_SECOND_PYTHON:-}"
+if [[ -z "$PYTHON_BIN" ]]; then
+  PYTHON_BIN=$(find "$HOME/.local/share/uv/python" -type f -path '*/bin/python3.*' ! -name '*-config' -perm -111 2>/dev/null | sort -V | tail -n 1 || true)
+fi
+if [[ -z "$PYTHON_BIN" ]]; then
+  PYTHON_BIN=$(command -v python3)
+fi
 mkdir -p "$LOG_DIR"
 
 if [[ -f "$ENV_FILE" ]]; then
@@ -50,15 +57,15 @@ if [[ -n "$PORT_PIDS" ]]; then
 fi
 
 # 先检查配置。
-python3 "$ROOT_DIR/ai_reply/ai_reply_server.py" --config "$CONFIG" --check >/dev/null
+"$PYTHON_BIN" "$ROOT_DIR/ai_reply/ai_reply_server.py" --config "$CONFIG" --check >/dev/null
 
 # daemon 化启动，避免终端/Codex 回收后台进程。
-/usr/bin/python3 - "$ROOT_DIR" "$CONFIG" "$PID_FILE" "$STDOUT_LOG" <<'PY'
+/usr/bin/python3 - "$ROOT_DIR" "$CONFIG" "$PID_FILE" "$STDOUT_LOG" "$PYTHON_BIN" <<'PY'
 import os
 import subprocess
 import sys
-root, config, pid_file, log_file = sys.argv[1:]
-args = [sys.executable, os.path.join(root, 'ai_reply', 'ai_reply_server.py'), '--config', config]
+root, config, pid_file, log_file, python_bin = sys.argv[1:]
+args = [python_bin, os.path.join(root, 'ai_reply', 'ai_reply_server.py'), '--config', config]
 log = open(log_file, 'ab', buffering=0)
 proc = subprocess.Popen(args, cwd=root, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True, close_fds=True)
 with open(pid_file, 'w') as f:

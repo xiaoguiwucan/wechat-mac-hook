@@ -1,15 +1,19 @@
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
-const state = { config: null, status: null, channels: [], selectedChannelId: '', channelHealth: {}, groupCatalog: [], dirty: false, logs: [], source: 'all', miniSource: 'all', paused: false, eventSource: null, traceDiagnostic: null };
+const state = { config: null, status: null, brainConfig: null, replyTasks: [], channels: [], selectedChannelId: '', channelHealth: {}, groupCatalog: [], groupMemberCatalog: {}, ignoredGroupMembers: {}, persona: { members: [], selectedUserId: '', detail: null, tab: 'overview', refreshTimer: null }, dirty: false, logs: [], source: 'all', miniSource: 'all', paused: false, eventSource: null, traceDiagnostic: null };
 const pageMeta = {
-  overview: ['运行总览', '第二微信、OneBot 与 AI 服务'], ai: ['AI 模型', '对话、OCR 与 ASR 模型配置'],
-  groups: ['群聊策略', '目标群与自动回复规则'], tests: ['测试中心', '验证模型、Hook 与完整回调链路'],
-  media: ['图片图库', '图片 OCR、文件/视频索引与媒体记忆'],
+  overview: ['运行总览', '第二微信、OneBot 与 AI 服务'], ai: ['模型配置', '对话、OCR 与 ASR 模型配置'],
+  groups: ['群聊策略', '目标群与自动回复规则'], brain: ['群聊大脑', '接话门槛、七维评分与并发策略'],
+  personas: ['USR 用户画像', '永久档案、行为统计、关系与原话证据'],
+  'reply-tasks': ['实时回复', '回复线程、任务阶段与耗时'], vector: ['本地向量', 'oMLX 模型、检索与永久记忆回填'],
+  tests: ['测试中心', '验证模型、Hook 与完整回调链路'], media: ['图片图库', '图片 OCR、文件/视频索引与媒体记忆'],
   'voice-records': ['语音内容', '群语音泡、ASR 转写与语音记忆'],
   voices: ['语音包管理', 'silk / zip / zip1 导入与语音发送'],
   faces: ['表情包管理', 'face / GIF 动图收藏、解析与发送'],
   memory: ['记忆数据库', '聊天记录、人物画像与群长期记忆'], logs: ['实时日志', 'AI 回复与 OneBot 运行输出']
 };
+const factorLabels = { involvement: '参与关联', continuity: '对话连续性', memory: '永久记忆关联', value: '回复增量', humor: '玩笑与造梗', emotion: '情绪适配', timing: '时机完整度' };
+const modifierLabels = { same_member_followup: '同成员 120 秒追问', exact_meme: '精确命中群梗', high_vector: '高相似历史向量', media_match: '匹配语音或表情', useful_after_silence: '沉默 20 分钟后有内容', unfinished_fast_exchange: '快速对话尚未完整', growing_burst: '30 秒消息持续增长', already_answered: '问题已完整回答', low_information: '短词/通知/链接/重复' };
 
 async function api(path, options = {}) {
   const response = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
@@ -42,7 +46,166 @@ function showPage(name) {
   if (name === 'voice-records') requestAnimationFrame(() => loadVoiceRecords(null, true));
   if (name === 'voices') requestAnimationFrame(() => loadVoicepacks(null, true));
   if (name === 'faces') requestAnimationFrame(() => loadFaces(null, true));
+  if (name === 'groups') requestAnimationFrame(() => loadGroupMembers(null, true));
+  if (name === 'personas') requestAnimationFrame(() => loadPersonaMembers(true));
   if (name === 'memory' && $('#memoryResults')?.textContent?.includes('选择左侧操作')) requestAnimationFrame(() => loadMedia($('#loadMediaBtn'), true));
+  if (name === 'reply-tasks' || name === 'vector') requestAnimationFrame(() => refreshReplyTasks(true));
+}
+
+function fillBrainConfig(data) {
+  state.brainConfig = data;
+  state.ignoredGroupMembers = Object.fromEntries(Object.entries(data.ignored_group_members || {}).map(([groupId, ids]) => [groupId, [...new Set((ids || []).map(String))]]));
+  const c = data.reply_strategy || {};
+  $('#brainMode').value = c.mode || 'veteran';
+  $('#brainThreshold').value = c.threshold ?? 52; $('#brainThresholdValue').value = c.threshold ?? 52;
+  $('#brainGlobalWorkers').value = c.global_workers ?? 8;
+  $('#brainGroupWorkers').value = c.per_group_workers ?? 3;
+  $('#brainModelWorkers').value = c.model_concurrency ?? 6;
+  $('#brainScoringMode').value = c.scoring_mode || 'local_fast';
+  $('#brainRerankCandidates').value = c.rerank_candidates ?? 12;
+  const retrieval = data.retrieval || {};
+  $('#brainVectorLimit').value = retrieval.vector_limit ?? 60;
+  $('#brainFtsLimit').value = retrieval.fts_limit ?? 30;
+  $('#brainAdaptiveRerank').checked = retrieval.adaptive_rerank !== false;
+  const weights = c.factor_weights || { involvement: 18, continuity: 14, memory: 16, value: 14, humor: 14, emotion: 10, timing: 14 };
+  $('#factorEditor').innerHTML = Object.entries(factorLabels).map(([key, label]) => `<label><span>${label}</span><input data-factor="${key}" type="number" min="0" max="100" step="1" value="${Number(weights[key] ?? 0)}"></label>`).join('');
+  const modifiers = c.modifiers || {};
+  $('#modifierEditor').innerHTML = `<strong>本地修正值</strong>${Object.entries(modifierLabels).map(([key, label]) => `<label><span>${label}</span><input data-modifier="${key}" type="number" min="-100" max="100" step="1" value="${Number(modifiers[key] ?? 0)}"></label>`).join('')}`;
+  const e = data.embedding || {};
+  $('#embeddingBaseUrl').value = e.base_url || 'http://127.0.0.1:8017/v1';
+  $('#embeddingModel').value = e.model || 'Qwen3-Embedding-8B-mxfp8';
+  $('#rerankerModel').value = e.reranker_model || 'Qwen3-Reranker-4B-mxfp8';
+  const media = data.media_reply || {};
+  $('#voiceAutoEnabled').checked = media.automatic_enabled !== false;
+  $('#faceAutoEnabled').checked = media.automatic_enabled !== false;
+  $('#voiceReplyProbability').value = Math.round(Number(media.voice_probability ?? .15) * 100);
+  $('#voiceReplyProbabilityValue').value = `${$('#voiceReplyProbability').value}%`;
+  $('#faceReplyProbability').value = Math.round(Number(media.face_probability ?? .20) * 100);
+  $('#faceReplyProbabilityValue').value = `${$('#faceReplyProbability').value}%`;
+  $('#voiceMinFit').value = media.voice_min_fit ?? media.min_fit ?? 55;
+  $('#faceMinFit').value = media.face_min_fit ?? media.min_fit ?? 45;
+  $('#faceMinConfidence').value = media.min_candidate_confidence ?? .65;
+  $('#faceGlobalShared').checked = media.global_face_assets !== false;
+  updateBlacklistGroupOptions();
+}
+
+async function loadBrainConfig(silent = false) {
+  try { fillBrainConfig(await api('/api/brain/config')); }
+  catch (e) { if (!silent) toast(`群聊大脑配置读取失败：${e.message}`, 'error'); }
+}
+
+async function saveBrainConfig(button) {
+  setBusy(button, true, '应用中…');
+  try {
+    const weights = {}; $$('[data-factor]').forEach(x => { weights[x.dataset.factor] = Number(x.value); });
+    const modifiers = {}; $$('[data-modifier]').forEach(x => { modifiers[x.dataset.modifier] = Number(x.value); });
+    const old = state.brainConfig || {};
+    const result = await api('/api/brain/config', { method: 'POST', body: JSON.stringify({
+      reply_strategy: { ...(old.reply_strategy || {}), mode: $('#brainMode').value, threshold: Number($('#brainThreshold').value), scoring_mode: $('#brainScoringMode').value, rerank_candidates: Number($('#brainRerankCandidates').value), global_workers: Number($('#brainGlobalWorkers').value), per_group_workers: Number($('#brainGroupWorkers').value), model_concurrency: Number($('#brainModelWorkers').value), factor_weights: weights, modifiers },
+      embedding: { ...(old.embedding || {}), enabled: true, base_url: $('#embeddingBaseUrl').value.trim(), model: $('#embeddingModel').value.trim(), reranker_model: $('#rerankerModel').value.trim(), dimensions: 4096 },
+      retrieval: { ...(old.retrieval || {}), vector_limit: Number($('#brainVectorLimit').value), fts_limit: Number($('#brainFtsLimit').value), adaptive_rerank: $('#brainAdaptiveRerank').checked }
+    }) });
+    fillBrainConfig(result);
+    toast(result.hot_reload?.applied ? `已实时生效，AI PID ${result.hot_reload.response?.data?.pid || '未变化'}` : `配置已保存，热加载失败：${result.hot_reload?.error || '未知错误'}`, result.hot_reload?.applied ? 'success' : 'error', 7000);
+  } catch (e) { toast(`实时应用失败：${e.message}`, 'error'); }
+  finally { setBusy(button, false); }
+}
+
+async function saveMediaReplyConfig(button, source) {
+  setBusy(button, true, '应用中…');
+  try {
+    const old = state.brainConfig || {};
+    const current = old.media_reply || {};
+    const automaticEnabled = source === 'voice' ? $('#voiceAutoEnabled').checked : $('#faceAutoEnabled').checked;
+    const payload = {
+      ...current,
+      automatic_enabled: automaticEnabled,
+      voice_probability: Number($('#voiceReplyProbability').value) / 100,
+      face_probability: Number($('#faceReplyProbability').value) / 100,
+      voice_min_fit: Number($('#voiceMinFit').value),
+      face_min_fit: Number($('#faceMinFit').value),
+      min_candidate_confidence: Number($('#faceMinConfidence').value),
+      global_face_assets: $('#faceGlobalShared').checked,
+      auto_media_replaces_text: true,
+    };
+    const result = await api('/api/brain/config', { method: 'POST', body: JSON.stringify({ media_reply: payload }) });
+    fillBrainConfig(result);
+    toast(result.hot_reload?.applied ? `媒介策略已实时生效，AI PID ${result.hot_reload.response?.data?.pid || '未变'}` : '配置已保存，但热加载失败', result.hot_reload?.applied ? 'success' : 'error', 7000);
+  } catch (e) { toast(`媒介策略应用失败：${e.message}`, 'error'); }
+  finally { setBusy(button, false); }
+}
+
+async function testMediaContext(button, source) {
+  const query = source === 'voice' ? $('#voiceQuery').value.trim() : $('#faceQuery').value.trim();
+  const groupId = source === 'voice' ? $('#voiceTargetGroup').value : $('#faceTargetGroup').value;
+  if (!query) { toast('请先输入需要测试的对话语境', 'error'); return; }
+  setBusy(button, true, '分析中…');
+  try {
+    const r = await api('/api/media-reply/test', { method: 'POST', body: JSON.stringify({ query, group_id: groupId }) });
+    const rows = source === 'voice' ? r.voices : r.faces;
+    const names = (rows || []).slice(0, 3).map(x => source === 'voice' ? x.title : (x.ocr_text || x.summary || `#${x.id}`));
+    toast(names.length ? `语境匹配候选：${names.join('、')}` : '当前语境没有达到可发送的素材置信度', names.length ? 'success' : 'error', 9000);
+  } catch (e) { toast(`语境测试失败：${e.message}`, 'error'); }
+  finally { setBusy(button, false); }
+}
+
+function renderReplyTasks() {
+  const status = $('#taskStateFilter')?.value || '', query = ($('#taskQuery')?.value || '').trim().toLowerCase();
+  const finals = new Set(['completed', 'skipped', 'failed', 'cancelled']);
+  const rows = state.replyTasks.filter(x => {
+    if (status === 'active' && finals.has(x.state)) return false;
+    if (status && status !== 'active' && x.state !== status) return false;
+    return !query || `${x.group_name} ${x.sender_name} ${x.thread_id} ${x.question}`.toLowerCase().includes(query);
+  });
+  $('#replyTaskList').innerHTML = rows.length ? rows.map(x => { const t = x.details?.timings_ms || {}, routes = x.details?.route_counts || {}; const routeText = Object.entries(routes).map(([k,v]) => `${k} ${v}`).join(' · '); return `<article class="reply-task state-${escapeHtml(x.state)}">
+    <div class="task-main"><span class="task-state">${escapeHtml(x.state_label || x.state)}</span><strong>${escapeHtml(x.group_name || x.group_id)} · ${escapeHtml(x.sender_name || x.user_id)}</strong><p>${escapeHtml(x.question || '')}</p><code>${escapeHtml(x.thread_id || '')}</code></div>
+    <div class="task-meta"><span>${x.queue_position ? `排队 ${x.queue_position}` : `${Number(x.elapsed_seconds || 0).toFixed(1)}s`}</span><span>${x.score == null ? '评分 --' : `评分 ${x.score} / ${x.threshold}`}</span><span>${escapeHtml(x.model || '等待模型')}</span><b>${escapeHtml(x.medium || '待选择媒介')}</b><span class="task-timing">向量 ${Number(t.embedding_and_recall || 0).toFixed(0)}ms · 结构 ${Number(t.structured_routes || 0).toFixed(0)}ms · 重排 ${Number(t.rerank || 0).toFixed(0)}ms · 生成 ${Number(t.generation || 0).toFixed(0)}ms${x.details?.expanded_second_batch ? ' · 已扩批' : ''}${routeText ? `<br>${escapeHtml(routeText)}` : ''}</span></div>
+  </article>`; }).join('') : '<div class="terminal-empty">当前筛选条件下没有回复任务</div>';
+}
+
+async function refreshReplyTasks(silent = false) {
+  try {
+    const data = await api('/api/brain/tasks?limit=200'); state.replyTasks = data.items || []; renderReplyTasks();
+    $('#replyActiveCount').textContent = data.active || 0; $('#replyQueuedCount').textContent = data.queued || 0; $('#replyDoneCount').textContent = data.completed_recent || 0;
+    const s = data.runtime?.scheduler || {}; $('#workerUsage').textContent = `${s.active_workers || 0} / ${s.global_workers || 8}`;
+    const e = data.runtime?.embedding || {}; $('#backfillProgress').textContent = e.pending ?? 0; $('#embeddingState').textContent = e.paused ? '已暂停' : e.running ? '回填中' : '就绪';
+    $('#embeddingVectors').textContent = e.vectors ?? e.processed ?? 0; $('#embeddingPending').textContent = e.pending ?? 0;
+    const modelState = e.local_models?.[e.model] || {}, rerankerState = e.local_models?.[e.reranker_model] || {};
+    $('#embeddingLoaded').textContent = modelState.loaded && rerankerState.loaded ? '均已加载' : modelState.is_loading || rerankerState.is_loading ? '加载中' : '部分未加载';
+    const bytes = Number(modelState.actual_size || modelState.estimated_size || 0) + Number(rerankerState.actual_size || rerankerState.estimated_size || 0);
+    $('#embeddingMemory').textContent = bytes ? `${(bytes / 1073741824).toFixed(1)} GB` : '--';
+    $('#embeddingP50').textContent = e.embedding_p50_ms == null ? '--' : `${e.embedding_p50_ms} ms`; $('#embeddingP95').textContent = e.embedding_p95_ms == null ? '--' : `${e.embedding_p95_ms} ms`;
+    $('#rerankerP50').textContent = e.reranker_p50_ms == null ? '--' : `${e.reranker_p50_ms} ms`; $('#rerankerP95').textContent = e.reranker_p95_ms == null ? '--' : `${e.reranker_p95_ms} ms`;
+  } catch (e) { if (!silent) toast(`回复任务读取失败：${e.message}`, 'error'); }
+}
+
+async function controlBackfill(action, button) {
+  setBusy(button, true, '处理中…');
+  try { await api(`/api/embedding/backfill/${action}`, { method: 'POST', body: '{}' }); await refreshReplyTasks(true); toast(action === 'pause' ? '向量回填已暂停' : action === 'resume' ? '向量回填已继续' : '已将所有历史加入回填队列'); }
+  catch (e) { toast(`回填操作失败：${e.message}`, 'error'); }
+  finally { setBusy(button, false); }
+}
+
+async function previewBrain(button) {
+  setBusy(button, true, '计算中…');
+  try {
+    const result = await api('/api/brain/preview', { method: 'POST', body: '{}' });
+    $('#brainPreviewSummary').textContent = `共评估 ${result.evaluated} 条，门槛 ${result.threshold}，预计回复 ${result.predicted} 条`;
+    $('#brainPreviewList').innerHTML = result.items.length ? result.items.slice().reverse().map(x => `<article><strong>${escapeHtml(x.sender_name || x.group_id)} · ${x.estimated_score}</strong><p>${escapeHtml(x.text)}</p><small>${escapeHtml((x.signals || []).map(s => `${s.signal} ${s.value > 0 ? '+' : ''}${s.value}`).join(' · ') || '模型七维评分将在真实流程中补充')}</small></article>`).join('') : '<div class="terminal-empty">当前门槛下没有预计回复项</div>';
+    $('#brainPreviewDialog').showModal();
+  } catch (e) { toast(`预览失败：${e.message}`, 'error'); }
+  finally { setBusy(button, false); }
+}
+
+async function testEmbedding(button) {
+  setBusy(button, true, '测试中…');
+  try {
+    const groupId = state.config?.target_groups?.[0]?.id || state.config?.groups?.[0]?.id || '';
+    const result = await api('/api/embedding/test', {method:'POST', body:JSON.stringify({group_id:groupId,query:$('#embeddingTestQuery').value.trim()})});
+    $('#embeddingTestResult').textContent = `${result.latency_ms} ms · 召回 ${(result.items || []).length} 条${result.error ? ` · ${result.error}` : ''}`;
+    await refreshReplyTasks(true);
+  } catch(e) { $('#embeddingTestResult').textContent = e.message; toast(`向量测试失败：${e.message}`,'error'); }
+  finally { setBusy(button,false); }
 }
 
 function renderStatus(data) {
@@ -214,11 +377,88 @@ function updateTestGroups() {
   const select = $('#testGroup'), old = select.value; select.innerHTML = groupsData().filter(x => x.id).map(x => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)} · ${escapeHtml(x.id)}</option>`).join('');
   if ([...select.options].some(x => x.value === old)) select.value = old;
   const mem = $('#memoryGroup'); if (mem) { const oldMem = mem.value; mem.innerHTML = state.groupCatalog.filter(x => x.id).map(x => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)} · ${escapeHtml(x.id)}</option>`).join(''); if ([...mem.options].some(x => x.value === oldMem)) mem.value = oldMem; }
+  const personaGroup = $('#personaGroup'); if (personaGroup) { const oldPersona = personaGroup.value; personaGroup.innerHTML = state.groupCatalog.filter(x => x.id).map(x => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)} · ${escapeHtml(x.id)}</option>`).join(''); if ([...personaGroup.options].some(x => x.value === oldPersona)) personaGroup.value = oldPersona; }
   const media = $('#mediaGroup'); if (media) { const oldMedia = media.value; media.innerHTML = `<option value="">全部群媒体</option>` + state.groupCatalog.filter(x => x.id).map(x => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)} · ${escapeHtml(x.id)}</option>`).join(''); if ([...media.options].some(x => x.value === oldMedia)) media.value = oldMedia; }
   const voiceRecords = $('#voiceRecordsGroup'); if (voiceRecords) { const oldVoiceRecords = voiceRecords.value; voiceRecords.innerHTML = `<option value="">全部来源群</option>` + state.groupCatalog.filter(x => x.id).map(x => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)} · ${escapeHtml(x.id)}</option>`).join(''); if ([...voiceRecords.options].some(x => x.value === oldVoiceRecords)) voiceRecords.value = oldVoiceRecords; }
   const voice = $('#voiceTargetGroup'); if (voice) { const oldVoice = voice.value; voice.innerHTML = groupsData().filter(x => x.id).map(x => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)} · ${escapeHtml(x.id)}</option>`).join(''); if ([...voice.options].some(x => x.value === oldVoice)) voice.value = oldVoice; }
   const faceTarget = $('#faceTargetGroup'); if (faceTarget) { const oldFaceTarget = faceTarget.value; faceTarget.innerHTML = groupsData().filter(x => x.id).map(x => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)} · ${escapeHtml(x.id)}</option>`).join(''); if ([...faceTarget.options].some(x => x.value === oldFaceTarget)) faceTarget.value = oldFaceTarget; }
   const faceGroup = $('#faceGroup'); if (faceGroup) { const oldFaceGroup = faceGroup.value; faceGroup.innerHTML = `<option value="">全部来源群</option>` + state.groupCatalog.filter(x => x.id).map(x => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)} · ${escapeHtml(x.id)}</option>`).join(''); if ([...faceGroup.options].some(x => x.value === oldFaceGroup)) faceGroup.value = oldFaceGroup; }
+  updateBlacklistGroupOptions();
+}
+
+function updateBlacklistGroupOptions() {
+  const select = $('#memberBlacklistGroup'); if (!select) return;
+  const old = select.value;
+  const groups = state.groupCatalog.filter(x => x.id?.endsWith('@chatroom') && (x.selected || (state.ignoredGroupMembers[x.id] || []).length));
+  select.innerHTML = groups.map(x => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name || x.id)} · ${escapeHtml(x.id)}</option>`).join('');
+  if ([...select.options].some(x => x.value === old)) select.value = old;
+  updateBlacklistCount();
+}
+
+function currentBlacklistIds() {
+  const groupId = $('#memberBlacklistGroup')?.value || '';
+  return new Set((state.ignoredGroupMembers[groupId] || []).map(String));
+}
+
+function updateBlacklistCount() {
+  const count = currentBlacklistIds().size;
+  if ($('#memberBlacklistCount')) $('#memberBlacklistCount').textContent = String(count);
+}
+
+function renderGroupMembers() {
+  const groupId = $('#memberBlacklistGroup')?.value || '';
+  const query = ($('#memberBlacklistQuery')?.value || '').trim().toLowerCase();
+  const rows = state.groupMemberCatalog[groupId] || [];
+  const ignored = currentBlacklistIds();
+  const visible = rows.filter(x => !query || `${x.name || ''} ${x.nickname || ''} ${x.card || ''} ${x.user_id || ''}`.toLowerCase().includes(query));
+  $('#memberCatalogCount').textContent = rows.length ? `成员目录 ${rows.length} 人，当前显示 ${visible.length} 人` : '尚未拉取成员目录';
+  $('#memberBlacklistList').innerHTML = visible.length ? visible.map(item => {
+    const sources = (item.sources || []).map(x => x === 'onebot_live' ? '微信实时' : x === 'permanent_memory' ? '永久记忆' : '已保存').join(' + ');
+    const detail = [item.card && `群昵称 ${item.card}`, item.nickname && `昵称 ${item.nickname}`, item.message_count ? `已记录 ${item.message_count} 条消息` : ''].filter(Boolean).join(' · ');
+    return `<label class="member-blacklist-row"><input type="checkbox" data-member-id="${escapeHtml(item.user_id)}" ${ignored.has(String(item.user_id)) ? 'checked' : ''}><span class="member-avatar">${escapeHtml((item.name || '群').slice(0, 1))}</span><span class="member-identity"><strong>${escapeHtml(item.name || '群友')}</strong><small>${escapeHtml(detail || '暂无可读群昵称')}</small><code>${escapeHtml(item.user_id)}</code></span><span class="member-source">${escapeHtml(sources || '成员目录')}</span></label>`;
+  }).join('') : `<div class="terminal-empty">${rows.length ? '没有匹配的成员' : '暂无成员数据，请点击“完整拉取成员”'}</div>`;
+  $$('[data-member-id]', $('#memberBlacklistList')).forEach(box => box.onchange = () => {
+    const ids = currentBlacklistIds();
+    if (box.checked) ids.add(box.dataset.memberId); else ids.delete(box.dataset.memberId);
+    state.ignoredGroupMembers[groupId] = [...ids];
+    updateBlacklistCount();
+    $('#memberBlacklistState').textContent = '有未保存的黑名单修改';
+  });
+  updateBlacklistCount();
+}
+
+async function loadGroupMembers(button = null, silent = false) {
+  const groupId = $('#memberBlacklistGroup')?.value || '';
+  if (!groupId) { renderGroupMembers(); return; }
+  if (silent && state.groupMemberCatalog[groupId]) { renderGroupMembers(); return; }
+  if (button) setBusy(button, true, '拉取中…');
+  $('#memberBlacklistState').textContent = '正在合并微信实时目录与永久记忆…';
+  try {
+    const data = await api(`/api/groups/members?group_id=${encodeURIComponent(groupId)}`);
+    state.groupMemberCatalog[groupId] = data.items || [];
+    state.ignoredGroupMembers[groupId] = [...new Set((data.ignored_ids || []).map(String))];
+    renderGroupMembers();
+    const live = Number(data.source_counts?.onebot_live || 0), memory = Number(data.source_counts?.permanent_memory || 0);
+    $('#memberBlacklistState').textContent = `已拉取 ${data.count} 名成员 · 实时 ${live} · 永久记忆 ${memory}`;
+    if (data.onebot_error && !silent) toast(`微信实时目录暂不可用，已显示全部永久记忆成员：${data.onebot_error}`, 'error', 7000);
+  } catch (e) {
+    $('#memberBlacklistState').textContent = '成员拉取失败';
+    if (!silent) toast(`群成员拉取失败：${e.message}`, 'error', 7000);
+  } finally { if (button) setBusy(button, false); }
+}
+
+async function saveGroupBlacklist(button) {
+  const groupId = $('#memberBlacklistGroup')?.value || '';
+  if (!groupId) { toast('请先选择群聊', 'error'); return; }
+  setBusy(button, true, '保存中…');
+  try {
+    const result = await api('/api/groups/ignored-members', { method: 'POST', body: JSON.stringify({ group_id: groupId, user_ids: [...currentBlacklistIds()] }) });
+    state.ignoredGroupMembers[groupId] = result.ignored_ids || [];
+    updateBlacklistCount();
+    $('#memberBlacklistState').textContent = `已屏蔽 ${result.count} 人，保存后已立即生效`;
+    toast(result.hot_reload?.applied ? `对话黑名单已实时生效，AI PID ${result.hot_reload.response?.data?.pid || '未变'}` : `黑名单已保存，热加载失败：${result.hot_reload?.error || '未知错误'}`, result.hot_reload?.applied ? 'success' : 'error', 7000);
+  } catch (e) { toast(`黑名单保存失败：${e.message}`, 'error', 7000); }
+  finally { setBusy(button, false); }
 }
 function escapeHtml(v) { const d = document.createElement('div'); d.textContent = v; return d.innerHTML; }
 
@@ -440,10 +680,142 @@ async function vectorSearch(button) {
   setBusy(button, true, '检索中…');
   try {
     const r = await api('/api/memory/vector-search', { method: 'POST', body: JSON.stringify({ group_id: $('#memoryGroup').value, query: $('#memoryQuery').value, limit: 30 }) });
-    setMemoryMode('向量语义检索', `本地轻量向量命中 ${r.count} 条`, 'VECTOR');
+    setMemoryMode('向量语义检索', `本地 Qwen3 向量命中 ${r.count} 条`, 'VECTOR');
     $('#memoryResults').innerHTML = r.items.length ? r.items.map(x => `<div class="memory-row vector"><div><strong>score ${x.score}</strong><small>${escapeHtml(x.created_at || '')} · ${escapeHtml(x.sender_name || x.user_id || x.direction || '')} · ${escapeHtml(x.event_id || '')}</small></div><p>${escapeHtml(x.text || '')}</p></div>`).join('') : '<div class="terminal-empty">没有语义命中；可以先导入/积累更多聊天记录</div>';
   } catch (e) { toast(`向量检索失败：${e.message}`, 'error'); }
   finally { setBusy(button, false); }
+}
+
+const personaCategoryLabels = { fact: '永久事实', interest: '兴趣偏好', habit: '互动习惯', style: '表达风格', role: '群内角色', topic: '高频话题', quote: '经典原话' };
+const personaStatusLabels = { completed: '已完成', running: '分析中', queued: '排队中', paused: '已暂停', failed: '失败', cancelled: '已取消', not_analyzed: '未分析', legacy_auto: '旧画像', manual: '人工画像' };
+
+function personaInitial(name) { return [...String(name || '群').trim()][0] || '群'; }
+function personaQuery(path, params) { const q = new URLSearchParams(Object.entries(params).filter(([, value]) => value !== '' && value != null)); return `${path}?${q}`; }
+
+async function loadPersonaMembers(silent = false, preserveSelection = true) {
+  const groupId = $('#personaGroup')?.value || '';
+  if (!groupId) return;
+  try {
+    const result = await api(personaQuery('/api/personas/list', { group_id: groupId, query: $('#personaSearch').value.trim(), status: $('#personaStatus').value, page_size: 500 }));
+    state.persona.members = result.items || [];
+    $('#personaDirectoryMeta').textContent = `${result.total || 0} 位群成员 · 当前显示 ${result.count || 0} 位`;
+    renderPersonaMembers();
+    const selectedExists = state.persona.members.some(x => x.user_id === state.persona.selectedUserId);
+    if ((!preserveSelection || !selectedExists) && state.persona.members.length) state.persona.selectedUserId = state.persona.members[0].user_id;
+    if (state.persona.selectedUserId) await loadPersonaDetail(state.persona.selectedUserId, true);
+    else renderPersonaEmpty();
+  } catch (e) { if (!silent) toast(`画像目录读取失败：${e.message}`, 'error'); }
+}
+
+function renderPersonaMembers() {
+  const current = state.persona.selectedUserId;
+  $('#personaMemberList').innerHTML = state.persona.members.length ? state.persona.members.map(item => {
+    const name = item.display_name || item.card || item.nickname || item.user_id;
+    const aliases = (item.aliases || []).join('、');
+    const status = item.analysis_status || 'not_analyzed';
+    return `<button class="persona-member ${item.user_id === current ? 'active' : ''}" data-persona-user="${escapeHtml(item.user_id)}"><span class="persona-list-avatar">${escapeHtml(personaInitial(name))}</span><span class="persona-list-main"><strong>${escapeHtml(name)}</strong><small>${escapeHtml(aliases ? `外号：${aliases}` : item.user_id)}</small><em>${Number(item.message_count || 0).toLocaleString()} 条 · ${escapeHtml(item.last_seen || '尚无发言')}</em></span><span class="persona-list-state ${escapeHtml(status)}">${escapeHtml(personaStatusLabels[status] || status)}</span></button>`;
+  }).join('') : '<div class="terminal-empty">当前筛选条件下没有成员</div>';
+  $$('[data-persona-user]', $('#personaMemberList')).forEach(button => button.onclick = () => {
+    state.persona.selectedUserId = button.dataset.personaUser; renderPersonaMembers(); loadPersonaDetail(button.dataset.personaUser);
+  });
+}
+
+function renderPersonaEmpty() {
+  state.persona.detail = null; $('#personaEmpty').hidden = false; $('#personaProfileContent').hidden = true;
+  $('#personaKpis').innerHTML = ''; $('#personaHeatmap').innerHTML = ''; $('#personaTrend').innerHTML = '';
+  $('#personaGraph').innerHTML = '<div class="terminal-empty">选择成员后生成关系图</div>';
+  $('#personaEvidence').innerHTML = '<div class="terminal-empty">暂无证据</div>';
+}
+
+async function loadPersonaDetail(userId, silent = false) {
+  if (!userId || !$('#personaGroup').value) return;
+  try {
+    const detail = await api(personaQuery('/api/personas/detail', { group_id: $('#personaGroup').value, user_id: userId }));
+    if (state.persona.selectedUserId !== userId) return;
+    state.persona.detail = detail; renderPersonaDetail(detail); renderPersonaMembers();
+  } catch (e) { if (!silent) toast(`画像详情读取失败：${e.message}`, 'error'); }
+}
+
+function renderPersonaDetail(detail) {
+  const p = detail.profile || {}, metrics = detail.metrics || {}, claims = detail.claims || [];
+  $('#personaEmpty').hidden = true; $('#personaProfileContent').hidden = false;
+  $('#personaAvatar').textContent = personaInitial(p.display_name); $('#personaName').textContent = p.display_name || p.user_id;
+  const aliases = (detail.aliases || []).map(x => x.alias).filter(Boolean);
+  $('#personaIdentity').textContent = [aliases.length ? `外号 ${aliases.join('、')}` : '', p.user_id, `${Number(p.message_count || 0).toLocaleString()} 条消息`].filter(Boolean).join(' · ');
+  const status = p.analysis_status || 'not_analyzed'; $('#personaState').className = `persona-state ${status}`; $('#personaState').textContent = personaStatusLabels[status] || status;
+  $('#personaSummary').textContent = p.summary || '尚未生成摘要。点击“分析选中成员”读取该成员全部历史消息。';
+  const facts = [...(p.manual_facts || []).map(x => ({ value: typeof x === 'string' ? x : x.value, manual: true })), ...(p.tags || []).map(value => ({ value, tag: true }))];
+  $('#personaFacts').innerHTML = facts.length ? facts.map(x => `<span class="${x.manual ? 'manual' : ''}">${escapeHtml(x.value || '')}${x.manual ? '<i>人工</i>' : ''}</span>`).join('') : '<small class="persona-muted">暂无永久事实或标签</small>';
+  const memes = detail.memes || []; $('#personaMemeSection').hidden = !memes.length;
+  $('#personaMemes').innerHTML = memes.map(x => `<span title="${escapeHtml(x.meaning || '')}">${escapeHtml(x.name)}<i>${Math.round(Number(x.confidence || 0) * 100)}%</i></span>`).join('');
+  const grouped = Object.entries(personaCategoryLabels).map(([key, label]) => [key, label, claims.filter(x => x.category === key).slice(0, key === 'quote' ? 5 : 8)]).filter(([, , rows]) => rows.length);
+  $('#personaClaims').innerHTML = grouped.length ? grouped.map(([key, label, rows]) => `<section><div class="persona-section-title"><h3>${label}</h3><span>${rows.length}</span></div>${rows.map(x => `<p class="persona-claim"><span>${escapeHtml(x.value)}</span><small>${Math.round(Number(x.confidence || 0) * 100)}% · ${x.source === 'manual' ? '人工' : '有证据'}</small></p>`).join('')}</section>`).join('') : '<div class="terminal-empty">尚无结构化画像结论</div>';
+  renderPersonaBehavior(metrics); renderPersonaGraph(p, detail.relationships || []); renderPersonaEvidence(claims);
+  const activeJob = (detail.jobs || []).find(x => ['queued', 'running', 'paused'].includes(x.status));
+  $('#personaProgress').hidden = !activeJob;
+  if (activeJob) { const percent = activeJob.total_messages ? Math.round(activeJob.processed_messages / activeJob.total_messages * 100) : 100; $('#personaProgress i').style.width = `${percent}%`; $('#personaProgress small').textContent = `${personaStatusLabels[activeJob.status]} · ${activeJob.processed_messages}/${activeJob.total_messages} · ${percent}%`; $('#personaJobState').textContent = `${percent}%`; $('#personaProgressAction').textContent = activeJob.status === 'paused' ? '继续' : '暂停'; $('#personaProgressAction').dataset.jobId = activeJob.id; $('#personaProgressAction').dataset.action = activeJob.status === 'paused' ? 'resume' : 'pause'; }
+  else $('#personaJobState').textContent = status === 'completed' ? 'READY' : (personaStatusLabels[status] || 'READY');
+}
+
+function renderPersonaBehavior(metrics) {
+  const media = metrics.media || {};
+  $('#personaKpis').innerHTML = `<div><strong>${Number(metrics.message_count || 0).toLocaleString()}</strong><small>历史消息</small></div><div><strong>${Number(metrics.average_length || 0).toFixed(1)}</strong><small>平均字数</small></div><div><strong>${Math.round(Number(metrics.media_ratio || 0) * 100)}%</strong><small>媒体比例</small></div><div><strong>${(metrics.interactions || []).length}</strong><small>常聊对象</small></div>`;
+  const heat = metrics.heatmap || Array.from({ length: 7 }, () => Array(24).fill(0)); const maxHeat = Math.max(1, ...heat.flat());
+  $('#personaHeatmap').innerHTML = heat.flatMap((day, weekday) => day.map((count, hour) => `<i style="--level:${Math.max(.06, count / maxHeat)}" title="周${'一二三四五六日'[weekday]} ${String(hour).padStart(2, '0')}:00 · ${count} 条"></i>`)).join('');
+  const trend = metrics.trend || [], maxTrend = Math.max(1, ...trend.map(x => x.count));
+  $('#personaTrend').innerHTML = trend.length ? `<div class="persona-trend-bars">${trend.map(x => `<i style="height:${Math.max(3, x.count / maxTrend * 100)}%" title="${escapeHtml(x.date)} · ${x.count} 条"></i>`).join('')}</div><div class="persona-trend-meta"><span>${escapeHtml(trend[0].date)}</span><strong>消息趋势</strong><span>${escapeHtml(trend.at(-1).date)}</span></div>` : '<div class="terminal-empty">暂无趋势数据</div>';
+  $('#personaTopics').innerHTML = `<div><h3>高频话题</h3>${(metrics.topics || []).slice(0, 12).map(x => `<span>${escapeHtml(x.name)}<i>${x.count}</i></span>`).join('') || '<small>暂无</small>'}</div><div><h3>媒体构成</h3>${Object.entries(media).map(([key, count]) => `<span>${escapeHtml(key)}<i>${count}</i></span>`).join('') || '<small>纯文字为主</small>'}</div>`;
+}
+
+function renderPersonaGraph(profile, rows) {
+  if (!rows.length) { $('#personaGraph').innerHTML = '<div class="terminal-empty">暂未观察到稳定互动关系</div>'; return; }
+  const width = 520, height = 310, cx = 260, cy = 155, maxCount = Math.max(1, ...rows.map(x => Number(x.count || 0)));
+  const nodes = rows.slice(0, 20).map((row, index) => { const angle = (Math.PI * 2 * index / Math.max(rows.length, 1)) - Math.PI / 2; const radius = rows.length > 12 ? (index % 2 ? 132 : 105) : 118; return { ...row, x: cx + Math.cos(angle) * radius, y: cy + Math.sin(angle) * radius, size: 25 + 15 * Number(row.count || 0) / maxCount }; });
+  const lines = nodes.map(x => `<line x1="${cx}" y1="${cy}" x2="${x.x}" y2="${x.y}" style="stroke-width:${1 + 4 * x.count / maxCount}"/><text x="${(cx + x.x) / 2}" y="${(cy + x.y) / 2 - 4}">${escapeHtml((x.relations || []).join('、'))}</text>`).join('');
+  const nodeHtml = nodes.map(x => `<button class="persona-graph-node" style="left:${x.x / width * 100}%;top:${x.y / height * 100}%;width:${x.size}px;height:${x.size}px" title="${escapeHtml(x.name)} · ${x.count} 次互动${x.relations?.length ? ` · ${x.relations.join('、')}` : ''}">${escapeHtml(personaInitial(x.name))}<span>${escapeHtml(x.name)}</span></button>`).join('');
+  $('#personaGraph').innerHTML = `<svg viewBox="0 0 ${width} ${height}" aria-hidden="true">${lines}</svg><div class="persona-graph-center"><b>${escapeHtml(personaInitial(profile.display_name))}</b><span>${escapeHtml(profile.display_name)}</span></div>${nodeHtml}`;
+}
+
+function renderPersonaEvidence(claims) {
+  const filter = $('#personaClaimFilter').value; const rows = claims.filter(x => !filter || x.category === filter).flatMap(claim => (claim.evidence || []).map(evidence => ({ claim, evidence })));
+  rows.sort((a, b) => String(b.evidence.time || '').localeCompare(String(a.evidence.time || '')));
+  $('#personaEvidence').innerHTML = rows.length ? rows.map(({ claim, evidence }) => `<article><span class="persona-evidence-dot"></span><div><header><strong>${escapeHtml(personaCategoryLabels[claim.category] || claim.category)}</strong><time>${escapeHtml(evidence.time || '')}</time></header><h3>${escapeHtml(claim.value)}</h3><blockquote>${escapeHtml(evidence.text || '')}</blockquote><footer>message_id: ${escapeHtml(evidence.message_id || evidence.event_id || '--')} · 置信度 ${Math.round(Number(claim.confidence || 0) * 100)}%</footer></div></article>`).join('') : '<div class="terminal-empty">当前类别暂无可定位证据</div>';
+}
+
+async function analyzePersona(scope, button) {
+  const userId = scope === 'member' ? state.persona.selectedUserId : '';
+  if (scope === 'member' && !userId) return toast('请先选择成员', 'error');
+  setBusy(button, true, '排队中…');
+  try { const result = await api('/api/personas/analyze', { method: 'POST', body: JSON.stringify({ group_id: $('#personaGroup').value, user_id: userId, mode: 'full' }) }); toast(`已创建 ${result.queued} 个画像任务`); await loadPersonaMembers(true); }
+  catch (e) { toast(`画像分析启动失败：${e.message}`, 'error'); } finally { setBusy(button, false); }
+}
+
+async function controlPersonaJob(button) {
+  const jobId = Number(button.dataset.jobId || 0), action = button.dataset.action;
+  if (!jobId || !action) return;
+  button.disabled = true;
+  try { await api('/api/personas/analyze', { method: 'POST', body: JSON.stringify({ action, job_id: jobId }) }); toast(action === 'pause' ? '画像分析已暂停' : '画像分析已继续'); await loadPersonaDetail(state.persona.selectedUserId, true); }
+  catch (e) { toast(`任务操作失败：${e.message}`, 'error'); } finally { button.disabled = false; }
+}
+
+function openPersonaEditor() {
+  const detail = state.persona.detail; if (!detail) return;
+  const p = detail.profile || {}; $('#personaEditorIdentity').textContent = `${p.display_name || p.user_id} · ${p.group_id}`;
+  $('#personaManualSummary').value = p.manual_summary || ''; $('#personaManualTags').value = (p.manual_tags || []).join(', ');
+  $('#personaManualFacts').value = (p.manual_facts || []).map(x => typeof x === 'string' ? x : x.value).filter(Boolean).join('\n'); $('#personaEditor').showModal();
+}
+
+async function savePersonaEditor() {
+  const p = state.persona.detail?.profile; if (!p) return;
+  const tags = $('#personaManualTags').value.split(/[,，]/).map(x => x.trim()).filter(Boolean); const facts = $('#personaManualFacts').value.split('\n').map(x => x.trim()).filter(Boolean);
+  await api('/api/personas/save', { method: 'POST', body: JSON.stringify({ group_id: p.group_id, user_id: p.user_id, summary: $('#personaManualSummary').value.trim(), tags, facts }) });
+  $('#personaEditor').close(); toast('人工画像已保存并实时生效'); await loadPersonaDetail(p.user_id);
+}
+
+function selectPersonaTab(tab) {
+  state.persona.tab = tab; $$('[data-persona-tab]').forEach(x => x.classList.toggle('active', x.dataset.personaTab === tab));
+  $('#page-personas').dataset.mobileTab = tab;
+  if (tab === 'edit') openPersonaEditor();
 }
 
 async function loadMembers(button) {
@@ -609,6 +981,7 @@ async function ocrMedia(btn) {
     toast(`图片 #${btn.dataset.mediaId} 解析完成 · ${r.latency_ms || 0} ms`);
     if ($('#page-media').classList.contains('active')) loadMediaCenter($('#mediaRefreshBtn'), true);
     if ($('#page-memory').classList.contains('active')) loadMedia($('#loadMediaBtn'), true);
+    if ($('#page-faces').classList.contains('active')) loadFaces(null, true);
   } catch (e) { toast(`OCR 解析失败：${e.message}`, 'error', 9000); }
   finally { setBusy(btn, false); }
 }
@@ -621,6 +994,7 @@ async function asrMedia(btn) {
     if ($('#page-media').classList.contains('active')) loadMediaCenter($('#mediaRefreshBtn'), true);
     if ($('#page-voice-records')?.classList.contains('active')) loadVoiceRecords($('#voiceRecordsRefreshBtn'), true);
     if ($('#page-memory').classList.contains('active')) loadMedia($('#loadMediaBtn'), true);
+    if ($('#page-faces').classList.contains('active')) loadFaces(null, true);
   } catch (e) { toast(`ASR 转写失败：${e.message}`, 'error', 9000); }
   finally { setBusy(btn, false); }
 }
@@ -698,13 +1072,14 @@ function voiceListRow(x) {
     <div class="voice-list-pack"><strong>${escapeHtml(x.pack_name || '未命名语音包')}</strong><small>${escapeHtml(x.category || '未分类')}</small><small>#${x.id} · ${(x.file_ext || 'voice').toUpperCase()}</small></div>
     <div class="voice-list-player"><audio class="voice-audio" controls preload="none" src="/api/voicepacks/audio?id=${encodeURIComponent(x.id)}"></audio><small>${Math.round((x.duration_ms || 0) / 1000)} 秒 · ${Math.round((x.size || 0) / 1024)} KB · 使用 ${x.usage_count || 0} 次</small></div>
     <div class="voice-list-tags">${match}${tagHtml}</div>
-    <div class="voice-list-actions"><button class="link-btn voice-send" data-voice-id="${x.id}">发送</button><button class="link-btn voice-copy" data-text="${escapeHtml(text)}">复制</button></div>
+    <div class="voice-list-actions"><button class="link-btn voice-send" data-voice-id="${x.id}">发送</button><button class="link-btn voice-copy" data-text="${escapeHtml(text)}">复制</button><button class="link-btn danger-text voice-delete" data-voice-id="${x.id}" data-voice-title="${escapeHtml(text)}">删除</button></div>
   </div>`;
 }
 
 function bindVoiceListActions(root) {
   $$('.voice-send', root).forEach(btn => btn.onclick = () => sendVoicepack(btn));
   $$('.voice-copy', root).forEach(btn => btn.onclick = async () => { await navigator.clipboard.writeText(btn.dataset.text || ''); toast('语音文案已复制'); });
+  $$('.voice-delete', root).forEach(btn => btn.onclick = () => deleteVoiceItem(btn));
   $$('.media-expand', root).forEach(btn => btn.onclick = () => previewContent(btn));
 }
 
@@ -740,12 +1115,22 @@ function renderVoiceVirtualList(items) {
 function renderVoiceCategories(packs) {
   const oldCategory = $('#voiceCategory').value;
   const oldPack = $('#voicePackFilter').value;
+  const oldImportPack = $('#voiceImportTargetPack').value;
   const cats = [...new Set((packs || []).map(x => x.category).filter(Boolean))].sort();
   $('#voiceCategory').innerHTML = '<option value="">全部文件夹</option>' + cats.map(x => `<option value="${escapeHtml(x)}">${escapeHtml(x)}</option>`).join('');
   if ([...$('#voiceCategory').options].some(x => x.value === oldCategory)) $('#voiceCategory').value = oldCategory;
   const visiblePacks = (packs || []).filter(x => !$('#voiceCategory').value || x.category === $('#voiceCategory').value);
   $('#voicePackFilter').innerHTML = '<option value="">全部语音包</option>' + visiblePacks.map(x => `<option value="${x.id}">${x.sequence || ''}. ${escapeHtml(x.name || '未命名语音包')} · ${x.item_count || 0} 条</option>`).join('');
   if ([...$('#voicePackFilter').options].some(x => x.value === oldPack)) $('#voicePackFilter').value = oldPack;
+  $('#voiceImportTargetPack').innerHTML = '<option value="">自动创建新语音包</option>' + (packs || []).map(x => `<option value="${x.id}">${escapeHtml(x.category || '未分类')} / ${escapeHtml(x.name || '未命名语音包')} · ${x.item_count || 0} 条</option>`).join('');
+  if ([...$('#voiceImportTargetPack').options].some(x => x.value === oldImportPack)) $('#voiceImportTargetPack').value = oldImportPack;
+  $('#voiceDeletePackBtn').disabled = !$('#voicePackFilter').value;
+  syncVoiceImportTarget();
+}
+
+function syncVoiceImportTarget() {
+  const appending = !!$('#voiceImportTargetPack').value;
+  $('#voiceImportCategory').disabled = appending;
 }
 
 async function loadVoicepacks(button, silent = false) {
@@ -788,7 +1173,7 @@ async function planVoicepacks(button) {
   try {
     const paths = $('#voiceImportPaths').value.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
     if (!paths.length) throw new Error('请先填写来源路径');
-    const r = await api('/api/voicepacks/plan', { method: 'POST', body: JSON.stringify({ paths, category: $('#voiceImportCategory').value.trim() }) });
+    const r = await api('/api/voicepacks/plan', { method: 'POST', body: JSON.stringify({ paths, category: $('#voiceImportCategory').value.trim(), target_pack_id: $('#voiceImportTargetPack').value || 0 }) });
     const errors = (r.errors || []).map(x => '<div class="voice-plan-error">' + escapeHtml(x.path) + '：' + escapeHtml(x.error) + '</div>').join('');
     const groups = (r.groups || []).map(x => '<li><strong>' + escapeHtml(x.pack_name) + '</strong><span>' + escapeHtml(x.category) + ' · ' + x.count + ' 条</span><small>' + x.samples.map(escapeHtml).join('、') + '</small></li>').join('');
     $('#voiceImportPlan').innerHTML = '<strong>扫描到 ' + r.total + ' 条，' + (r.groups?.length || 0) + ' 个语音包</strong>' + (groups ? '<ul>' + groups + '</ul>' : '') + errors;
@@ -802,7 +1187,7 @@ async function importVoicepacks(button) {
   try {
     const paths = $('#voiceImportPaths').value.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
     if (!paths.length) throw new Error('请先填写来源路径');
-    const r = await api('/api/voicepacks/import', { method: 'POST', body: JSON.stringify({ paths, category: $('#voiceImportCategory').value.trim() }) });
+    const r = await api('/api/voicepacks/import', { method: 'POST', body: JSON.stringify({ paths, category: $('#voiceImportCategory').value.trim(), target_pack_id: $('#voiceImportTargetPack').value || 0 }) });
     toast(`导入完成：新增 ${r.imported} 条，跳过 ${r.skipped} 条，错误 ${r.errors?.length || 0} 个`, r.errors?.length ? 'error' : 'success', 9000);
     if (r.pack_summary?.length) $('#voiceImportPlan').innerHTML = '<strong>最近一次导入</strong><ul>' + r.pack_summary.map(x => '<li><strong>' + escapeHtml(x.pack_name) + '</strong><span>新增 ' + x.imported + ' · 跳过 ' + x.skipped + '</span></li>').join('') + '</ul>';
     await loadVoicepacks($('#voiceRefreshBtn'), true);
@@ -817,6 +1202,34 @@ async function sendVoicepack(button) {
     toast(`已发送语音：${r.item?.title || button.dataset.voiceId} · ${r.send?.latency_ms || 0}ms`);
     await loadVoicepacks(null, true);
   } catch (e) { toast(`语音发送失败：${e.message}`, 'error', 12000); }
+  finally { setBusy(button, false); }
+}
+
+async function deleteVoiceItem(button) {
+  const title = button.dataset.voiceTitle || `#${button.dataset.voiceId}`;
+  if (!window.confirm(`确定删除语音“${title}”吗？删除后会立即退出检索。`)) return;
+  setBusy(button, true, '删除中');
+  try {
+    const r = await api('/api/voicepacks/delete-item', { method: 'POST', body: JSON.stringify({ id: button.dataset.voiceId, delete_file: true }) });
+    toast(`已删除语音和索引：${r.deleted || 0} 条`);
+    await loadVoicepacks(null, true);
+  } catch (e) { toast(`删除语音失败：${e.message}`, 'error', 10000); }
+  finally { setBusy(button, false); }
+}
+
+async function deleteCurrentVoicePack(button) {
+  const select = $('#voicePackFilter');
+  const packId = select.value;
+  if (!packId) return;
+  const label = select.options[select.selectedIndex]?.textContent || `#${packId}`;
+  if (!window.confirm(`确定删除整个语音包“${label}”吗？包内语音、文件和检索索引都会删除。`)) return;
+  setBusy(button, true, '删除中…');
+  try {
+    const r = await api('/api/voicepacks/delete-pack', { method: 'POST', body: JSON.stringify({ pack_id: packId, delete_files: true }) });
+    select.value = '';
+    toast(`已删除语音包：${r.deleted || 0} 条语音，清理 ${r.embedding_count || 0} 条向量`);
+    await loadVoicepacks(null, true);
+  } catch (e) { toast(`删除语音包失败：${e.message}`, 'error', 10000); }
   finally { setBusy(button, false); }
 }
 
@@ -838,8 +1251,11 @@ function faceCard(x) {
       <div class="media-actions">
         ${src ? `<button class="link-btn face-preview" data-src="${escapeHtml(src)}" data-title="face #${x.id}">预览</button>` : ''}
         <button class="link-btn face-send" data-face-id="${x.id}">发送到目标群</button>
-        <button class="link-btn media-ocr" data-media-id="${x.id}">重新解析</button>
-        <button class="link-btn media-edit" data-media-id="${x.id}" data-summary="${escapeHtml(x.image_summary || '')}" data-ocr="${escapeHtml(x.ocr_text || '')}" data-tags="${escapeHtml((x.tags || []).join('，'))}" data-keywords="${escapeHtml((x.keywords || []).join('，'))}">编辑</button>
+        <button class="link-btn media-ocr" data-media-id="${x.canonical_media_id}">重新解析</button>
+        <button class="link-btn media-edit" data-media-id="${x.canonical_media_id}" data-summary="${escapeHtml(x.image_summary || '')}" data-ocr="${escapeHtml(x.ocr_text || '')}" data-tags="${escapeHtml((x.tags || []).join('，'))}" data-keywords="${escapeHtml((x.keywords || []).join('，'))}">编辑</button>
+        <button class="link-btn face-semantic-edit" data-face-id="${x.id}" data-aliases="${escapeHtml((x.aliases || []).join('，'))}" data-emotions="${escapeHtml((x.emotions || []).join('，'))}" data-intents="${escapeHtml((x.intents || []).join('，'))}">语义标签</button>
+        <button class="link-btn face-toggle" data-face-id="${x.id}" data-enabled="${Number(x.enabled) ? '1' : '0'}">${Number(x.enabled) ? '屏蔽' : '启用'}</button>
+        <button class="link-btn face-group-toggle" data-face-id="${x.id}" data-enabled="${Number(x.group_enabled) ? '1' : '0'}">${Number(x.group_enabled) ? '当前群禁用' : '当前群启用'}</button>
       </div>
     </div>
   </article>`;
@@ -859,6 +1275,9 @@ async function loadFaces(button, silent = false) {
     $$('.face-send', $('#faceResults')).forEach(btn => btn.onclick = () => sendFace(btn));
     $$('.media-ocr', $('#faceResults')).forEach(btn => btn.onclick = () => ocrMedia(btn));
     $$('.media-edit', $('#faceResults')).forEach(btn => btn.onclick = () => editMedia(btn));
+    $$('.face-toggle', $('#faceResults')).forEach(btn => btn.onclick = () => toggleFace(btn));
+    $$('.face-group-toggle', $('#faceResults')).forEach(btn => btn.onclick = () => toggleFaceForGroup(btn));
+    $$('.face-semantic-edit', $('#faceResults')).forEach(btn => btn.onclick = () => editFaceSemantics(btn));
     $$('.media-expand', $('#faceResults')).forEach(btn => btn.onclick = () => previewContent(btn));
     if (chip) { chip.textContent = `表情 ${r.count} 个`; chip.className = 'health-chip good'; }
   } catch (e) {
@@ -870,9 +1289,60 @@ async function loadFaces(button, silent = false) {
 async function sendFace(button) {
   setBusy(button, true, '发送中');
   try {
-    const r = await api('/api/faces/send', { method: 'POST', body: JSON.stringify({ id: button.dataset.faceId, group_id: $('#faceTargetGroup').value }) });
-    toast(`已发送表情包：#${r.item?.id || button.dataset.faceId} · ${r.send?.latency_ms || 0}ms`);
+    const r = await api('/api/faces/send', { method: 'POST', body: JSON.stringify({ face_id: button.dataset.faceId, group_id: $('#faceTargetGroup').value }) });
+    toast(`已发送表情包：#${r.item?.id || button.dataset.faceId} · ${r.state} · ${r.elapsed_ms || 0}ms`);
   } catch (e) { toast(`表情包发送失败：${e.message}`, 'error', 12000); }
+  finally { setBusy(button, false); }
+}
+
+async function toggleFace(button) {
+  const enabled = button.dataset.enabled !== '1';
+  setBusy(button, true, '保存中');
+  try {
+    await api('/api/faces/update', { method: 'POST', body: JSON.stringify({ face_id: button.dataset.faceId, enabled }) });
+    toast(enabled ? '表情已启用' : '表情已屏蔽');
+    await loadFaces(null, true);
+  } catch (e) { toast(`表情状态保存失败：${e.message}`, 'error'); }
+  finally { setBusy(button, false); }
+}
+
+async function toggleFaceForGroup(button) {
+  const groupId = $('#faceGroup').value;
+  if (!groupId) { toast('请先选择需要单独配置的群', 'error'); return; }
+  const groupEnabled = button.dataset.enabled !== '1';
+  setBusy(button, true, '保存中');
+  try {
+    await api('/api/faces/update', { method: 'POST', body: JSON.stringify({ face_id: button.dataset.faceId, group_id: groupId, group_enabled: groupEnabled }) });
+    toast(groupEnabled ? '该表情已在当前群启用' : '该表情已在当前群禁用');
+    await loadFaces(null, true);
+  } catch (e) { toast(`群级表情配置失败：${e.message}`, 'error'); }
+  finally { setBusy(button, false); }
+}
+
+async function editFaceSemantics(button) {
+  const aliases = prompt('编辑表情别名，用逗号分隔', button.dataset.aliases || '');
+  if (aliases == null) return;
+  const emotions = prompt('编辑情绪标签，如：搞笑、无语、生气', button.dataset.emotions || '');
+  if (emotions == null) return;
+  const intents = prompt('编辑接话意图，如：回怼、拒绝、夸赞', button.dataset.intents || '');
+  if (intents == null) return;
+  const split = value => value.split(/[,，;；]/).map(x => x.trim()).filter(Boolean);
+  try {
+    await api('/api/faces/update', { method: 'POST', body: JSON.stringify({
+      face_id: button.dataset.faceId, aliases_json: split(aliases), emotions_json: split(emotions), intents_json: split(intents),
+    }) });
+    toast('表情别名、情绪和意图已更新并进入向量队列');
+    await loadFaces(null, true);
+  } catch (e) { toast(`表情语义标签保存失败：${e.message}`, 'error'); }
+}
+
+async function reindexFaces(button) {
+  setBusy(button, true, '重建中…');
+  try {
+    const r = await api('/api/faces/reindex', { method: 'POST', body: '{}' });
+    toast(`表情索引已重建：${r.assets || 0} 个去重素材`);
+    await loadFaces(null, true);
+  } catch (e) { toast(`表情索引重建失败：${e.message}`, 'error'); }
   finally { setBusy(button, false); }
 }
 
@@ -968,8 +1438,8 @@ function renderDashboardLogs() {
 }
 
 function connectLogs() {
-  state.eventSource?.close(); const es = new EventSource('/api/logs/stream'); state.eventSource = es;
-  es.onmessage = e => { try { addLog(JSON.parse(e.data)); } catch (_) {} };
+  state.eventSource?.close(); const es = new EventSource('/api/events/stream'); state.eventSource = es;
+  es.onmessage = e => { try { const item = JSON.parse(e.data); if (item.type === 'log') addLog(item); else if (item.type === 'reply_task') refreshReplyTasks(true); else if (item.type === 'memory_backfill') refreshReplyTasks(true); else if (item.type === 'persona_analysis') { clearTimeout(state.persona.refreshTimer); state.persona.refreshTimer = setTimeout(() => { if ($('#page-personas').classList.contains('active')) loadPersonaMembers(true); }, 180); } } catch (_) {} };
   es.onerror = () => { $('#logPulse').style.opacity = '.3'; };
 }
 
@@ -987,7 +1457,29 @@ function bind() {
   $('#asrTestBtn').onclick = e => asrTest(e.currentTarget); $('#toggleAsrKey').onclick = () => { $('#asrApiKey').type = $('#asrApiKey').type === 'password' ? 'text' : 'password'; };
   $('#temperature').oninput = e => { $('#temperatureValue').value = e.target.value; markDirty(); }; $('#systemPrompt').oninput = e => { $('#promptCount').textContent = e.target.value.length; markDirty(); }; $('#personality').oninput = e => { $('#personalityCount').textContent = e.target.value.length; markDirty(); };
   $('#aiForm').onsubmit = e => { e.preventDefault(); saveConfig(e.submitter); }; $('#groupForm').onsubmit = e => { e.preventDefault(); saveConfig(e.submitter); };
-  $('#refreshGroupsBtn').onclick = () => loadDiscoveredGroups(); $('#saveAliasesBtn').onclick = e => saveAliases(e.currentTarget); $('#syncUiGroupsBtn').onclick = e => syncUiGroups(e.currentTarget); $('#enableSelectedGroupBtn').onclick = enableQuickSelectedGroup; $$('#aiForm input, #aiForm textarea, #aiForm select, #groupForm input').forEach(x => x.addEventListener('change', () => { updateRouteSummary(); markDirty(); }));
+  $('#brainForm').onsubmit = e => { e.preventDefault(); saveBrainConfig(e.submitter); };
+  $('#brainThreshold').oninput = e => { $('#brainThresholdValue').value = e.target.value; $('#brainMode').value = 'custom'; };
+  $('#brainMode').onchange = e => { const values = { reserved: 78, natural: 65, veteran: 52 }; if (values[e.target.value] != null) { $('#brainThreshold').value = values[e.target.value]; $('#brainThresholdValue').value = values[e.target.value]; } };
+  $('#refreshReplyTasksBtn').onclick = () => refreshReplyTasks(); $('#taskStateFilter').onchange = renderReplyTasks; $('#taskQuery').oninput = renderReplyTasks;
+  $('#personaGroup').onchange = () => { state.persona.selectedUserId = ''; loadPersonaMembers(); };
+  $('#personaStatus').onchange = () => loadPersonaMembers(); $('#personaSearchBtn').onclick = () => loadPersonaMembers();
+  $('#personaSearch').oninput = () => { clearTimeout(state.persona.searchTimer); state.persona.searchTimer = setTimeout(() => loadPersonaMembers(true), 220); };
+  $('#personaSearch').onkeydown = e => { if (e.key === 'Enter') loadPersonaMembers(); };
+  $('#personaAnalyzeSelected').onclick = e => analyzePersona('member', e.currentTarget); $('#personaAnalyzeGroup').onclick = e => analyzePersona('group', e.currentTarget);
+  $('#personaClaimFilter').onchange = () => renderPersonaEvidence(state.persona.detail?.claims || []); $('#personaEditBtn').onclick = openPersonaEditor;
+  $('#personaProgressAction').onclick = e => controlPersonaJob(e.currentTarget);
+  $$('[data-persona-tab]').forEach(x => x.onclick = () => selectPersonaTab(x.dataset.personaTab));
+  $('#personaEditorForm').onsubmit = e => { e.preventDefault(); savePersonaEditor().catch(error => toast(`画像保存失败：${error.message}`, 'error')); };
+  $('#personaEditorClose').onclick = $('#personaEditorCancel').onclick = () => $('#personaEditor').close();
+  $('#brainPreviewBtn').onclick = e => previewBrain(e.currentTarget); $('#closeBrainPreview').onclick = () => $('#brainPreviewDialog').close();
+  $('#backfillStartBtn').onclick = e => controlBackfill('start', e.currentTarget); $('#backfillPauseBtn').onclick = e => { const resume = $('#embeddingState').textContent === '已暂停'; controlBackfill(resume ? 'resume' : 'pause', e.currentTarget); };
+  $('#saveEmbeddingBtn').onclick = e => saveBrainConfig(e.currentTarget);
+  $('#embeddingTestBtn').onclick = e => testEmbedding(e.currentTarget);
+  $('#refreshGroupsBtn').onclick = () => loadDiscoveredGroups(); $('#saveAliasesBtn').onclick = e => saveAliases(e.currentTarget); $('#syncUiGroupsBtn').onclick = e => syncUiGroups(e.currentTarget); $('#enableSelectedGroupBtn').onclick = enableQuickSelectedGroup; $$('#aiForm input, #aiForm textarea, #aiForm select, #groupForm input:not(#memberBlacklistQuery)').forEach(x => x.addEventListener('change', () => { updateRouteSummary(); markDirty(); }));
+  $('#refreshGroupMembersBtn').onclick = e => loadGroupMembers(e.currentTarget);
+  $('#saveGroupBlacklistBtn').onclick = e => saveGroupBlacklist(e.currentTarget);
+  $('#memberBlacklistGroup').onchange = () => loadGroupMembers();
+  $('#memberBlacklistQuery').oninput = renderGroupMembers;
   $$('.test-run').forEach(x => x.onclick = () => runTest(x.dataset.test, x));
   $('#clearTestConsole').onclick = () => { $('#testConsole').innerHTML = '<p class="muted">// 测试控制台已清空</p>'; };
   $('#refreshMemoryBtn').onclick = () => refreshMemoryStats(); $('#searchMemoryBtn').onclick = e => searchMemory(e.currentTarget); $('#vectorSearchBtn').onclick = e => vectorSearch(e.currentTarget);
@@ -1001,12 +1493,21 @@ function bind() {
   $('#voiceRecordsQuery').addEventListener('keydown', e => { if (e.key === 'Enter') loadVoiceRecords($('#voiceRecordsSearchBtn')); });
   $('#voiceRefreshBtn').onclick = e => loadVoicepacks(e.currentTarget); $('#voiceSearchBtn').onclick = e => loadVoicepacks(e.currentTarget); $('#voiceRecommendBtn').onclick = e => recommendVoicepacks(e.currentTarget);
   $('#voicePlanBtn').onclick = e => planVoicepacks(e.currentTarget); $('#voiceImportBtn').onclick = e => importVoicepacks(e.currentTarget);
+  $('#voiceDeletePackBtn').onclick = e => deleteCurrentVoicePack(e.currentTarget);
+  $('#voiceImportTargetPack').onchange = syncVoiceImportTarget;
+  $('#voiceReplyProbability').oninput = e => { $('#voiceReplyProbabilityValue').value = `${e.target.value}%`; };
+  $('#voiceMediaSaveBtn').onclick = e => saveMediaReplyConfig(e.currentTarget, 'voice');
+  $('#voiceContextTestBtn').onclick = e => testMediaContext(e.currentTarget, 'voice');
   $$('#voiceCategory,#voicePackFilter').forEach(x => x.addEventListener('change', () => {
     if (x.id === 'voiceCategory') $('#voicePackFilter').value = '';
     loadVoicepacks(null, true);
   }));
   $('#voiceQuery').addEventListener('keydown', e => { if (e.key === 'Enter') loadVoicepacks($('#voiceSearchBtn')); });
   $('#faceRefreshBtn').onclick = e => loadFaces(e.currentTarget); $('#faceSearchBtn').onclick = e => loadFaces(e.currentTarget);
+  $('#faceReplyProbability').oninput = e => { $('#faceReplyProbabilityValue').value = `${e.target.value}%`; };
+  $('#faceMediaSaveBtn').onclick = e => saveMediaReplyConfig(e.currentTarget, 'face');
+  $('#faceContextTestBtn').onclick = e => testMediaContext(e.currentTarget, 'face');
+  $('#faceReindexBtn').onclick = e => reindexFaces(e.currentTarget);
   $$('#faceGroup').forEach(x => x.addEventListener('change', () => loadFaces(null, true)));
   $('#faceQuery').addEventListener('keydown', e => { if (e.key === 'Enter') loadFaces($('#faceSearchBtn')); });
   $('#loadGroupMemoryBtn').onclick = e => loadGroupMemory(e.currentTarget); $('#saveGroupMemoryBtn').onclick = e => saveGroupMemory(e.currentTarget);
@@ -1020,10 +1521,12 @@ function bind() {
 async function init() {
   bind(); connectLogs();
   try { fillConfig(await api('/api/config')); } catch (e) { toast(`配置加载失败：${e.message}`, 'error'); }
+  await loadBrainConfig(true); await refreshReplyTasks(true);
   await refreshStatus(); await refreshTraces(true); setInterval(() => refreshStatus(true), 5000); setInterval(() => refreshTraces(true), 5000); setInterval(() => refreshChannelHealth(true), 15000);
   refreshMemoryStats(true);
   setInterval(() => { if ($('#page-groups').classList.contains('active') && !state.dirty) loadDiscoveredGroups(true); }, 30000);
   setInterval(() => { if ($('#page-media').classList.contains('active')) loadMediaCenter(null, true); }, 5000);
   setInterval(() => { if ($('#page-voice-records')?.classList.contains('active')) loadVoiceRecords(null, true); }, 5000);
+  setInterval(() => refreshReplyTasks(true), 3000);
 }
 init();

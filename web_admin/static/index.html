@@ -15,6 +15,10 @@
         <button class="nav-item active" data-page="overview"><span class="nav-icon">⌘</span><span>运行总览</span></button>
         <button class="nav-item" data-page="ai"><span class="nav-icon">AI</span><span>模型配置</span></button>
         <button class="nav-item" data-page="groups"><span class="nav-icon">#</span><span>群聊策略</span></button>
+        <button class="nav-item" data-page="brain"><span class="nav-icon">BRN</span><span>群聊大脑</span></button>
+        <button class="nav-item" data-page="personas"><span class="nav-icon">USR</span><span>用户画像</span></button>
+        <button class="nav-item" data-page="reply-tasks"><span class="nav-icon">RUN</span><span>实时回复</span></button>
+        <button class="nav-item" data-page="vector"><span class="nav-icon">VEC</span><span>本地向量</span></button>
         <button class="nav-item" data-page="tests"><span class="nav-icon">✓</span><span>测试中心</span></button>
         <button class="nav-item" data-page="media"><span class="nav-icon">IMG</span><span>图片图库</span></button>
         <button class="nav-item" data-page="voice-records"><span class="nav-icon">ASR</span><span>语音内容</span></button>
@@ -174,6 +178,68 @@
         </form>
       </section>
 
+      <section class="page" id="page-vector">
+        <div class="page-bar"><div><h2>本地向量模型</h2><p>独立管理 oMLX Embedding、Reranker 与永久记忆回填</p></div><span class="health-chip" id="embeddingState">读取中</span></div>
+        <form id="embeddingForm" class="panel embedding-panel">
+            <div class="panel-head"><div><h2>本地 Embedding / Reranker</h2><p>oMLX 本地向量检索与永久记忆重排</p></div><span class="route-status">LOCAL OMLX</span></div>
+            <div class="embedding-grid panel-body">
+              <div class="field"><label for="embeddingBaseUrl">oMLX API</label><input id="embeddingBaseUrl" value="http://127.0.0.1:8017/v1"></div>
+              <div class="field"><label for="embeddingModel">Embedding 模型</label><input id="embeddingModel" value="Qwen3-Embedding-8B-mxfp8"></div>
+              <div class="field"><label for="rerankerModel">Reranker 模型</label><input id="rerankerModel" value="Qwen3-Reranker-4B-mxfp8"></div>
+              <div class="field"><label>向量维度</label><input value="4096" disabled></div>
+              <div class="embedding-metric"><strong id="embeddingVectors">0</strong><span>已完成向量</span></div>
+              <div class="embedding-metric"><strong id="embeddingPending">0</strong><span>待处理</span></div>
+              <div class="embedding-metric"><strong id="embeddingLoaded">--</strong><span>模型状态</span></div>
+              <div class="embedding-metric"><strong id="embeddingMemory">--</strong><span>模型内存</span></div>
+              <div class="embedding-metric"><strong id="embeddingP50">--</strong><span>Embedding P50</span></div>
+              <div class="embedding-metric"><strong id="embeddingP95">--</strong><span>Embedding P95</span></div>
+              <div class="embedding-metric"><strong id="rerankerP50">--</strong><span>Reranker P50</span></div>
+              <div class="embedding-metric"><strong id="rerankerP95">--</strong><span>Reranker P95</span></div>
+              <div class="field span-2"><label for="embeddingTestQuery">真实检索测试</label><input id="embeddingTestQuery" value="群里大家最近在聊什么"></div>
+              <div class="embedding-test-result" id="embeddingTestResult">等待测试</div>
+              <button type="button" class="btn subtle" id="embeddingTestBtn">运行测试</button>
+              <div class="bar-actions"><button type="button" class="btn ghost" id="saveEmbeddingBtn">保存模型配置</button><button type="button" class="btn subtle" id="backfillPauseBtn">暂停回填</button><button type="button" class="btn primary" id="backfillStartBtn">回填所有历史</button></div>
+            </div>
+        </form>
+      </section>
+
+      <section class="page" id="page-brain">
+        <div class="page-bar"><div><h2>群聊大脑</h2><p>接话门槛、七维评分与并发策略独立配置</p></div><button class="btn ghost" id="brainPreviewBtn">预览 24 小时</button></div>
+          <form class="panel" id="brainForm">
+            <div class="panel-head"><div><h2>人类式接话阈值</h2><p>无随机概率，评分达到门槛才主动接话</p></div><button class="btn primary" type="submit">实时应用</button></div>
+            <div class="panel-body brain-config-grid">
+              <div class="field"><label for="brainMode">接话档位</label><select id="brainMode"><option value="reserved">克制 · 78</option><option value="natural">自然 · 65</option><option value="veteran">老油条 · 52</option><option value="custom">自定义</option></select></div>
+              <div class="field"><label for="brainThreshold">接话门槛 <output id="brainThresholdValue">52</output></label><input id="brainThreshold" type="range" min="0" max="100" value="52"></div>
+              <div class="field"><label for="brainGlobalWorkers">全局并发</label><input id="brainGlobalWorkers" type="number" min="1" max="16" value="8"></div>
+              <div class="field"><label for="brainGroupWorkers">单群并发</label><input id="brainGroupWorkers" type="number" min="1" max="6" value="3"></div>
+              <div class="field"><label for="brainModelWorkers">模型并发</label><input id="brainModelWorkers" type="number" min="1" max="16" value="6"></div>
+              <div class="field"><label for="brainScoringMode">评分方式</label><select id="brainScoringMode"><option value="local_fast">本地快速（推荐）</option><option value="model_deep">远程模型深度评分</option></select></div>
+              <div class="field"><label for="brainRerankCandidates">重排候选数</label><input id="brainRerankCandidates" type="number" min="4" max="24" value="12"></div>
+              <div class="field"><label for="brainVectorLimit">向量召回数</label><input id="brainVectorLimit" type="number" min="12" max="200" value="60"></div>
+              <div class="field"><label for="brainFtsLimit">全文召回数</label><input id="brainFtsLimit" type="number" min="8" max="100" value="30"></div>
+              <label class="toggle-row"><span><strong>自适应二次重排</strong><small>含糊历史问题且首批置信不足时扩到 24 条</small></span><span class="switch"><input id="brainAdaptiveRerank" type="checkbox" checked><i></i></span></label>
+              <div class="factor-editor" id="factorEditor"></div>
+              <div class="modifier-editor" id="modifierEditor"></div>
+            </div>
+          </form>
+      </section>
+
+      <section class="page" id="page-reply-tasks">
+        <div class="page-bar"><div><h2>实时回复</h2><p>全宽查看所有群、成员、线程与各阶段耗时</p></div><button class="btn ghost" id="refreshReplyTasksBtn">刷新</button></div>
+        <div class="reply-summary" id="replySummary">
+          <div><strong id="replyActiveCount">0</strong><span>正在回复</span></div>
+          <div><strong id="replyQueuedCount">0</strong><span>排队</span></div>
+          <div><strong id="replyDoneCount">0</strong><span>回复完毕</span></div>
+          <div><strong id="workerUsage">0 / 8</strong><span>并发 worker</span></div>
+          <div><strong id="backfillProgress">0</strong><span>待向量化</span></div>
+        </div>
+          <section class="panel reply-task-panel">
+            <div class="panel-head"><div><h2>任务时间线</h2><p>不同话题并行，同一线程严格保持顺序</p></div><span class="route-status">LIVE TASKS</span></div>
+            <div class="task-filters"><select id="taskStateFilter"><option value="">全部状态</option><option value="active">进行中</option><option value="completed">回复完毕</option><option value="skipped">决定旁听</option><option value="failed">回复失败</option></select><input id="taskQuery" placeholder="筛选群、成员或线程"></div>
+            <div class="reply-task-list" id="replyTaskList"><div class="terminal-empty">正在读取回复任务…</div></div>
+          </section>
+      </section>
+
       <section class="page" id="page-groups">
         <form id="groupForm">
           <div class="page-bar"><div><h2>群聊权限矩阵</h2><p>仅对勾选的微信群启用 AI 与未来扩展能力</p></div><div class="bar-actions"><button type="button" class="btn ghost" id="syncUiGroupsBtn">同步 UI 群名</button><button type="button" class="btn subtle" id="saveAliasesBtn">保存别名</button><button type="button" class="btn subtle" id="refreshGroupsBtn">刷新群列表</button><button class="btn primary" type="submit">保存并应用</button></div></div>
@@ -181,6 +247,18 @@
             <div class="route-summary"><div><span id="groupCount">0</span><small>已授权群</small></div><div><span id="routeMode">全消息</span><small>触发模式</small></div><div><span id="routePrefix">无</span><small>回复前缀</small></div><div><span id="routeCooldown">2s</span><small>冷却时间</small></div></div>
             <div class="group-discovery-bar"><div class="field"><label for="groupQuickSelect">微信群下拉选择</label><select id="groupQuickSelect"></select></div><button type="button" class="btn subtle" id="enableSelectedGroupBtn">勾选此群</button><span id="groupDiscoveryState" class="save-state">等待获取群列表</span></div>
             <div class="route-table-wrap"><div class="route-head permission-head"><span>AI 权限</span><span>群聊名称</span><span>群 ID</span><span>发现状态</span></div><div id="groupList" class="group-list permission-list"></div></div>
+          </div>
+          <div class="panel member-blacklist-panel">
+            <div class="panel-head"><div><h2>群成员对话黑名单</h2><p>屏蔽其他机器人或指定成员，消息仍保存但不进入评分与回复</p></div><div class="bar-actions"><button type="button" class="btn subtle" id="refreshGroupMembersBtn">完整拉取成员</button><button type="button" class="btn primary" id="saveGroupBlacklistBtn">保存并立即生效</button></div></div>
+            <div class="panel-body member-blacklist-body">
+              <div class="member-blacklist-toolbar">
+                <div class="field"><label for="memberBlacklistGroup">选择群聊</label><select id="memberBlacklistGroup"></select></div>
+                <div class="field"><label for="memberBlacklistQuery">搜索成员</label><input id="memberBlacklistQuery" placeholder="搜索群昵称、备注或 wxid"></div>
+                <span id="memberBlacklistState" class="save-state">选择群后拉取成员</span>
+              </div>
+              <div class="member-blacklist-summary"><strong id="memberBlacklistCount">0</strong><span>人已屏蔽</span><small id="memberCatalogCount">尚未拉取成员目录</small></div>
+              <div id="memberBlacklistList" class="member-blacklist-list"><div class="terminal-empty">选择群聊并点击“完整拉取成员”</div></div>
+            </div>
           </div>
           <div class="panel rules-panel">
             <div class="panel-head"><div><h2>全局回复规则</h2><p>适用于上方全部目标群</p></div><span class="route-status">ROUTE POLICY</span></div>
@@ -305,13 +383,19 @@
             <div class="panel-body memory-controls">
               <div class="field"><label for="voiceImportPaths">来源路径</label><textarea id="voiceImportPaths" rows="3" placeholder="~/Downloads/voice-packs"></textarea><small class="field-note">一行一个路径。选总目录会自动识别里面的每个 zip / zip1 / 子目录。</small></div>
               <div class="field"><label for="voiceImportCategory">统一分类（可选）</label><input id="voiceImportCategory" placeholder="留空则使用目录名称"></div>
+              <div class="field"><label for="voiceImportTargetPack">追加到语音包</label><select id="voiceImportTargetPack"><option value="">自动创建新语音包</option></select></div>
               <div class="voice-import-actions"><button class="btn subtle wide" id="voicePlanBtn">扫描来源</button><button class="btn primary wide" id="voiceImportBtn">确认导入</button></div>
               <div class="voice-import-plan" id="voiceImportPlan"><strong>尚未扫描</strong><span>填写路径后点击“扫描来源”，确认内容和数量再导入。</span></div>
               <div class="field"><label for="voiceTargetGroup">发送测试目标群</label><select id="voiceTargetGroup"></select></div>
               <div class="field"><label for="voiceCategory">文件夹分类</label><select id="voiceCategory"><option value="">全部文件夹</option></select></div>
               <div class="field"><label for="voicePackFilter">语音包</label><select id="voicePackFilter"><option value="">全部语音包</option></select></div>
+              <button class="btn ghost danger-text wide" id="voiceDeletePackBtn" disabled>删除当前语音包</button>
               <div class="field"><label for="voiceQuery">快速找语音</label><input id="voiceQuery" placeholder="直接输入想说的话，如：别着急、谢谢、说句搞笑的"></div>
               <div class="voice-search-actions"><button class="btn subtle wide" id="voiceSearchBtn">智能搜索</button><button class="btn ghost wide" id="voiceRecommendBtn">推荐候选</button></div>
+              <label class="toggle-row"><span><strong>自动语音接话</strong><small>只在语境和素材均达标后抽样</small></span><span class="switch"><input id="voiceAutoEnabled" type="checkbox" checked><i></i></span></label>
+              <div class="field"><label for="voiceReplyProbability">语音概率 <output id="voiceReplyProbabilityValue">15%</output></label><input id="voiceReplyProbability" type="range" min="0" max="100" value="15"></div>
+              <div class="field"><label for="voiceMinFit">语音适配门槛</label><input id="voiceMinFit" type="number" min="0" max="100" value="55"></div>
+              <div class="voice-search-actions"><button class="btn primary wide" id="voiceMediaSaveBtn">实时应用</button><button class="btn ghost wide" id="voiceContextTestBtn">测试当前语境</button></div>
               <div class="voice-stats" id="voiceStats"><div><strong>--</strong><small>语音包</small></div><div><strong>--</strong><small>语音条</small></div><div><strong>--</strong><small>文件夹</small></div></div>
               <div class="media-help-card">
                 <strong>导入规则</strong>
@@ -343,6 +427,13 @@
               <div class="field"><label for="faceGroup">表情来源群</label><select id="faceGroup"></select></div>
               <div class="field"><label for="faceQuery">搜索摘要 / OCR / 标签</label><input id="faceQuery" placeholder="走开、别拍我、婴儿、搞笑"></div>
               <button class="btn primary wide" id="faceSearchBtn">搜索表情</button>
+              <label class="toggle-row"><span><strong>自动表情接话</strong><small>只在语境和素材均达标后抽样</small></span><span class="switch"><input id="faceAutoEnabled" type="checkbox" checked><i></i></span></label>
+              <div class="field"><label for="faceReplyProbability">表情概率 <output id="faceReplyProbabilityValue">20%</output></label><input id="faceReplyProbability" type="range" min="0" max="100" value="20"></div>
+              <div class="field"><label for="faceMinFit">表情适配门槛</label><input id="faceMinFit" type="number" min="0" max="100" value="45"></div>
+              <div class="field"><label for="faceMinConfidence">最低素材置信度</label><input id="faceMinConfidence" type="number" min="0" max="1" step="0.05" value="0.65"></div>
+              <label class="toggle-row"><span><strong>跨群共享表情库</strong><small>仅共享素材，不共享群历史和人物记忆</small></span><span class="switch"><input id="faceGlobalShared" type="checkbox" checked><i></i></span></label>
+              <div class="voice-search-actions"><button class="btn primary wide" id="faceMediaSaveBtn">实时应用</button><button class="btn ghost wide" id="faceContextTestBtn">测试当前语境</button></div>
+              <button class="btn subtle wide" id="faceReindexBtn">重建表情检索索引</button>
               <div class="media-help-card">
                 <strong>当前逻辑</strong>
                 <p>同一个表情包按 md5 / 文件哈希去重展示，重复收到不会在管理页刷屏。</p>
@@ -357,6 +448,55 @@
         </div>
       </section>
 
+      <section class="page personas-page" id="page-personas" data-mobile-tab="overview">
+        <div class="page-bar persona-toolbar">
+          <div><h2>USR 用户画像</h2><p>按群隔离的永久档案、行为统计、关系与原话证据</p></div>
+          <div class="persona-toolbar-actions">
+            <select id="personaGroup" aria-label="选择群"></select>
+            <div class="persona-search"><input id="personaSearch" placeholder="搜索群昵称、外号或 wxid"><button class="icon-btn" id="personaSearchBtn" title="搜索">⌕</button></div>
+            <select id="personaStatus" aria-label="画像状态"><option value="">全部状态</option><option value="completed">已完成</option><option value="running">分析中</option><option value="queued">排队中</option><option value="paused">已暂停</option><option value="failed">失败</option><option value="not_analyzed">未分析</option><option value="legacy_auto">旧画像</option></select>
+            <button class="btn subtle" id="personaAnalyzeSelected">分析选中成员</button>
+            <button class="btn primary" id="personaAnalyzeGroup">分析全群</button>
+          </div>
+        </div>
+        <div class="persona-mobile-tabs" role="tablist">
+          <button class="active" data-persona-tab="overview">概览</button><button data-persona-tab="behavior">行为</button><button data-persona-tab="relations">关系</button><button data-persona-tab="evidence">证据</button><button data-persona-tab="edit">编辑</button>
+        </div>
+        <div class="persona-layout">
+          <aside class="panel persona-directory" data-persona-view="overview">
+            <div class="panel-head"><div><h2>成员目录</h2><p id="personaDirectoryMeta">选择群后加载</p></div><span class="route-status" id="personaJobState">READY</span></div>
+            <div class="persona-member-list" id="personaMemberList"><div class="terminal-empty">正在读取成员…</div></div>
+          </aside>
+          <main class="persona-main">
+            <section class="panel persona-profile" data-persona-view="overview">
+              <div class="persona-empty" id="personaEmpty">从左侧选择一位成员查看完整画像</div>
+              <div id="personaProfileContent" hidden>
+                <div class="persona-identity-head"><span class="persona-avatar" id="personaAvatar">群</span><div><h2 id="personaName">--</h2><p id="personaIdentity">--</p></div><span class="persona-state" id="personaState">未分析</span><button class="btn subtle" id="personaEditBtn">编辑画像</button></div>
+                <div class="persona-progress" id="personaProgress" hidden><span><i></i></span><small>等待任务</small><button class="link-btn" id="personaProgressAction" type="button">暂停</button></div>
+                <div class="persona-summary"><span>人物摘要</span><p id="personaSummary">--</p></div>
+                <div class="persona-section"><div class="persona-section-title"><h3>永久事实与标签</h3><span>人工内容优先</span></div><div class="persona-chip-list" id="personaFacts"></div></div>
+                <div class="persona-section" id="personaMemeSection" hidden><div class="persona-section-title"><h3>关联群梗</h3><span>永久记忆</span></div><div class="persona-chip-list" id="personaMemes"></div></div>
+                <div class="persona-claim-grid" id="personaClaims"></div>
+              </div>
+            </section>
+            <section class="panel persona-behavior" data-persona-view="behavior">
+              <div class="panel-head"><div><h2>行为统计</h2><p>全部历史消息的本地 SQL 客观统计</p></div><span class="route-status">7 × 24</span></div>
+              <div class="persona-behavior-body"><div class="persona-kpis" id="personaKpis"></div><div class="heatmap-wrap"><div class="heatmap-labels"><span>周一</span><span>周二</span><span>周三</span><span>周四</span><span>周五</span><span>周六</span><span>周日</span></div><div class="persona-heatmap" id="personaHeatmap"></div></div><div class="persona-chart" id="personaTrend"></div><div class="persona-topics" id="personaTopics"></div></div>
+            </section>
+          </main>
+          <aside class="persona-side">
+            <section class="panel persona-relations" data-persona-view="relations">
+              <div class="panel-head"><div><h2>关系网</h2><p>互动最强的 20 位群友</p></div><span class="route-status">TOP 20</span></div>
+              <div class="persona-graph" id="personaGraph"><div class="terminal-empty">选择成员后生成关系图</div></div>
+            </section>
+            <section class="panel persona-evidence" data-persona-view="evidence">
+              <div class="panel-head"><div><h2>证据时间线</h2><p>每条结论可回到真实消息</p></div><select id="personaClaimFilter"><option value="">全部类别</option><option value="fact">永久事实</option><option value="interest">兴趣</option><option value="habit">习惯</option><option value="style">表达风格</option><option value="role">群内角色</option><option value="topic">话题</option><option value="quote">经典原话</option></select></div>
+              <div class="persona-evidence-list" id="personaEvidence"><div class="terminal-empty">暂无证据</div></div>
+            </section>
+          </aside>
+        </div>
+      </section>
+
       <section class="page" id="page-memory">
         <div class="page-bar"><div><h2>长期记忆数据库</h2><p>聊天记录、人物画像、向量记忆、媒体解析的本地中枢</p></div><div class="bar-actions"><button class="btn subtle" id="rebuildMemoryBtn">重建索引/画像</button><button class="btn subtle" id="exportMemoryBtn">导出 JSON</button><button class="btn primary" id="searchMemoryBtn">查询记录</button></div></div>
         <div class="memory-hero panel">
@@ -364,7 +504,7 @@
           <div class="memory-flow">
             <div><b>01</b><strong>实时入库</strong><small>OneBot 回调和 AI 回复自动保存</small></div>
             <div><b>02</b><strong>画像重建</strong><small>按群成员生成基础人物画像</small></div>
-            <div><b>03</b><strong>向量检索</strong><small>本地轻量语义检索，后续可替换 Embedding API</small></div>
+            <div><b>03</b><strong>向量检索</strong><small>Qwen3 4096 维召回与本地 Reranker 重排</small></div>
             <div><b>04</b><strong>媒体入口</strong><small>图片/文件消息先建索引，后续接 OCR/视觉模型</small></div>
           </div>
         </div>
@@ -406,6 +546,17 @@
 </div>
 
 <div class="toast-stack" id="toastStack"></div>
+<dialog id="personaEditor" class="persona-editor">
+  <form method="dialog" id="personaEditorForm">
+    <div class="persona-editor-head"><div><span>MANUAL OVERRIDE</span><h2>编辑用户画像</h2><p id="personaEditorIdentity">--</p></div><button class="icon-btn" id="personaEditorClose" type="button" title="关闭">×</button></div>
+    <div class="persona-editor-body">
+      <div class="field"><label for="personaManualSummary">人工摘要</label><textarea id="personaManualSummary" rows="7" placeholder="人工摘要优先于自动分析，并永久保留"></textarea><small class="field-note">留空时使用自动摘要；自动重建不会改写这里。</small></div>
+      <div class="field"><label for="personaManualTags">人工标签</label><input id="personaManualTags" placeholder="多个标签用逗号分隔"></div>
+      <div class="field"><label for="personaManualFacts">永久事实</label><textarea id="personaManualFacts" rows="9" placeholder="每行一条事实"></textarea><small class="field-note">人工事实拥有最高优先级，并加入永久向量检索。</small></div>
+    </div>
+    <div class="persona-editor-actions"><button class="btn ghost" id="personaEditorCancel" type="button">取消</button><button class="btn primary" id="personaEditorSave" type="submit">保存并实时生效</button></div>
+  </form>
+</dialog>
 <dialog id="channelDialog" class="channel-dialog">
   <form method="dialog" id="channelDialogForm">
     <div class="dialog-head"><div><h2>添加模型渠道</h2><p>新渠道将参与健康检测和自动故障切换</p></div><button type="button" class="icon-btn" id="closeChannelDialog" title="关闭">×</button></div>
@@ -428,6 +579,10 @@
   <div class="dialog-head"><div><h2 id="contentPreviewTitle">内容详情</h2><p>完整文本内容</p></div><button type="button" class="icon-btn" onclick="document.getElementById('contentPreviewDialog').close()" title="关闭">×</button></div>
   <pre id="contentPreviewBody" class="content-preview-body"></pre>
 </dialog>
-<script src="/static/app.js"></script>
+<dialog id="brainPreviewDialog" class="channel-dialog brain-preview-dialog">
+  <div class="dialog-head"><div><h2>最近 24 小时接话预览</h2><p id="brainPreviewSummary">正在计算当前门槛下预计会回复的内容</p></div><button type="button" class="icon-btn" id="closeBrainPreview" title="关闭">×</button></div>
+  <div class="brain-preview-list" id="brainPreviewList"></div>
+</dialog>
+  <script src="/static/app.js"></script>
 </body>
 </html>

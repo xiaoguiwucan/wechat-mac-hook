@@ -37,6 +37,7 @@ func main() {
 	http.HandleFunc("/media_probe", mediaProbeHandler)
 	http.HandleFunc("/send_private_msg", sendHandler)
 	http.HandleFunc("/send_group_msg", sendHandler)
+	http.HandleFunc("/get_group_member_list", groupMemberListHandler)
 
 	http.HandleFunc("/ws", handleWebSocket)
 	http.HandleFunc("/test_ws", testWebSocket)

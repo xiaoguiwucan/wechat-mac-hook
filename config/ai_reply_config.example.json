@@ -12,6 +12,7 @@
   ],
   "allowed_user_ids": [],
   "ignored_user_ids": [],
+  "ignored_group_members": {},
   "ignore_prefixes": [
     "AI：",
     "AI:",
@@ -79,6 +80,70 @@
     "auto_health_check": true,
     "health_check_interval_seconds": 300,
     "failure_cooldown_seconds": 60
+  },
+  "reply_strategy": {
+    "mode": "veteran",
+    "threshold": 52,
+    "scoring_mode": "local_fast",
+    "rerank_candidates": 12,
+    "bot_aliases": ["小风"],
+    "followup_window_seconds": 120,
+    "merge_window_ms": 2500,
+    "global_workers": 8,
+    "per_group_workers": 3,
+    "model_concurrency": 6,
+    "factor_weights": {
+      "involvement": 18,
+      "continuity": 14,
+      "memory": 16,
+      "value": 14,
+      "humor": 14,
+      "emotion": 10,
+      "timing": 14
+    },
+    "modifiers": {
+      "same_member_followup": 18,
+      "exact_meme": 15,
+      "high_vector": 12,
+      "media_match": 8,
+      "useful_after_silence": 6,
+      "unfinished_fast_exchange": -25,
+      "growing_burst": -15,
+      "already_answered": -20,
+      "low_information": -15
+    }
+  },
+  "embedding": {
+    "enabled": true,
+    "base_url": "http://127.0.0.1:8017/v1",
+    "model": "Qwen3-Embedding-8B-mxfp8",
+    "reranker_model": "Qwen3-Reranker-4B-mxfp8",
+    "dimensions": 4096,
+    "batch_size": 32,
+    "timeout_seconds": 120,
+    "auto_backfill": true
+  },
+  "retrieval": {
+    "vector_limit": 60,
+    "fts_limit": 30,
+    "person_limit": 12,
+    "meme_limit": 12,
+    "time_limit": 20,
+    "media_limit": 16,
+    "fusion_limit": 60,
+    "adaptive_rerank": true,
+    "rerank_cache_seconds": 600
+  },
+  "media_reply": {
+    "automatic_enabled": true,
+    "voice_probability": 0.15,
+    "face_probability": 0.2,
+    "voice_min_fit": 55,
+    "face_min_fit": 45,
+    "min_candidate_confidence": 0.65,
+    "global_face_assets": true,
+    "auto_media_replaces_text": true,
+    "group_overrides": {}
   },
   "media_auto_repair": {
     "enabled": true,

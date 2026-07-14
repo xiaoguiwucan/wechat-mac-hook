@@ -581,7 +581,6 @@ function setupSendTextMessageDynamic() {
     console.log("[+] Dynamic Text Message Setup Complete.");
 }
 
-
 // -------------------------发送文件消息分区-------------------------
 function setupSendFileMessageDynamic() {
     fileCgiAddr = Memory.alloc(128);
@@ -1346,6 +1345,7 @@ function recoverUploadX0(receiver) {
         message: "upload channel ready"
     });
 }
+
 // -------------------------上传通道自愈分区-------------------------
 
 rpc.exports = {

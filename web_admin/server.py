@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import collections
 import hashlib
 import json
 import mimetypes
@@ -32,6 +33,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from memory_store import MemoryStore  # noqa: E402
+from brain_engine import BrainConfig, OpportunityScorer  # noqa: E402
 
 STATIC = Path(__file__).resolve().parent / "static"
 CONFIG_PATH = ROOT / "config" / "ai_reply_config.json"
@@ -53,6 +55,7 @@ LOG_FILES = {
     "ai": LOG_DIR / "ai-reply.log",
     "onebot": LOG_DIR / "onebot-wechat2.log",
 }
+BRAIN_EVENTS_FILE = LOG_DIR / "brain-events.jsonl"
 MEMORY = MemoryStore()
 
 ACTION_SCRIPTS = {
@@ -78,6 +81,12 @@ ONEBOT_MONITOR_STATE: Dict[str, Any] = {"checked_at": "", "port_open": False, "l
 ONEBOT_MONITOR_LOCK = threading.Lock()
 MEDIA_REPAIR_STATE: Dict[str, Any] = {"last_attempt": 0.0, "last_success": 0.0, "last_error": "", "running": False}
 MEDIA_REPAIR_LOCK = threading.Lock()
+FACE_SEND_LOCK = threading.Lock()
+MEDIA_PAYLOAD_CACHE_LOCK = threading.Lock()
+MEDIA_PAYLOAD_CACHE: "collections.OrderedDict[str, Tuple[str, Dict[str, Any]]]" = collections.OrderedDict()
+CONFIG_WRITE_LOCK = threading.Lock()
+PERSONA_EVENT_LOCK = threading.Lock()
+PERSONA_WORKER_STOP = threading.Event()
 
 # 1x1 透明 PNG。用于发到“文件传输助手(filehelper)”暖起 UploadMedia
 # 通道；不污染任何群聊，也不需要用户手动点 UI。
@@ -95,6 +104,218 @@ def config_revision() -> str:
         except OSError:
             pass
     return digest.hexdigest()[:16]
+
+
+def ai_json(path: str, method: str = "GET", data: Optional[Dict[str, Any]] = None,
+            timeout: int = 5) -> Dict[str, Any]:
+    payload = None if data is None else json.dumps(data, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request("http://127.0.0.1:36060" + path, data=payload, method=method)
+    if payload is not None:
+        req.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8", "replace"))
+
+
+def emit_persona_event(job: Dict[str, Any], event: str = "progress") -> None:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    payload = {"type": "persona_analysis", "event": event, "time": time.time(), "job": job}
+    with PERSONA_EVENT_LOCK:
+        with BRAIN_EVENTS_FILE.open("a", encoding="utf-8") as file:
+            file.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+
+def persona_worker_loop() -> None:
+    """Run resumable 100-message persona batches below interactive work."""
+    last_due_check = 0.0
+    while not PERSONA_WORKER_STOP.wait(0.35):
+        job: Optional[Dict[str, Any]] = None
+        try:
+            jobs = MEMORY.persona_jobs(limit=20)
+            job = next((item for item in jobs if item.get("status") in {"running", "queued"}), None)
+            if not job:
+                if time.monotonic() - last_due_check >= 60:
+                    six_hours_ago = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - 6 * 3600))
+                    due = MEMORY.queue_due_persona_analysis(six_hours_ago)
+                    last_due_check = time.monotonic()
+                    if due.get("queued"):
+                        emit_persona_event(due, "auto_queued")
+                PERSONA_WORKER_STOP.wait(1.0)
+                continue
+            batch = MEMORY.persona_job_batch_payload(int(job["id"]), 100)
+            model_claims = 0
+            model_name = ""
+            if batch.get("messages"):
+                try:
+                    extraction = (ai_json("/persona/extract", "POST", batch, 120).get("data") or {})
+                    model_name = str(extraction.get("model") or "")
+                    model_claims = MEMORY.add_persona_model_claims(batch["group_id"], batch["user_id"], extraction.get("claims") or [], batch["messages"])
+                except urllib.error.HTTPError as exc:
+                    if exc.code == 409:
+                        emit_persona_event({**job, "model_waiting": True}, "waiting_for_model_slot")
+                        PERSONA_WORKER_STOP.wait(1.0)
+                        continue
+                except Exception:
+                    # AI service may be offline during administration. Local metrics and
+                    # resumable deterministic evidence still progress and can be rebuilt later.
+                    pass
+            updated = MEMORY.process_persona_job_batch(int(job["id"]), 100)
+            updated["model_claims"] = model_claims
+            updated["model"] = model_name
+            emit_persona_event(updated, "completed" if updated.get("status") == "completed" else "progress")
+            # Yield to realtime reply/embedding HTTP requests between every batch.
+            PERSONA_WORKER_STOP.wait(0.2)
+        except Exception as exc:
+            try:
+                if job:
+                    with MEMORY.connect() as db:
+                        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+                        db.execute("UPDATE persona_analysis_jobs SET status='failed',error=?,updated_at=? WHERE id=?", (str(exc)[:1000], stamp, int(job["id"])))
+                        db.execute("UPDATE personas SET analysis_status='failed',analysis_error=?,updated_at=? WHERE group_id=? AND user_id=?", (str(exc)[:1000], stamp, job["group_id"], job["user_id"]))
+                    emit_persona_event({**job, "status": "failed", "error": str(exc)}, "failed")
+            except Exception:
+                pass
+            PERSONA_WORKER_STOP.wait(1.0)
+
+
+def brain_config_payload() -> Dict[str, Any]:
+    raw = json_read(CONFIG_PATH, {})
+    strategy = raw.get("reply_strategy") if isinstance(raw.get("reply_strategy"), dict) else {}
+    embedding = raw.get("embedding") if isinstance(raw.get("embedding"), dict) else {}
+    retrieval = raw.get("retrieval") if isinstance(raw.get("retrieval"), dict) else {}
+    media_reply = raw.get("media_reply") if isinstance(raw.get("media_reply"), dict) else {}
+    ignored_group_members = raw.get("ignored_group_members") if isinstance(raw.get("ignored_group_members"), dict) else {}
+    return {"reply_strategy": strategy, "embedding": embedding, "retrieval": retrieval,
+            "media_reply": media_reply, "ignored_group_members": ignored_group_members}
+
+
+def save_brain_config(data: Dict[str, Any]) -> Dict[str, Any]:
+    current = json_read(CONFIG_PATH, {})
+    if isinstance(data.get("reply_strategy"), dict):
+        incoming = dict(data["reply_strategy"])
+        mode = str(incoming.get("mode") or "veteran")
+        presets = {"reserved": 78.0, "natural": 65.0, "veteran": 52.0}
+        threshold = float(incoming.get("threshold", presets.get(mode, 52.0)))
+        incoming["mode"] = mode
+        incoming["threshold"] = max(0.0, min(100.0, threshold))
+        incoming["scoring_mode"] = str(incoming.get("scoring_mode") or "local_fast")
+        if incoming["scoring_mode"] not in {"local_fast", "model_deep"}:
+            incoming["scoring_mode"] = "local_fast"
+        incoming["rerank_candidates"] = max(4, min(24, int(incoming.get("rerank_candidates", 12))))
+        incoming["global_workers"] = max(1, min(16, int(incoming.get("global_workers", 8))))
+        incoming["per_group_workers"] = max(1, min(6, int(incoming.get("per_group_workers", 3))))
+        incoming["model_concurrency"] = max(1, min(16, int(incoming.get("model_concurrency", 6))))
+        current["reply_strategy"] = incoming
+    if isinstance(data.get("embedding"), dict):
+        incoming_embedding = dict(data["embedding"])
+        incoming_embedding["dimensions"] = 4096
+        incoming_embedding["batch_size"] = max(1, min(64, int(incoming_embedding.get("batch_size", 32))))
+        current["embedding"] = incoming_embedding
+    if isinstance(data.get("retrieval"), dict):
+        incoming_retrieval = dict(data["retrieval"])
+        limits = {
+            "vector_limit": (12, 200, 60), "fts_limit": (8, 100, 30), "person_limit": (4, 50, 12),
+            "meme_limit": (4, 50, 12), "time_limit": (4, 100, 20), "media_limit": (4, 100, 16),
+            "fusion_limit": (12, 100, 60), "rerank_cache_seconds": (0, 3600, 600),
+        }
+        for key, (low, high, default) in limits.items():
+            incoming_retrieval[key] = max(low, min(high, int(incoming_retrieval.get(key, default))))
+        incoming_retrieval["adaptive_rerank"] = bool(incoming_retrieval.get("adaptive_rerank", True))
+        current["retrieval"] = incoming_retrieval
+    if isinstance(data.get("media_reply"), dict):
+        incoming_media = dict(data["media_reply"])
+        incoming_media["automatic_enabled"] = bool(incoming_media.get("automatic_enabled", True))
+        incoming_media["voice_probability"] = max(0.0, min(1.0, float(incoming_media.get("voice_probability", 0.15))))
+        incoming_media["face_probability"] = max(0.0, min(1.0, float(incoming_media.get("face_probability", 0.20))))
+        legacy_min_fit = float(incoming_media.get("min_fit", 70))
+        incoming_media["voice_min_fit"] = max(0.0, min(100.0, float(incoming_media.get("voice_min_fit", legacy_min_fit if "min_fit" in incoming_media else 55))))
+        incoming_media["face_min_fit"] = max(0.0, min(100.0, float(incoming_media.get("face_min_fit", legacy_min_fit if "min_fit" in incoming_media else 45))))
+        incoming_media.pop("min_fit", None)
+        incoming_media["min_candidate_confidence"] = max(0.0, min(1.0, float(incoming_media.get("min_candidate_confidence", 0.65))))
+        incoming_media["global_face_assets"] = bool(incoming_media.get("global_face_assets", True))
+        incoming_media["auto_media_replaces_text"] = True
+        incoming_media["group_overrides"] = incoming_media.get("group_overrides") if isinstance(incoming_media.get("group_overrides"), dict) else {}
+        current["media_reply"] = incoming_media
+    atomic_write(CONFIG_PATH, json.dumps(current, ensure_ascii=False, indent=2) + "\n")
+    hot_reload: Dict[str, Any] = {"applied": False}
+    try:
+        response = ai_json("/config/reload", "POST", {"config": str(CONFIG_PATH)}, 15)
+        hot_reload = {"applied": response.get("status") == "ok", "response": response}
+    except Exception as exc:
+        hot_reload = {"applied": False, "error": str(exc)}
+    return {**brain_config_payload(), "hot_reload": hot_reload, "revision": config_revision()}
+
+
+def brain_tasks(data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    data = data or {}
+    rows = MEMORY.reply_tasks(str(data.get("group_id") or ""), int(data.get("limit") or 200),
+                              bool(data.get("active_only", False)))
+    now = time.time()
+    for row in rows:
+        row["elapsed_seconds"] = round(max(0.0, (row.get("completed_at") or now) - (row.get("started_at") or row.get("queued_at") or now)), 2)
+    active = [row for row in rows if row.get("state") not in {"completed", "skipped", "failed", "cancelled"}]
+    runtime: Dict[str, Any] = {}
+    try:
+        runtime = ai_json("/status", timeout=3).get("brain") or {}
+    except Exception:
+        pass
+    positions = ((runtime.get("scheduler") or {}).get("queue_positions") or {})
+    for row in rows:
+        row["queue_position"] = positions.get(row.get("task_id"), 0)
+    return {
+        "items": rows,
+        "active": len(active),
+        "queued": sum(row.get("state") == "queued" for row in rows),
+        "completed_recent": sum(row.get("state") == "completed" and now - float(row.get("completed_at") or 0) <= 60 for row in rows),
+        "runtime": runtime,
+    }
+
+
+def brain_preview(data: Dict[str, Any]) -> Dict[str, Any]:
+    cfg = BrainConfig.from_raw(json_read(CONFIG_PATH, {}))
+    scorer = OpportunityScorer(cfg)
+    group_id = str(data.get("group_id") or "").strip()
+    cutoff = int(time.time()) - 86400
+    sql = "SELECT * FROM messages WHERE direction='incoming' AND event_time>=?"
+    params: list[Any] = [cutoff]
+    if group_id:
+        sql += " AND group_id=?"
+        params.append(group_id)
+    sql += " ORDER BY event_time ASC"
+    with MEMORY.connect() as db:
+        rows = [dict(row) for row in db.execute(sql, params).fetchall()]
+    recent_by_group: Dict[str, list[Dict[str, Any]]] = {}
+    previews = []
+    for row in rows:
+        gid = str(row.get("group_id") or "")
+        recent = recent_by_group.setdefault(gid, [])
+        value = str(row.get("text") or row.get("raw_message") or "").strip()
+        evt = type("PreviewEvent", (), {
+            "text": value, "user_id": str(row.get("user_id") or ""), "self_id": "",
+            "timestamp": int(row.get("event_time") or cutoff), "raw": {"message": []},
+        })()
+        local = scorer.local_score(evt, recent, {"items": [], "culture": MEMORY.culture_context(gid, value, 8)}, None)
+        predicted = bool(float(local["pre_score"]) >= cfg.threshold)
+        previews.append({"event_id": row.get("event_id"), "group_id": gid,
+                         "sender_name": row.get("sender_name"), "text": value[:500],
+                         "event_time": row.get("event_time"), "estimated_score": local["pre_score"],
+                         "threshold": cfg.threshold, "predicted_reply": predicted,
+                         "mandatory": local["mandatory"], "signals": local["reasons"]})
+        recent.append(row)
+        if len(recent) > 30:
+            del recent[:-30]
+    predicted_rows = [row for row in previews if row["predicted_reply"]]
+    return {"hours": 24, "evaluated": len(previews), "predicted": len(predicted_rows),
+            "threshold": cfg.threshold, "items": predicted_rows[-1000:]}
+
+
+def embedding_control(action: str) -> Dict[str, Any]:
+    if action == "start":
+        queued = MEMORY.enqueue_all_embeddings()
+        return {"action": action, "queued": queued, "stats": MEMORY.stats()}
+    # Pause/resume must change the live worker. Expose dedicated AI endpoints when
+    # available; queued work remains durable if AI is temporarily offline.
+    response = ai_json("/embedding/" + action, "POST", {}, 10)
+    return {"action": action, "response": response, "stats": MEMORY.stats()}
 
 
 def json_read(path: Path, default: Any) -> Any:
@@ -1007,6 +1228,160 @@ def discover_groups() -> Dict[str, Any]:
     return {"groups": result, "count": len(result), "selected_count": sum(x["selected"] for x in result)}
 
 
+def group_members_catalog(group_id: str) -> Dict[str, Any]:
+    group_id = str(group_id or "").strip()
+    if not group_id.endswith("@chatroom"):
+        raise ValueError("请选择有效的微信群")
+    cfg = json_read(CONFIG_PATH, {})
+    ignored = set(str(x) for x in (cfg.get("ignored_group_members", {}) or {}).get(group_id, []))
+    merged: Dict[str, Dict[str, Any]] = {}
+    source_counts: Dict[str, int] = collections.defaultdict(int)
+
+    def readable_name(value: Any, user_id: str) -> str:
+        name = str(value or "").strip()
+        lower = name.lower()
+        if name and name != user_id and not lower.startswith("wxid_") and not lower.endswith("@chatroom"):
+            return name
+        return ""
+
+    def remember(item: Dict[str, Any], source: str) -> None:
+        user_id = str(item.get("user_id") or item.get("id") or "").strip()
+        if not user_id or user_id.endswith("@chatroom"):
+            return
+        nickname = readable_name(item.get("nickname"), user_id)
+        card = readable_name(item.get("card"), user_id)
+        display_name = readable_name(item.get("display_name") or item.get("name"), user_id)
+        name = card or display_name or nickname
+        old = merged.get(user_id)
+        if old:
+            old["nickname"] = old.get("nickname") or nickname
+            old["card"] = old.get("card") or card
+            if name and (not old.get("name") or old.get("name") == "群友"):
+                old["name"] = name
+            old["message_count"] = max(int(old.get("message_count") or 0), int(item.get("message_count") or 0))
+            old["last_seen"] = max(str(old.get("last_seen") or ""), str(item.get("last_seen") or ""))
+            if source not in old["sources"]:
+                old["sources"].append(source)
+        else:
+            merged[user_id] = {
+                "user_id": user_id, "name": name or "群友", "nickname": nickname, "card": card,
+                "message_count": int(item.get("message_count") or 0),
+                "last_seen": str(item.get("last_seen") or ""), "sources": [source],
+                "ignored": user_id in ignored,
+            }
+        source_counts[source] += 1
+
+    onebot_error = ""
+    onebot_complete = False
+    onebot_self_id = ""
+    onebot_api = str(cfg.get("onebot_api") or "http://127.0.0.1:58080").rstrip("/")
+    try:
+        code, payload, _ = request_json(
+            onebot_api + "/get_group_member_list?" + urllib.parse.urlencode({"group_id": group_id}),
+            timeout=5,
+        )
+        if code == 200 and isinstance(payload, dict):
+            onebot_self_id = str(payload.get("self_id") or "")
+            onebot_rows = payload.get("data") if isinstance(payload.get("data"), list) else payload.get("members", [])
+            for item in onebot_rows:
+                if isinstance(item, dict):
+                    remember(item, "onebot_live")
+            onebot_complete = bool(payload.get("complete", False))
+        else:
+            onebot_error = f"OneBot HTTP {code}"
+    except Exception as exc:
+        onebot_error = str(exc)
+
+    if not onebot_self_id:
+        try:
+            health_code, health, _ = request_json(onebot_api + "/health", timeout=3)
+            if health_code == 200 and isinstance(health, dict):
+                onebot_self_id = str(health.get("self_id") or "")
+        except Exception:
+            pass
+    if not onebot_self_id:
+        try:
+            with MEMORY.connect() as db:
+                row = db.execute(
+                    """SELECT json_extract(raw_json,'$.self_id') AS self_id,COUNT(*) AS total
+                       FROM messages WHERE group_id=?
+                         AND COALESCE(json_extract(raw_json,'$.self_id'),'')!=''
+                         AND (COALESCE(json_extract(raw_json,'$.msgsource'),'')!=''
+                              OR (message_id!='' AND message_id NOT GLOB '*[^0-9]*'))
+                       GROUP BY self_id ORDER BY total DESC LIMIT 1""",
+                    (group_id,),
+                ).fetchone()
+                if row:
+                    onebot_self_id = str(row["self_id"] or "")
+        except Exception:
+            pass
+    genuine_memory_ids: set[str] = set()
+    if onebot_self_id:
+        try:
+            with MEMORY.connect() as db:
+                genuine_memory_ids = {
+                    str(row["user_id"] or "") for row in db.execute(
+                        """SELECT DISTINCT user_id FROM messages
+                           WHERE group_id=? AND json_extract(raw_json,'$.self_id')=?
+                             AND (COALESCE(json_extract(raw_json,'$.msgsource'),'')!=''
+                                  OR (message_id!='' AND message_id NOT GLOB '*[^0-9]*'))""",
+                        (group_id, onebot_self_id),
+                    ).fetchall() if str(row["user_id"] or "")
+                }
+        except Exception:
+            genuine_memory_ids = set()
+    for item in MEMORY.members(group_id, 1000):
+        user_id = str(item.get("user_id") or "")
+        if user_id in genuine_memory_ids or user_id in ignored:
+            remember(item, "permanent_memory")
+    for user_id in ignored:
+        if user_id not in merged:
+            remember({"user_id": user_id}, "saved_blacklist")
+
+    # A readable name learned in another group is still better than exposing a wxid.
+    for item in merged.values():
+        if item["name"] == "群友":
+            item["name"] = MEMORY.resolve_member_name(group_id, item["user_id"], "")
+    rows = sorted(merged.values(), key=lambda x: (
+        not x["ignored"], x["name"] == "群友", -int(x.get("message_count") or 0), x["name"].lower(), x["user_id"]
+    ))
+    return {
+        "group_id": group_id, "items": rows, "count": len(rows), "ignored_ids": sorted(ignored),
+        "source_counts": dict(source_counts), "onebot_complete": onebot_complete,
+        "onebot_error": onebot_error,
+    }
+
+
+def save_group_member_blacklist(data: Dict[str, Any]) -> Dict[str, Any]:
+    group_id = str(data.get("group_id") or "").strip()
+    if not group_id.endswith("@chatroom"):
+        raise ValueError("请选择有效的微信群")
+    raw_ids = data.get("user_ids")
+    if not isinstance(raw_ids, list):
+        raise ValueError("user_ids 必须是数组")
+    user_ids = sorted({str(x).strip() for x in raw_ids if str(x).strip() and not str(x).endswith("@chatroom")})
+    if len(user_ids) > 5000:
+        raise ValueError("单群黑名单不能超过 5000 人")
+    with CONFIG_WRITE_LOCK:
+        current = json_read(CONFIG_PATH, {})
+        mapping = current.get("ignored_group_members") if isinstance(current.get("ignored_group_members"), dict) else {}
+        mapping = {str(k): list(v) for k, v in mapping.items() if str(k).endswith("@chatroom") and isinstance(v, list)}
+        if user_ids:
+            mapping[group_id] = user_ids
+        else:
+            mapping.pop(group_id, None)
+        current["ignored_group_members"] = mapping
+        atomic_write(CONFIG_PATH, json.dumps(current, ensure_ascii=False, indent=2) + "\n")
+    hot_reload: Dict[str, Any] = {"applied": False}
+    try:
+        response = ai_json("/config/reload", "POST", {"config": str(CONFIG_PATH)}, 15)
+        hot_reload = {"applied": response.get("status") == "ok", "response": response}
+    except Exception as exc:
+        hot_reload = {"applied": False, "error": str(exc)}
+    return {"group_id": group_id, "ignored_ids": user_ids, "count": len(user_ids),
+            "hot_reload": hot_reload, "revision": config_revision()}
+
+
 def save_group_aliases(data: Dict[str, Any]) -> Dict[str, Any]:
     aliases = data.get("aliases")
     if not isinstance(aliases, dict):
@@ -1184,6 +1559,12 @@ def onebot_file_payload(value: str, kind: str, max_bytes: int = 50 * 1024 * 1024
         size = path.stat().st_size
         if size > max_bytes:
             raise ValueError(f"媒体文件过大：{size} bytes，当前上限 {max_bytes} bytes")
+        cache_key = f"{path.resolve()}|{size}|{path.stat().st_mtime_ns}|{kind}"
+        with MEDIA_PAYLOAD_CACHE_LOCK:
+            cached = MEDIA_PAYLOAD_CACHE.get(cache_key)
+            if cached:
+                MEDIA_PAYLOAD_CACHE.move_to_end(cache_key)
+                return cached[0], dict(cached[1])
         raw = path.read_bytes()
         meta = {
             "source": str(path),
@@ -1193,7 +1574,13 @@ def onebot_file_payload(value: str, kind: str, max_bytes: int = 50 * 1024 * 1024
         }
     meta["sha256"] = hashlib.sha256(raw).hexdigest()[:16]
     meta["kind"] = kind
-    return "base64://" + base64.b64encode(raw).decode("ascii"), meta
+    payload = "base64://" + base64.b64encode(raw).decode("ascii")
+    if "cache_key" in locals():
+        with MEDIA_PAYLOAD_CACHE_LOCK:
+            MEDIA_PAYLOAD_CACHE[cache_key] = (payload, dict(meta))
+            while len(MEDIA_PAYLOAD_CACHE) > 32:
+                MEDIA_PAYLOAD_CACHE.popitem(last=False)
+    return payload, meta
 
 
 def go_bin() -> Path:
@@ -1358,17 +1745,28 @@ def _voice_import_paths(data: Dict[str, Any]) -> List[str]:
     return [str(x).strip() for x in raw_paths if str(x).strip()]
 
 
+def _voice_import_target(data: Dict[str, Any]) -> Dict[str, Any]:
+    target_pack_id = int(data.get("target_pack_id") or 0)
+    if target_pack_id <= 0:
+        return {}
+    pack = MEMORY.voice_pack(target_pack_id)
+    if not pack:
+        raise ValueError("要追加的语音包不存在，请刷新列表后重试")
+    return pack
+
+
 def voicepack_import_plan(data: Dict[str, Any]) -> Dict[str, Any]:
     raw_paths = _voice_import_paths(data)
     if not raw_paths:
         raise ValueError("请填写语音包总目录、zip/zip1 或单个 silk 文件路径")
     grouped: Dict[str, Dict[str, Any]] = {}
     errors: List[Dict[str, str]] = []
+    target_pack = _voice_import_target(data)
     for raw_path in raw_paths:
         try:
             for src, category, pack_name in iter_voice_source_files(Path(raw_path)):
-                category = str(data.get("category") or category or "默认").strip()
-                pack_name = str(pack_name or category).strip()
+                category = str(target_pack.get("category") or data.get("category") or category or "默认").strip()
+                pack_name = str(target_pack.get("name") or pack_name or category).strip()
                 key = f"{category}/{pack_name}"
                 group = grouped.setdefault(key, {"category": category, "pack_name": pack_name, "count": 0, "samples": []})
                 group["count"] += 1
@@ -1377,7 +1775,8 @@ def voicepack_import_plan(data: Dict[str, Any]) -> Dict[str, Any]:
         except Exception as exc:
             errors.append({"path": str(raw_path), "error": str(exc)})
     groups = sorted(grouped.values(), key=lambda x: (x["category"].lower(), x["pack_name"].lower()))
-    return {"sources": raw_paths, "groups": groups, "total": sum(x["count"] for x in groups), "errors": errors}
+    return {"sources": raw_paths, "groups": groups, "total": sum(x["count"] for x in groups),
+            "errors": errors, "target_pack": target_pack}
 
 
 def import_voice_paths(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -1390,6 +1789,7 @@ def import_voice_paths(data: Dict[str, Any]) -> Dict[str, Any]:
     packs: Dict[str, Dict[str, Any]] = {}
     samples = []
     errors = []
+    target_pack = _voice_import_target(data)
     existing_digests = {
         hashlib.sha1(f.read_bytes()).hexdigest()
         for f in VOICE_PACK_DIR.rglob("*")
@@ -1399,9 +1799,9 @@ def import_voice_paths(data: Dict[str, Any]) -> Dict[str, Any]:
         try:
             source_path = Path(str(raw_path)).expanduser()
             for src, category, pack_name in iter_voice_source_files(source_path):
-                category = str(data.get("category") or category or pack_name or "默认").strip()
-                pack_name = str(pack_name or category).strip()
-                pack_id = MEMORY.upsert_voice_pack(pack_name, category, str(source_path))
+                category = str(target_pack.get("category") or data.get("category") or category or pack_name or "默认").strip()
+                pack_name = str(target_pack.get("name") or pack_name or category).strip()
+                pack_id = int(target_pack.get("id") or 0) or MEMORY.upsert_voice_pack(pack_name, category, str(source_path))
                 pack_key = f"{category}/{pack_name}"
                 pack_row = packs.setdefault(pack_key, {
                     "category": category,
@@ -1450,7 +1850,61 @@ def import_voice_paths(data: Dict[str, Any]) -> Dict[str, Any]:
         "pack_summary": list(packs.values()),
         "samples": samples,
         "errors": errors,
+        "target_pack": target_pack,
     }
+
+
+def _delete_managed_voice_files(items: List[Dict[str, Any]]) -> Dict[str, Any]:
+    root = VOICE_PACK_DIR.resolve()
+    deleted = 0
+    errors: List[Dict[str, str]] = []
+    for item in items:
+        path = media_value_to_path(str(item.get("file") or ""))
+        if not path:
+            continue
+        try:
+            resolved = path.resolve()
+            if resolved != root and root not in resolved.parents:
+                continue
+            if resolved.exists() and resolved.is_file():
+                resolved.unlink()
+                deleted += 1
+            for cached in VOICE_CACHE_DIR.glob(f"{resolved.stem[:60]}-*.wav"):
+                cached.unlink(missing_ok=True)
+            parent = resolved.parent
+            while parent != root and root in parent.parents:
+                try:
+                    parent.rmdir()
+                except OSError:
+                    break
+                parent = parent.parent
+        except Exception as exc:
+            errors.append({"file": str(path), "error": str(exc)})
+    return {"files_deleted": deleted, "file_errors": errors}
+
+
+def voicepack_delete_item(data: Dict[str, Any]) -> Dict[str, Any]:
+    item_id = int(data.get("id") or data.get("item_id") or 0)
+    if item_id <= 0:
+        raise ValueError("需要语音条目 ID")
+    result = MEMORY.delete_voice_item(item_id)
+    if not result.get("deleted"):
+        raise ValueError("语音条目不存在或已经删除")
+    cleanup = _delete_managed_voice_files(result.get("items") or []) if data.get("delete_file", True) else {
+        "files_deleted": 0, "file_errors": []}
+    return {**result, **cleanup}
+
+
+def voicepack_delete_pack(data: Dict[str, Any]) -> Dict[str, Any]:
+    pack_id = int(data.get("pack_id") or data.get("id") or 0)
+    if pack_id <= 0:
+        raise ValueError("需要语音包 ID")
+    result = MEMORY.delete_voice_pack(pack_id)
+    if not result.get("pack"):
+        raise ValueError("语音包不存在或已经删除")
+    cleanup = _delete_managed_voice_files(result.get("items") or []) if data.get("delete_files", True) else {
+        "files_deleted": 0, "file_errors": []}
+    return {**result, **cleanup}
 
 
 def voicepacks_list(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -1603,16 +2057,12 @@ def is_face_row(row: Dict[str, Any]) -> bool:
 def faces_list(data: Dict[str, Any]) -> Dict[str, Any]:
     group_id = str(data.get("group_id") or "").strip()
     query = str(data.get("query") or "").strip()
-    rows = MEMORY.media(group_id, "image", 500, "", query)
+    global_shared = bool(data.get("global_shared", True))
+    if not MEMORY.face_asset_count():
+        MEMORY.rebuild_face_assets()
+    rows = MEMORY.search_face_assets(query, group_id, 500, global_shared=global_shared, include_disabled=True)
     out = []
-    seen = set()
     for row in rows:
-        if not is_face_row(row):
-            continue
-        key = face_md5(row)
-        if key in seen:
-            continue
-        seen.add(key)
         try:
             row["tags"] = json.loads(row.get("tags_json") or "[]")
         except Exception:
@@ -1621,33 +2071,125 @@ def faces_list(data: Dict[str, Any]) -> Dict[str, Any]:
             row["keywords"] = json.loads(row.get("keywords_json") or "[]")
         except Exception:
             row["keywords"] = []
-        row["face_key"] = key
+        for source, target in (("aliases_json", "aliases"), ("emotions_json", "emotions"),
+                               ("intents_json", "intents"), ("actions_json", "actions"),
+                               ("subjects_json", "subjects")):
+            try:
+                row[target] = json.loads(row.get(source) or "[]")
+            except Exception:
+                row[target] = []
         row["data_url"] = image_data_url(str(row.get("file") or row.get("url") or ""))
         out.append(row)
     return {"items": out, "count": len(out)}
 
 
 def face_send(data: Dict[str, Any]) -> Dict[str, Any]:
+    face_id = int(data.get("face_id") or 0)
     media_id = int(data.get("id") or data.get("media_id") or 0)
     group_id = str(data.get("group_id") or "").strip()
-    if media_id <= 0:
+    if face_id <= 0 and media_id <= 0:
         raise ValueError("需要表情包 ID")
     if not group_id.endswith("@chatroom"):
         raise ValueError("需要目标群")
-    item = MEMORY.media_detail(media_id)
+    item = MEMORY.face_asset(face_id) if face_id > 0 else {}
+    if not item and media_id > 0:
+        item = MEMORY.sync_face_asset(media_id) or MEMORY.media_detail(media_id)
     if not item:
         raise ValueError("表情包不存在")
     file_value = str(item.get("file") or item.get("url") or "")
     if not file_value:
         raise ValueError("表情包没有本地文件")
-    try:
-        result = send_message({"group_id": group_id, "type": "image", "file": file_value})
-    except Exception as exc:
-        if "媒体上传通道未初始化" not in str(exc):
+    path = media_value_to_path(file_value)
+    if not path or not path.exists() or not path.is_file():
+        raise ValueError("表情包本地文件不存在")
+    if path.stat().st_size <= 0 or path.stat().st_size > 25 * 1024 * 1024:
+        raise ValueError(f"表情包文件大小异常：{path.stat().st_size} bytes")
+    if not media_channel_ready():
+        repair = ensure_media_channel_ready("face_send_preflight")
+        if not repair.get("ready") and not media_channel_ready():
+            raise RuntimeError("表情发送前 UploadMedia 通道未就绪")
+    trace_id = str(data.get("trace_id") or ("face-" + uuid.uuid4().hex[:12]))
+    started = time.monotonic()
+    state = "failed"
+    result: Dict[str, Any] = {}
+    with FACE_SEND_LOCK:
+        offsets = {str(log_path): log_path.stat().st_size for log_path in LOG_FILES.values() if log_path.exists()}
+        try:
+            result = send_message({
+                "group_id": group_id, "type": "image", "file": file_value,
+                "_send_timeout": 15, "_retry_media": False, "_force_media_send": True,
+            })
+            state = "sent"
+        except (TimeoutError, socket.timeout, urllib.error.URLError) as exc:
+            deadline = time.monotonic() + 5
+            confirmed = False
+            while time.monotonic() < deadline and not confirmed:
+                for log_path in LOG_FILES.values():
+                    if not log_path.exists():
+                        continue
+                    try:
+                        with log_path.open("rb") as handle:
+                            handle.seek(min(offsets.get(str(log_path), 0), log_path.stat().st_size))
+                            tail = handle.read().decode("utf-8", "replace")
+                        if "buf2resp: 收到响应, msgType=img" in tail or "发送图片消息成功" in tail:
+                            confirmed = True
+                            break
+                    except OSError:
+                        continue
+                if not confirmed:
+                    time.sleep(0.25)
+            if confirmed:
+                state = "timeout_confirmed"
+                result = {"ok": True, "latency_ms": round((time.monotonic() - started) * 1000), "timeout": str(exc)}
+            else:
+                MEMORY.mark_face_used(int(item.get("id") or face_id), False)
+                raise RuntimeError("表情发送 15 秒超时，5 秒内未收到 OneBot 回调确认") from exc
+        except Exception:
+            MEMORY.mark_face_used(int(item.get("id") or face_id), False)
             raise
-        ensure_media_channel_ready("face_send")
-        result = send_message({"group_id": group_id, "type": "image", "file": file_value})
-    return {"item": item, "send": result}
+    MEMORY.mark_face_used(int(item.get("id") or face_id), True)
+    return {
+        "state": state, "trace_id": trace_id, "query": str(data.get("query") or ""),
+        "reason": str(data.get("reason") or ""), "elapsed_ms": round((time.monotonic() - started) * 1000),
+        "item": item, "send": result,
+    }
+
+
+def face_update(data: Dict[str, Any]) -> Dict[str, Any]:
+    face_id = int(data.get("face_id") or data.get("id") or 0)
+    if face_id <= 0:
+        raise ValueError("需要表情资产 ID")
+    values = {key: data[key] for key in (
+        "ocr_text", "image_summary", "tags_json", "keywords_json", "aliases_json",
+        "emotions_json", "intents_json", "actions_json", "subjects_json", "enabled",
+    ) if key in data}
+    item = MEMORY.update_face_asset(face_id, values)
+    if not item:
+        raise ValueError("表情资产不存在")
+    group_id = str(data.get("group_id") or "").strip()
+    if group_id and "group_enabled" in data:
+        MEMORY.set_face_group_enabled(face_id, group_id, bool(data.get("group_enabled")))
+    return item
+
+
+def face_reindex(data: Dict[str, Any]) -> Dict[str, Any]:
+    return MEMORY.rebuild_face_assets()
+
+
+def media_reply_test(data: Dict[str, Any]) -> Dict[str, Any]:
+    group_id = str(data.get("group_id") or "").strip()
+    query = str(data.get("query") or "").strip()
+    if not query:
+        raise ValueError("请输入需要测试的群聊上下文")
+    faces = MEMORY.search_face_assets(query, group_id, 8, global_shared=True)
+    voices = MEMORY.search_voice_items(query, limit=8)
+    return {
+        "query": query, "group_id": group_id,
+        "faces": [{"id": row.get("id"), "summary": row.get("image_summary"), "ocr_text": row.get("ocr_text"),
+                   "score": row.get("match_score"), "reason": row.get("match_reason")} for row in faces],
+        "voices": [{"id": row.get("id"), "title": row.get("title"), "score": row.get("match_score"),
+                    "reason": row.get("match_reason")} for row in voices],
+    }
 
 
 def sanitize_message_segments(message: Any) -> Any:
@@ -1711,9 +2253,10 @@ def send_message(data: Dict[str, Any]) -> Dict[str, Any]:
             raise RuntimeError("媒体上传通道未初始化：已自动向文件传输助手发送极小占位图尝试修复，但通道仍未确认就绪。")
     # GIF/大图/语音需要先 UploadMedia 再 send，实际可能超过 25s。
     # 等待时间过短会造成“微信已发出但后台显示 timeout”的假失败。
-    send_timeout = 90 if kind in {"image", "video", "record"} else 25
+    send_timeout = max(3, min(120, int(data.get("_send_timeout") or (90 if kind in {"image", "video", "record"} else 25))))
     result = onebot_send_target(target_id, message, timeout=send_timeout)
-    if not result["ok"] and kind in {"image", "video", "record"} and not bool(data.get("_force_media_send")):
+    retry_media = bool(data.get("_retry_media", True))
+    if not result["ok"] and retry_media and kind in {"image", "video", "record"} and not bool(data.get("_force_media_send")):
         try:
             warm_media_channel(f"retry_after_send_failure:{kind}", force=True)
         except Exception:
@@ -1940,6 +2483,49 @@ def memory_persona_save(data: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(facts, list):
         facts = []
     return MEMORY.save_persona(user_id, group_id, str(data.get("summary") or "").strip(), tags, facts)
+
+
+def personas_list_api(data: Dict[str, Any]) -> Dict[str, Any]:
+    group_id = str(data.get("group_id") or "").strip()
+    if not group_id:
+        raise ValueError("需要选择群")
+    return MEMORY.persona_list(group_id, str(data.get("query") or "").strip(),
+                               str(data.get("status") or "").strip(), int(data.get("page") or 1),
+                               int(data.get("page_size") or 100))
+
+
+def personas_detail_api(data: Dict[str, Any]) -> Dict[str, Any]:
+    group_id = str(data.get("group_id") or "").strip()
+    user_id = str(data.get("user_id") or "").strip()
+    if not group_id or not user_id:
+        raise ValueError("需要 group_id 和 user_id")
+    detail = MEMORY.persona_detail(group_id, user_id)
+    if not detail:
+        raise ValueError("当前群中没有该成员")
+    return detail
+
+
+def personas_analyze_api(data: Dict[str, Any]) -> Dict[str, Any]:
+    action = str(data.get("action") or "start")
+    if action in {"pause", "resume", "retry", "cancel"}:
+        job_id = int(data.get("job_id") or 0)
+        if not job_id:
+            raise ValueError("需要 job_id")
+        status = {"pause": "paused", "resume": "queued", "retry": "queued", "cancel": "cancelled"}[action]
+        result = MEMORY.set_persona_job_status(job_id, status)
+        emit_persona_event(result, action)
+        return result
+    result = MEMORY.queue_persona_analysis(
+        str(data.get("group_id") or "").strip(), str(data.get("user_id") or "").strip(),
+        str(data.get("mode") or "full"),
+    )
+    emit_persona_event({"group_id": data.get("group_id"), **result}, "queued")
+    return result
+
+
+def personas_jobs_api(data: Dict[str, Any]) -> Dict[str, Any]:
+    rows = MEMORY.persona_jobs(str(data.get("group_id") or "").strip(), str(data.get("status") or "").strip(), int(data.get("limit") or 200))
+    return {"items": rows, "count": len(rows)}
 
 
 def memory_vector_search(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -2578,10 +3164,47 @@ class Handler(BaseHTTPRequestHandler):
             return self.json_response(200, {"ok": True, "data": channel_health_snapshot()})
         if path == "/api/groups/discover":
             return self.json_response(200, {"ok": True, "data": discover_groups()})
+        if path == "/api/groups/members":
+            try:
+                qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                group_id = str((qs.get("group_id") or [""])[0])
+                return self.json_response(200, {"ok": True, "data": group_members_catalog(group_id)})
+            except Exception as exc:
+                return self.json_response(400, {"ok": False, "error": str(exc)})
         if path == "/api/traces/recent":
             return self.json_response(200, {"ok": True, "data": recent_traces()})
         if path == "/api/memory/stats":
             return self.json_response(200, {"ok": True, "data": memory_stats()})
+        if path in {"/api/personas/list", "/api/personas/detail", "/api/personas/jobs"}:
+            try:
+                qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                data = {key: values[0] for key, values in qs.items() if values}
+                handler = {"/api/personas/list": personas_list_api, "/api/personas/detail": personas_detail_api,
+                           "/api/personas/jobs": personas_jobs_api}[path]
+                return self.json_response(200, {"ok": True, "data": handler(data)})
+            except Exception as exc:
+                return self.json_response(400, {"ok": False, "error": str(exc)})
+        if path == "/api/brain/config":
+            return self.json_response(200, {"ok": True, "data": brain_config_payload()})
+        if path == "/api/brain/tasks":
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            return self.json_response(200, {"ok": True, "data": brain_tasks({
+                "group_id": (qs.get("group_id") or [""])[0],
+                "limit": int((qs.get("limit") or ["200"])[0]),
+                "active_only": (qs.get("active_only") or ["0"])[0] in {"1", "true"},
+            })})
+        if path == "/api/brain/culture":
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            group_id = str((qs.get("group_id") or [""])[0])
+            query = str((qs.get("query") or [""])[0])
+            return self.json_response(200, {"ok": True, "data": MEMORY.culture_context(group_id, query, 200)})
+        if path == "/api/embedding/status":
+            runtime = {}
+            try:
+                runtime = (ai_json("/status", timeout=3).get("brain") or {}).get("embedding") or {}
+            except Exception:
+                pass
+            return self.json_response(200, {"ok": True, "data": {**runtime, "stats": MEMORY.stats()}})
         if path == "/api/voicepacks":
             return self.json_response(200, {"ok": True, "data": voicepacks_list({})})
         if path == "/api/voicepacks/audio":
@@ -2593,8 +3216,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json_response(400, {"ok": False, "error": str(exc)})
         if path == "/api/faces":
             return self.json_response(200, {"ok": True, "data": faces_list({})})
-        if path == "/api/logs/stream":
-            return self.stream_logs()
+        if path in {"/api/logs/stream", "/api/events/stream"}:
+            return self.stream_events(logs_only=path == "/api/logs/stream")
         if path == "/" or path.startswith("/static/"):
             file = STATIC / ("index.html" if path == "/" else path.removeprefix("/static/"))
             return self.serve_file(file)
@@ -2609,6 +3232,29 @@ class Handler(BaseHTTPRequestHandler):
                 result = save_config(data)
                 if ai_was_running:
                     run_action("restart_ai")
+            elif path == "/api/brain/config":
+                result = save_brain_config(data)
+            elif path == "/api/personas/analyze":
+                result = personas_analyze_api(data)
+            elif path == "/api/personas/save":
+                result = memory_persona_save(data)
+            elif path == "/api/groups/ignored-members":
+                result = save_group_member_blacklist(data)
+            elif path == "/api/brain/tasks":
+                result = brain_tasks(data)
+            elif path == "/api/brain/preview":
+                result = brain_preview(data)
+            elif path == "/api/embedding/backfill/start":
+                result = embedding_control("start")
+            elif path == "/api/embedding/backfill/pause":
+                result = embedding_control("pause")
+            elif path == "/api/embedding/backfill/resume":
+                result = embedding_control("resume")
+            elif path == "/api/embedding/test":
+                result = ai_json("/embedding/test", "POST", {
+                    "query": str(data.get("query") or "群里大家最近在聊什么"),
+                    "group_id": str(data.get("group_id") or ""),
+                }, 180).get("data") or {}
             elif path == "/api/models":
                 result = fetch_models(data)
             elif path == "/api/test/ai":
@@ -2647,10 +3293,20 @@ class Handler(BaseHTTPRequestHandler):
                 result = import_voice_paths(data)
             elif path == "/api/voicepacks/send":
                 result = voicepack_send(data)
+            elif path == "/api/voicepacks/delete-item":
+                result = voicepack_delete_item(data)
+            elif path == "/api/voicepacks/delete-pack":
+                result = voicepack_delete_pack(data)
             elif path == "/api/faces":
                 result = faces_list(data)
             elif path == "/api/faces/send":
                 result = face_send(data)
+            elif path == "/api/faces/update":
+                result = face_update(data)
+            elif path == "/api/faces/reindex":
+                result = face_reindex(data)
+            elif path == "/api/media-reply/test":
+                result = media_reply_test(data)
             elif path == "/api/memory/search":
                 result = memory_search(data)
             elif path == "/api/memory/members":
@@ -2710,7 +3366,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
-    def stream_logs(self) -> None:
+    def stream_events(self, logs_only: bool = False) -> None:
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
@@ -2720,6 +3376,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             for source, file in LOG_FILES.items():
                 positions[source] = max(0, file.stat().st_size - 40_000) if file.exists() else 0
+            positions["brain"] = BRAIN_EVENTS_FILE.stat().st_size if BRAIN_EVENTS_FILE.exists() else 0
             while True:
                 sent = False
                 for source, file in LOG_FILES.items():
@@ -2734,10 +3391,26 @@ class Handler(BaseHTTPRequestHandler):
                         f.seek(positions[source])
                         for line in f:
                             event = normalize_log(source, line)
+                            event = {"type": "log", **event}
                             payload = json.dumps(event, ensure_ascii=False)
                             self.wfile.write(f"data: {payload}\n\n".encode())
                             sent = True
                         positions[source] = f.tell()
+                if not logs_only and BRAIN_EVENTS_FILE.exists():
+                    size = BRAIN_EVENTS_FILE.stat().st_size
+                    if size < positions["brain"]:
+                        positions["brain"] = 0
+                    if size > positions["brain"]:
+                        with BRAIN_EVENTS_FILE.open("r", encoding="utf-8", errors="replace") as f:
+                            f.seek(positions["brain"])
+                            for line in f:
+                                try:
+                                    event = json.loads(line)
+                                except ValueError:
+                                    continue
+                                self.wfile.write(f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode())
+                                sent = True
+                            positions["brain"] = f.tell()
                 if not sent:
                     self.wfile.write(b": ping\n\n")
                 self.wfile.flush()
@@ -2757,9 +3430,10 @@ def main() -> int:
     normalize_existing_voice_titles()
     threading.Thread(target=health_check_loop, name="channel-health-check", daemon=True).start()
     threading.Thread(target=onebot_monitor_loop, name="onebot-monitor", daemon=True).start()
+    threading.Thread(target=persona_worker_loop, name="persona-analysis", daemon=True).start()
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"第二微信 Web 管理后台：http://{args.host}:{args.port}", flush=True)
-    signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=server.shutdown, daemon=True).start())
+    signal.signal(signal.SIGTERM, lambda *_: (PERSONA_WORKER_STOP.set(), threading.Thread(target=server.shutdown, daemon=True).start()))
     try:
         server.serve_forever(poll_interval=0.4)
     finally:
