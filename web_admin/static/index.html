@@ -3,41 +3,85 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>第二微信 AI 控制台</title>
+  <title>轨道神经网络 · 第二微信 AI 控制台</title>
+  <link rel="stylesheet" href="/static/vendor/phosphor/phosphor.css">
   <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/design-system.css">
+  <link rel="stylesheet" href="/static/orbital-system.css">
+  <script>document.documentElement.dataset.theme=localStorage.getItem('wxconsole-theme')||'dark';</script>
 </head>
-<body>
+<body data-workspace="runtime">
 <div class="app-shell">
-  <aside class="sidebar">
-    <div>
-      <div class="brand"><span class="brand-signal"></span><div><strong>WXConsole</strong><small>第二微信 AI 控制台</small></div></div>
-      <nav class="nav" aria-label="主导航">
-        <button class="nav-item active" data-page="overview"><span class="nav-icon">⌘</span><span>运行总览</span></button>
-        <button class="nav-item" data-page="ai"><span class="nav-icon">AI</span><span>模型配置</span></button>
-        <button class="nav-item" data-page="groups"><span class="nav-icon">#</span><span>群聊策略</span></button>
-        <button class="nav-item" data-page="brain"><span class="nav-icon">BRN</span><span>群聊大脑</span></button>
-        <button class="nav-item" data-page="personas"><span class="nav-icon">USR</span><span>用户画像</span></button>
-        <button class="nav-item" data-page="reply-tasks"><span class="nav-icon">RUN</span><span>实时回复</span></button>
-        <button class="nav-item" data-page="vector"><span class="nav-icon">VEC</span><span>本地向量</span></button>
-        <button class="nav-item" data-page="tests"><span class="nav-icon">✓</span><span>测试中心</span></button>
-        <button class="nav-item" data-page="media"><span class="nav-icon">IMG</span><span>图片图库</span></button>
-        <button class="nav-item" data-page="voice-records"><span class="nav-icon">ASR</span><span>语音内容</span></button>
-        <button class="nav-item" data-page="voices"><span class="nav-icon">VOX</span><span>语音包管理</span></button>
-        <button class="nav-item" data-page="faces"><span class="nav-icon">GIF</span><span>表情包管理</span></button>
-        <button class="nav-item" data-page="memory"><span class="nav-icon">DB</span><span>记忆数据库</span></button>
-        <button class="nav-item" data-page="logs"><span class="nav-icon">›_</span><span>完整日志</span><i id="logPulse"></i></button>
-      </nav>
+  <aside class="workspace-rail" aria-label="工作区">
+    <div class="rail-brand" title="轨道神经网络"><img src="/static/assets/orbital-brand-mark.png" alt=""></div>
+    <nav class="workspace-nav">
+      <button class="workspace-item active" type="button" data-workspace="runtime" aria-label="运行"><i class="ph ph-wave-sine"></i><span>运行</span></button>
+      <button class="workspace-item" type="button" data-workspace="intelligence" aria-label="智能"><i class="ph ph-brain"></i><span>智能</span></button>
+      <button class="workspace-item" type="button" data-workspace="memory" aria-label="记忆"><i class="ph ph-database"></i><span>记忆</span></button>
+      <button class="workspace-item" type="button" data-workspace="assets" aria-label="素材"><i class="ph ph-folder-open"></i><span>素材</span></button>
+      <button class="workspace-item" type="button" data-workspace="diagnostics" aria-label="诊断"><i class="ph ph-stethoscope"></i><span>诊断</span></button>
+    </nav>
+    <div class="rail-node" title="本机服务在线"><span></span><small>本机</small></div>
+  </aside>
+
+  <aside class="context-sidebar" id="contextSidebar">
+    <div class="context-brand">
+      <div><strong>轨道神经网络</strong><small>Orbital Neural Network</small></div>
+      <button class="context-close" id="contextCloseBtn" type="button" title="关闭菜单"><i class="ph ph-x"></i></button>
     </div>
+    <nav class="nav" aria-label="功能导航">
+      <section class="context-group active" data-workspace-group="runtime">
+        <div class="context-title"><span>运行中心</span><small>LIVE</small></div>
+        <button class="nav-item active" data-page="overview"><i class="ph ph-layout"></i><span>运行总览</span></button>
+      </section>
+      <section class="context-group" data-workspace-group="intelligence">
+        <div class="context-title"><span>智能中心</span><small>AI</small></div>
+        <button class="nav-item" data-page="ai"><i class="ph ph-cpu"></i><span>模型配置</span></button>
+        <button class="nav-item" data-page="groups"><i class="ph ph-users-three"></i><span>群聊策略</span></button>
+        <button class="nav-item" data-page="brain"><i class="ph ph-brain"></i><span>群聊大脑</span></button>
+        <button class="nav-item" data-page="reply-tasks"><i class="ph ph-chats-circle"></i><span>实时对话</span></button>
+        <button class="nav-item" data-page="tests"><i class="ph ph-chart-line-up"></i><span>评估看板</span></button>
+      </section>
+      <section class="context-group" data-workspace-group="memory">
+        <div class="context-title"><span>长期记忆</span><small>BRAIN</small></div>
+        <button class="nav-item" data-page="personas"><i class="ph ph-user-focus"></i><span>用户画像</span></button>
+        <button class="nav-item" data-page="vector"><i class="ph ph-vector-three"></i><span>本地向量</span></button>
+        <button class="nav-item" data-page="memory"><i class="ph ph-database"></i><span>记忆数据库</span></button>
+      </section>
+      <section class="context-group" data-workspace-group="assets">
+        <div class="context-title"><span>素材中心</span><small>MEDIA</small></div>
+        <button class="nav-item" data-page="media"><i class="ph ph-images"></i><span>图片图库</span></button>
+        <button class="nav-item" data-page="voice-records"><i class="ph ph-waveform"></i><span>语音内容</span></button>
+        <button class="nav-item" data-page="voices"><i class="ph ph-speaker-high"></i><span>语音包管理</span></button>
+        <button class="nav-item" data-page="faces"><i class="ph ph-smiley"></i><span>表情包管理</span></button>
+      </section>
+      <section class="context-group" data-workspace-group="diagnostics">
+        <div class="context-title"><span>诊断中心</span><small>TOOLS</small></div>
+        <button class="nav-item" data-page="logs"><i class="ph ph-terminal-window"></i><span>完整日志</span><i id="logPulse"></i></button>
+      </section>
+    </nav>
     <div class="sidebar-foot">
-      <div class="local-node"><span></span><div><strong>LOCAL NODE</strong><small>127.0.0.1 · 在线</small></div></div>
-      <div class="build">macOS Core Engine · v2.0</div>
+      <div class="drawer-theme" aria-label="抽屉主题切换"><span>界面主题</span><div class="theme-switch"><button type="button" data-theme-value="light" title="白色主题"><i class="ph ph-sun"></i></button><button type="button" data-theme-value="dark" title="深色主题"><i class="ph ph-moon"></i></button></div></div>
+      <div class="local-node"><span></span><div><strong>本机节点</strong><small>127.0.0.1 · 服务在线</small></div></div>
+      <div class="build">macOS Core Engine · V0.0.3</div>
     </div>
   </aside>
 
   <main class="main">
     <header class="topbar">
-      <div><h1 id="pageTitle">运行总览</h1><p id="pageSubtitle">服务控制与实时运行反馈</p></div>
-      <div class="top-actions"><span id="syncTime" class="sync-time">正在同步</span><button class="icon-btn" id="refreshBtn" title="刷新状态">↻</button><button class="btn primary" id="startAllBtn">▶ 启动全部</button></div>
+      <button class="mobile-nav-btn" id="mobileNavBtn" type="button" title="打开菜单"><i class="ph ph-list"></i></button>
+      <div class="topbar-title"><span class="topbar-kicker">ORBITAL CONTROL</span><h1 id="pageTitle">运行总览</h1><p id="pageSubtitle">服务控制与实时运行反馈</p></div>
+      <div class="topbar-mode" aria-label="全局视图工具">
+        <button class="context-pill" type="button"><i class="ph ph-clock-counter-clockwise"></i><span>预设 24 小时</span><i class="ph ph-caret-down"></i></button>
+        <button class="context-pill" type="button" data-jump="brain"><i class="ph ph-sliders-horizontal"></i><span>策略配置</span></button>
+      </div>
+      <label class="global-command" for="globalCommand"><i class="ph ph-magnifying-glass"></i><input id="globalCommand" type="search" aria-label="搜索页面与设置" placeholder="搜索页面与设置"><kbd>⌘K</kbd></label>
+      <div class="top-actions">
+        <span id="syncTime" class="sync-time">正在同步</span>
+        <div class="theme-switch" role="group" aria-label="界面主题"><button type="button" data-theme-value="light" title="白色主题"><i class="ph ph-sun"></i></button><button type="button" data-theme-value="dark" title="深色主题"><i class="ph ph-moon"></i></button></div>
+        <button class="icon-btn" id="refreshBtn" title="刷新状态"><i class="ph ph-arrow-clockwise"></i></button>
+        <button class="btn primary" id="startAllBtn" title="启动第二微信、OneBot 与 AI 服务"><i class="ph ph-play"></i><span>启动全部</span></button>
+      </div>
     </header>
 
     <div class="content">
@@ -114,10 +158,11 @@
                 <label class="compact-toggle"><span><strong>自动健康检测</strong><small>定时验证渠道连通性</small></span><span class="switch"><input id="autoHealthCheck" type="checkbox"><i></i></span></label>
                 <div class="field"><label for="healthInterval">检测间隔</label><div class="unit-input"><input id="healthInterval" type="number" min="30" max="86400"><span>SEC</span></div></div>
               </div>
+              <nav class="model-section-nav" id="modelSectionNav" aria-label="模型配置页内导航"></nav>
             </aside>
 
             <div class="model-workspace">
-              <div class="panel form-panel">
+              <div class="panel form-panel" id="modelSectionAuth" data-model-section="基础鉴权">
                 <div class="panel-head"><div><h2>基础鉴权</h2><p>编辑当前模型渠道</p></div><div class="bar-actions"><button type="button" class="btn ghost danger-text" id="deleteChannelBtn">删除渠道</button><button type="button" class="btn subtle" id="modelsBtn">获取模型列表</button></div></div>
                 <div class="form-grid panel-body">
                   <div class="field"><label for="channelName">渠道名称</label><input id="channelName" required autocomplete="off"></div>
@@ -134,12 +179,12 @@
               <input id="maxTokens" type="hidden" value="600">
               <textarea id="systemPrompt" hidden></textarea><span class="char-count" hidden><b id="promptCount">0</b> chars</span>
 
-              <div class="panel form-panel personality-panel">
+              <div class="panel form-panel personality-panel" id="modelSectionPersonality" data-model-section="机器人性格">
                 <div class="panel-head"><div><h2>机器人性格</h2><p>作为最高优先级回复风格严格执行</p></div><span class="route-status">STRICT STYLE</span></div>
                 <div class="panel-body"><div class="field"><label for="personality">性格与表达规则</label><textarea id="personality" rows="5" placeholder="例如：专业、冷静、直接；优先给结论；不使用夸张语气；遇到不确定信息先澄清。"></textarea><span class="char-count"><b id="personalityCount">0</b> chars</span></div></div>
               </div>
 
-              <div class="panel form-panel ocr-panel">
+              <div class="panel form-panel ocr-panel" id="modelSectionOcr" data-model-section="图片 OCR">
                 <div class="panel-head"><div><h2>图片 OCR / 视觉模型</h2><p>用于图片文字识别、图片摘要，支持第三方中转与视觉模型</p></div><span class="route-status">VISION OCR</span></div>
                 <div class="form-grid panel-body compact">
                   <label class="toggle-row span-2"><span><strong>启用 OCR 模型</strong><small>图片解析入口会使用该配置</small></span><span class="switch"><input id="ocrEnabled" type="checkbox"><i></i></span></label>
@@ -155,7 +200,7 @@
                 </div>
               </div>
 
-              <div class="panel form-panel asr-panel">
+              <div class="panel form-panel asr-panel" id="modelSectionAsr" data-model-section="语音 ASR">
                 <div class="panel-head"><div><h2>语音 ASR 模型</h2><p>直接读取 OneBot 抓到的语音原始文件，调用 ASR 转文字，不再依赖微信 UI 识别</p></div><span class="route-status">VOICE ASR</span></div>
                 <div class="form-grid panel-body compact">
                   <label class="toggle-row span-2"><span><strong>启用 ASR 模型</strong><small>语音泡入库后自动转文字并作为文本进入回复链路</small></span><span class="switch"><input id="asrEnabled" type="checkbox"><i></i></span></label>
@@ -203,23 +248,79 @@
         </form>
       </section>
 
-      <section class="page" id="page-brain">
-        <div class="page-bar"><div><h2>群聊大脑</h2><p>接话门槛、七维评分与并发策略独立配置</p></div><button class="btn ghost" id="brainPreviewBtn">预览 24 小时</button></div>
-          <form class="panel" id="brainForm">
+      <section class="page" id="page-brain" data-brain-view="orbit">
+        <div class="page-bar"><div><h2>群聊大脑 · 永久记忆检索</h2><p>理解当前群聊，并从人物、群梗、全文与向量记忆中召回最相关的证据</p></div><div class="bar-actions"><div class="view-segment" role="group" aria-label="群聊大脑视图"><button class="active" type="button" data-brain-view-value="orbit"><i class="ph ph-orbit"></i>轨道视图</button><button type="button" data-brain-view-value="config"><i class="ph ph-sliders-horizontal"></i>配置视图</button></div><button class="btn ghost" id="brainPreviewBtn">预览 24 小时</button></div></div>
+        <section class="brain-orbit-shell" aria-label="永久记忆检索路线" data-brain-pane="orbit">
+          <div class="orbit-metric-strip">
+            <article><span>接话槽位</span><strong>老油条 · <b id="orbitThreshold">52</b></strong><small>接话门槛</small></article>
+            <article><span>七维评分</span><strong>100</strong><small>参与关联 · 连续性 · 记忆</small></article>
+            <article><span>并发与检索</span><strong><b id="orbitWorkers">8</b> / 50</strong><small>全局并发 · 向量召回</small></article>
+            <article><span>模型与排序</span><strong>12</strong><small>Reranker 首批候选</small></article>
+            <article><span>时延预算</span><strong class="mint">500ms</strong><small>当前 <b id="orbitLatency">--</b></small></article>
+          </div>
+          <div class="orbit-main-grid">
+            <div class="orbit-canvas">
+              <div class="orbit-canvas-head"><div><span class="live-dot"></span><strong>永久记忆检索路线</strong></div><div class="orbit-legend"><span><i class="mint-dot"></i>命中路径</span><span><i></i>候选路径</span><span><i class="violet-dot"></i>媒介匹配</span></div></div>
+              <article class="orbit-query-card">
+                <span>当前对话</span><small>23:33:31 · 值班群</small>
+                <p>最近群里在聊什么？把和当前话题最相关的原话找出来。</p>
+                <b><i class="ph ph-users"></i> 32 人关注</b>
+              </article>
+              <button type="button" class="orbit-route orbit-route-person is-selected" data-orbit-node="person"><i class="ph ph-user-focus"></i><span>人物与外号</span><small>召回 28 · 注入 8</small><b>92%</b></button>
+              <button type="button" class="orbit-route orbit-route-meme" data-orbit-node="meme"><i class="ph ph-chats-circle"></i><span>群梗 / 暗语</span><small>召回 36 · 注入 7</small><b>88%</b></button>
+              <button type="button" class="orbit-route orbit-route-fts" data-orbit-node="fts"><i class="ph ph-text-columns"></i><span>对话全文 FTS</span><small>召回 42 · 注入 9</small><b>91%</b></button>
+              <button type="button" class="orbit-core orbit-core-embed" data-orbit-node="embedding"><span>向量召回</span><strong>Embedding</strong><small>召回 50</small><b>147ms</b></button>
+              <button type="button" class="orbit-core orbit-core-rerank" data-orbit-node="reranker"><span>重排</span><strong>Reranker</strong><small>注入 10</small><b>83ms</b></button>
+              <button type="button" class="orbit-route orbit-route-voice" data-orbit-node="voice"><i class="ph ph-waveform"></i><span>语音匹配</span><small>相似度 0.79</small><b>41ms</b></button>
+              <button type="button" class="orbit-route orbit-route-face" data-orbit-node="face"><i class="ph ph-smiley"></i><span>表情匹配</span><small>相似度 0.66</small><b>37ms</b></button>
+              <div class="orbit-canvas-foot"><span>整体耗时 <b id="orbitTotalLatency">147ms</b></span><span>路径置信度 <b>0.89</b></span><span>召回 <b>50</b></span><span>注入 <b>10</b></span></div>
+            </div>
+            <aside class="orbit-inspector">
+              <div class="orbit-inspector-head"><div><i class="ph ph-user-focus" id="orbitInspectorIcon"></i><span>已选节点</span></div><b id="orbitInspectorConfidence">置信度 0.92</b></div>
+              <h3 id="orbitInspectorTitle">人物与外号</h3>
+              <dl id="orbitInspectorStats"><div><dt>来源类型</dt><dd>成员资料 / 外号别名库</dd></div><div><dt>召回候选</dt><dd>28</dd></div><div><dt>注入结果</dt><dd>8</dd></div><div><dt>平均相似度</dt><dd>0.72</dd></div></dl>
+              <div class="orbit-evidence-head"><span>关键命中条目</span><small>Top 3</small></div>
+              <div id="orbitInspectorEvidence"><article class="orbit-evidence"><span class="orbit-avatar">老</span><div><strong>老油条（张伟）</strong><p>命中理由：常发起团建组织，偏好自然景点。</p></div><b>0.91</b></article><article class="orbit-evidence"><span class="orbit-avatar violet">山</span><div><strong>山民小陈</strong><p>命中理由：多次分享徒步路线与露营地点。</p></div><b>0.76</b></article><article class="orbit-evidence"><span class="orbit-avatar mint">攻</span><div><strong>攻略王阿杰</strong><p>命中理由：擅长整理出行攻略与避坑建议。</p></div><b>0.69</b></article></div>
+              <div class="orbit-evidence-head"><span>证据时间线</span><small>最近 24 小时</small></div>
+              <div id="orbitInspectorTimeline"><blockquote><time>23:12:44</time><strong>老油条</strong><p>上次团建去的千岛湖，风景不错但人有点多。</p></blockquote><blockquote><time>22:47:01</time><strong>山民小陈</strong><p>推荐个徒步的地方，就在古道附近。</p></blockquote></div>
+              <button class="btn ghost wide" type="button" data-jump="memory">打开完整证据</button>
+            </aside>
+          </div>
+          <div class="orbit-diagnostic-strip">
+            <article><header><span>任务队列</span><b>运行中 3</b></header><div class="orbit-task"><span>#值班群 · 团建推荐请求</span><b>147ms</b></div><div class="orbit-task"><span>#深夜食堂 · 晚餐推荐</span><b>212ms</b></div><div class="orbit-task"><span>#产品交流 · 需求调研记录</span><b>98ms</b></div></article>
+            <article><header><span>检索诊断</span><b>120 候选</b></header><div class="diagnostic-bars"><i style="--bar:58%"></i><i style="--bar:82%"></i><i style="--bar:66%"></i><i style="--bar:42%"></i><i style="--bar:28%"></i><i style="--bar:16%"></i></div><p>相关性分布（向量分数）</p></article>
+            <article><header><span>资源与模型</span><b class="mint">空闲</b></header><div class="model-resource"><span>Embedding 模型</span><b>显存 38%</b></div><div class="model-resource"><span>Reranker 模型</span><b>显存 41%</b></div><div class="resource-meter"><i></i></div></article>
+          </div>
+        </section>
+          <form class="panel brain-config-panel" id="brainForm" data-brain-pane="config">
             <div class="panel-head"><div><h2>人类式接话阈值</h2><p>无随机概率，评分达到门槛才主动接话</p></div><button class="btn primary" type="submit">实时应用</button></div>
-            <div class="panel-body brain-config-grid">
-              <div class="field"><label for="brainMode">接话档位</label><select id="brainMode"><option value="reserved">克制 · 78</option><option value="natural">自然 · 65</option><option value="veteran">老油条 · 52</option><option value="custom">自定义</option></select></div>
-              <div class="field"><label for="brainThreshold">接话门槛 <output id="brainThresholdValue">52</output></label><input id="brainThreshold" type="range" min="0" max="100" value="52"></div>
-              <div class="field"><label for="brainGlobalWorkers">全局并发</label><input id="brainGlobalWorkers" type="number" min="1" max="16" value="8"></div>
-              <div class="field"><label for="brainGroupWorkers">单群并发</label><input id="brainGroupWorkers" type="number" min="1" max="6" value="3"></div>
-              <div class="field"><label for="brainModelWorkers">模型并发</label><input id="brainModelWorkers" type="number" min="1" max="16" value="6"></div>
-              <div class="field"><label for="brainScoringMode">评分方式</label><select id="brainScoringMode"><option value="local_fast">本地快速（推荐）</option><option value="model_deep">远程模型深度评分</option></select></div>
-              <div class="field"><label for="brainRerankCandidates">重排候选数</label><input id="brainRerankCandidates" type="number" min="4" max="24" value="12"></div>
-              <div class="field"><label for="brainVectorLimit">向量召回数</label><input id="brainVectorLimit" type="number" min="12" max="200" value="60"></div>
-              <div class="field"><label for="brainFtsLimit">全文召回数</label><input id="brainFtsLimit" type="number" min="8" max="100" value="30"></div>
-              <label class="toggle-row"><span><strong>自适应二次重排</strong><small>含糊历史问题且首批置信不足时扩到 24 条</small></span><span class="switch"><input id="brainAdaptiveRerank" type="checkbox" checked><i></i></span></label>
-              <div class="factor-editor" id="factorEditor"></div>
-              <div class="modifier-editor" id="modifierEditor"></div>
+            <div class="panel-body brain-workbench">
+              <section class="brain-column brain-policy-column">
+                <div class="brain-section-head"><span>01</span><div><h3>接话策略</h3><p>设定机器人参与群聊的基本边界</p></div></div>
+                <div class="field"><label for="brainMode">接话档位</label><select id="brainMode"><option value="reserved">克制 · 78</option><option value="natural">自然 · 65</option><option value="veteran">老油条 · 52</option><option value="custom">自定义</option></select></div>
+                <div class="field brain-threshold-field"><label for="brainThreshold">接话门槛 <output id="brainThresholdValue">52</output></label><input id="brainThreshold" type="range" min="0" max="100" value="52"><div class="range-scale"><span>旁听 0</span><span>积极 100</span></div></div>
+                <div class="field"><label for="brainScoringMode">评分方式</label><select id="brainScoringMode"><option value="local_fast">本地快速（推荐）</option><option value="model_deep">远程模型深度评分</option></select></div>
+                <label class="toggle-row"><span><strong>自适应二次重排</strong><small>含糊历史问题且首批置信不足时扩到 24 条</small></span><span class="switch"><input id="brainAdaptiveRerank" type="checkbox" checked><i></i></span></label>
+                <div class="brain-note"><i class="ph ph-info"></i><p>明确 @、引用机器人、喊“小风”以及语音或表情命令会直接进入回复流程，不受普通接话门槛限制。</p></div>
+              </section>
+              <section class="brain-column brain-score-column">
+                <div class="brain-section-head"><span>02</span><div><h3>七维评分</h3><p>总权重为 100，按群聊语境综合判断</p></div></div>
+                <div class="factor-editor" id="factorEditor"></div>
+                <div class="modifier-editor" id="modifierEditor"></div>
+              </section>
+              <section class="brain-column brain-runtime-column">
+                <div class="brain-section-head"><span>03</span><div><h3>并发与检索</h3><p>控制回复吞吐和永久记忆召回规模</p></div></div>
+                <div class="brain-runtime-grid">
+                  <div class="field"><label for="brainGlobalWorkers">全局并发</label><input id="brainGlobalWorkers" type="number" min="1" max="16" value="8"></div>
+                  <div class="field"><label for="brainGroupWorkers">单群并发</label><input id="brainGroupWorkers" type="number" min="1" max="6" value="3"></div>
+                  <div class="field"><label for="brainModelWorkers">模型并发</label><input id="brainModelWorkers" type="number" min="1" max="16" value="6"></div>
+                  <div class="field"><label for="brainRerankCandidates">首批重排</label><input id="brainRerankCandidates" type="number" min="4" max="24" value="12"></div>
+                  <div class="field"><label for="brainVectorLimit">向量召回</label><input id="brainVectorLimit" type="number" min="12" max="200" value="60"></div>
+                  <div class="field"><label for="brainFtsLimit">全文召回</label><input id="brainFtsLimit" type="number" min="8" max="100" value="30"></div>
+                </div>
+                <div class="retrieval-route-list"><h4>永久记忆路线</h4><div><i class="ph ph-vector-three"></i><span>向量语义召回</span><b>Top 60</b></div><div><i class="ph ph-text-columns"></i><span>FTS5 全文检索</span><b>Top 30</b></div><div><i class="ph ph-users-three"></i><span>人物 · 外号 · 群梗 · 时间</span><b>结构化</b></div><div><i class="ph ph-arrows-down-up"></i><span>Reranker 精排</span><b>12–24</b></div></div>
+                <button class="btn subtle wide brain-inline-preview" type="button" data-brain-preview-clone>回放最近 24 小时</button>
+              </section>
             </div>
           </form>
       </section>
@@ -453,6 +554,7 @@
           <div><h2>USR 用户画像</h2><p>按群隔离的永久档案、行为统计、关系与原话证据</p></div>
           <div class="persona-toolbar-actions">
             <select id="personaGroup" aria-label="选择群"></select>
+            <button class="btn subtle persona-mobile-filter-toggle" id="personaFiltersToggle" type="button"><i class="ph ph-funnel"></i>筛选成员</button>
             <div class="persona-search"><input id="personaSearch" placeholder="搜索群昵称、外号或 wxid"><button class="icon-btn" id="personaSearchBtn" title="搜索">⌕</button></div>
             <select id="personaStatus" aria-label="画像状态"><option value="">全部状态</option><option value="completed">已完成</option><option value="running">分析中</option><option value="queued">排队中</option><option value="paused">已暂停</option><option value="failed">失败</option><option value="not_analyzed">未分析</option><option value="legacy_auto">旧画像</option></select>
             <button class="btn subtle" id="personaAnalyzeSelected">分析选中成员</button>
@@ -471,8 +573,9 @@
             <section class="panel persona-profile" data-persona-view="overview">
               <div class="persona-empty" id="personaEmpty">从左侧选择一位成员查看完整画像</div>
               <div id="personaProfileContent" hidden>
-                <div class="persona-identity-head"><span class="persona-avatar" id="personaAvatar">群</span><div><h2 id="personaName">--</h2><p id="personaIdentity">--</p></div><span class="persona-state" id="personaState">未分析</span><button class="btn subtle" id="personaEditBtn">编辑画像</button></div>
+                <div class="persona-identity-head"><button class="persona-back-btn" id="personaBackBtn" type="button"><i class="ph ph-arrow-left"></i><span>成员目录</span></button><span class="persona-avatar" id="personaAvatar">群</span><div><h2 id="personaName">--</h2><p id="personaIdentity">--</p></div><span class="persona-state" id="personaState">未分析</span><button class="btn subtle" id="personaEditBtn">编辑画像</button></div>
                 <div class="persona-progress" id="personaProgress" hidden><span><i></i></span><small>等待任务</small><button class="link-btn" id="personaProgressAction" type="button">暂停</button></div>
+                <div class="persona-analysis-callout" id="personaAnalysisCallout" hidden><span class="persona-analysis-icon"><i class="ph ph-sparkle"></i></span><div><strong>这个成员还没有完整画像</strong><p>读取该成员在当前群的全部历史消息，生成带原话证据的长期档案。</p></div><button class="btn primary" id="personaAnalyzeInline" type="button">开始完整分析</button></div>
                 <div class="persona-summary"><span>人物摘要</span><p id="personaSummary">--</p></div>
                 <div class="persona-section"><div class="persona-section-title"><h3>永久事实与标签</h3><span>人工内容优先</span></div><div class="persona-chip-list" id="personaFacts"></div></div>
                 <div class="persona-section" id="personaMemeSection" hidden><div class="persona-section-title"><h3>关联群梗</h3><span>永久记忆</span></div><div class="persona-chip-list" id="personaMemes"></div></div>
@@ -536,7 +639,7 @@
       <section class="page logs-page" id="page-logs">
         <div class="page-bar"><div><h2>完整运行日志</h2><p>AI 服务与 OneBot 原始事件流</p></div><div class="bar-actions"><button class="btn subtle" id="pauseLogs">暂停</button><button class="btn ghost" id="clearLogs">清空视图</button></div></div>
         <div class="full-terminal">
-          <div class="log-toolbar"><div class="source-tabs"><button class="active" data-source="all">ALL</button><button data-source="ai">AI SERVICE</button><button data-source="onebot">ONEBOT</button></div><div class="log-search"><input id="logGroupFilter" placeholder="群 ID 筛选"><input id="logTraceFilter" placeholder="trace_id 筛选"><label><input id="logErrorsOnly" type="checkbox">只看错误</label><label><input id="logSendOnly" type="checkbox">发送链路</label></div><div class="level-filters"><label><input type="checkbox" value="debug" checked><i class="debug"></i>DEBUG</label><label><input type="checkbox" value="info" checked><i class="info"></i>INFO</label><label><input type="checkbox" value="warning" checked><i class="warning"></i>WARN</label><label><input type="checkbox" value="error" checked><i class="error"></i>ERROR</label><label><input type="checkbox" value="critical" checked><i class="critical"></i>CRITICAL</label><span class="stream-live"><i></i>LIVE</span></div></div>
+          <div class="log-toolbar"><div class="source-tabs"><button class="active" data-source="all">ALL</button><button data-source="ai">AI SERVICE</button><button data-source="onebot">ONEBOT</button></div><button class="btn subtle log-mobile-filter-toggle" id="logFiltersToggle" type="button"><i class="ph ph-funnel"></i>过滤条件</button><div class="log-search"><input id="logGroupFilter" placeholder="群 ID 筛选"><input id="logTraceFilter" placeholder="trace_id 筛选"><label><input id="logErrorsOnly" type="checkbox">只看错误</label><label><input id="logSendOnly" type="checkbox">发送链路</label><label><input id="logHideHeartbeat" type="checkbox" checked>隐藏心跳</label></div><div class="level-filters"><label><input type="checkbox" value="debug" checked><i class="debug"></i>DEBUG</label><label><input type="checkbox" value="info" checked><i class="info"></i>INFO</label><label><input type="checkbox" value="warning" checked><i class="warning"></i>WARN</label><label><input type="checkbox" value="error" checked><i class="error"></i>ERROR</label><label><input type="checkbox" value="critical" checked><i class="critical"></i>CRITICAL</label><span class="stream-live"><i></i>LIVE</span></div></div>
           <div class="terminal-title"><div><i></i><i></i><i></i><strong>run.log</strong></div><span id="logCounter">0 events</span></div>
           <div class="log-output" id="logOutput"><div class="terminal-empty">正在连接日志流…</div></div>
         </div>
@@ -578,6 +681,12 @@
 <dialog id="contentPreviewDialog" class="content-preview-dialog">
   <div class="dialog-head"><div><h2 id="contentPreviewTitle">内容详情</h2><p>完整文本内容</p></div><button type="button" class="icon-btn" onclick="document.getElementById('contentPreviewDialog').close()" title="关闭">×</button></div>
   <pre id="contentPreviewBody" class="content-preview-body"></pre>
+</dialog>
+<dialog id="faceDetailDialog" class="face-detail-dialog">
+  <div class="face-detail-shell">
+    <div class="dialog-head"><div><span>FACE ASSET INSPECTOR</span><h2 id="faceDetailTitle">表情详情</h2><p>素材语义、索引状态与发送操作</p></div><button type="button" class="icon-btn" id="faceDetailClose" title="关闭表情详情" aria-label="关闭表情详情"><i class="ph ph-x"></i></button></div>
+    <div class="face-detail-body" id="faceDetailBody"></div>
+  </div>
 </dialog>
 <dialog id="brainPreviewDialog" class="channel-dialog brain-preview-dialog">
   <div class="dialog-head"><div><h2>最近 24 小时接话预览</h2><p id="brainPreviewSummary">正在计算当前门槛下预计会回复的内容</p></div><button type="button" class="icon-btn" id="closeBrainPreview" title="关闭">×</button></div>

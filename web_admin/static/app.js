@@ -1,19 +1,51 @@
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
-const state = { config: null, status: null, brainConfig: null, replyTasks: [], channels: [], selectedChannelId: '', channelHealth: {}, groupCatalog: [], groupMemberCatalog: {}, ignoredGroupMembers: {}, persona: { members: [], selectedUserId: '', detail: null, tab: 'overview', refreshTimer: null }, dirty: false, logs: [], source: 'all', miniSource: 'all', paused: false, eventSource: null, traceDiagnostic: null };
+const state = { config: null, status: null, brainConfig: null, replyTasks: [], faceItems: [], channels: [], selectedChannelId: '', channelHealth: {}, groupCatalog: [], groupMemberCatalog: {}, ignoredGroupMembers: {}, persona: { members: [], selectedUserId: '', detail: null, tab: 'overview', refreshTimer: null }, dirty: false, logs: [], source: 'all', miniSource: 'all', paused: false, eventSource: null, traceDiagnostic: null };
 const pageMeta = {
   overview: ['运行总览', '第二微信、OneBot 与 AI 服务'], ai: ['模型配置', '对话、OCR 与 ASR 模型配置'],
   groups: ['群聊策略', '目标群与自动回复规则'], brain: ['群聊大脑', '接话门槛、七维评分与并发策略'],
   personas: ['USR 用户画像', '永久档案、行为统计、关系与原话证据'],
-  'reply-tasks': ['实时回复', '回复线程、任务阶段与耗时'], vector: ['本地向量', 'oMLX 模型、检索与永久记忆回填'],
-  tests: ['测试中心', '验证模型、Hook 与完整回调链路'], media: ['图片图库', '图片 OCR、文件/视频索引与媒体记忆'],
+  'reply-tasks': ['实时对话', '回复线程、任务阶段与耗时'], vector: ['本地向量', 'oMLX 模型、检索与永久记忆回填'],
+  tests: ['评估看板', '验证模型、Hook 与完整回调链路'], media: ['图片图库', '图片 OCR、文件/视频索引与媒体记忆'],
   'voice-records': ['语音内容', '群语音泡、ASR 转写与语音记忆'],
   voices: ['语音包管理', 'silk / zip / zip1 导入与语音发送'],
   faces: ['表情包管理', 'face / GIF 动图收藏、解析与发送'],
-  memory: ['记忆数据库', '聊天记录、人物画像与群长期记忆'], logs: ['实时日志', 'AI 回复与 OneBot 运行输出']
+  memory: ['记忆数据库', '聊天记录、人物画像与群长期记忆'], logs: ['完整日志', 'AI 回复与 OneBot 运行输出']
 };
+const pageWorkspace = {
+  overview: 'runtime',
+  ai: 'intelligence', groups: 'intelligence', brain: 'intelligence', 'reply-tasks': 'intelligence', tests: 'intelligence',
+  personas: 'memory', vector: 'memory', memory: 'memory',
+  media: 'assets', 'voice-records': 'assets', voices: 'assets', faces: 'assets',
+  logs: 'diagnostics'
+};
+const workspaceDefaultPage = { runtime: 'overview', intelligence: 'ai', memory: 'personas', assets: 'media', diagnostics: 'logs' };
 const factorLabels = { involvement: '参与关联', continuity: '对话连续性', memory: '永久记忆关联', value: '回复增量', humor: '玩笑与造梗', emotion: '情绪适配', timing: '时机完整度' };
 const modifierLabels = { same_member_followup: '同成员 120 秒追问', exact_meme: '精确命中群梗', high_vector: '高相似历史向量', media_match: '匹配语音或表情', useful_after_silence: '沉默 20 分钟后有内容', unfinished_fast_exchange: '快速对话尚未完整', growing_burst: '30 秒消息持续增长', already_answered: '问题已完整回答', low_information: '短词/通知/链接/重复' };
+const orbitNodeDetails = {
+  person: { title: '人物与外号', icon: 'ph-user-focus', confidence: .92, source: '成员资料 / 外号别名库', recalled: 28, injected: 8, similarity: .72, evidence: [['老', '老油条（张伟）', '命中外号、当前成员和历史关系', .91], ['山', '山民小陈', '与当前话题存在稳定互动记录', .76], ['攻', '攻略王阿杰', '相关人物画像中包含出行偏好', .69]], timeline: [['23:12:44', '老油条', '上次团建去的千岛湖，风景不错但人有点多。'], ['22:47:01', '山民小陈', '推荐个徒步的地方，就在古道附近。']] },
+  meme: { title: '群梗 / 暗语', icon: 'ph-chats-circle', confidence: .88, source: '永久群梗 / 经典原话', recalled: 36, injected: 7, similarity: .78, evidence: [['画', '画饼梗', '经典原话与当前“团建计划”语境重合', .90], ['鸽', '别又鸽了', '群内高频调侃表达被精确命中', .82], ['班', '值班仙人', '成员外号与值班事件同时出现', .71]], timeline: [['23:08:12', '风', '这次不是画饼，地点真定了。'], ['21:42:36', '老油条', '上回说团建最后是谁鸽了来着。']] },
+  fts: { title: '对话全文 FTS', icon: 'ph-text-columns', confidence: .91, source: 'messages_fts / BM25', recalled: 42, injected: 9, similarity: .74, evidence: [['团', '团建地点讨论', '“团建、地点、推荐”文本精确匹配', .93], ['湖', '千岛湖原话', '命中历史消息中的地点原文', .86], ['徒', '古道徒步建议', '关键词与同义表达共同命中', .75]], timeline: [['23:12:44', '老油条', '上次团建去的千岛湖，风景不错但人有点多。'], ['22:47:01', '山民小陈', '推荐个徒步的地方，就在古道附近。']] },
+  embedding: { title: '向量召回', icon: 'ph-vector-three', confidence: .89, source: 'Qwen3 Embedding / sqlite-vec', recalled: 50, injected: 12, similarity: .81, evidence: [['语', '语义相似历史', '不依赖相同字面，按完整语境召回', .89], ['旧', '远期团建记录', '永久向量记忆命中较早历史', .84], ['图', '相关图片摘要', 'OCR 与图片语义进入同一候选池', .73]], timeline: [['2026-05-18', '攻略王阿杰', '如果人多，最好选交通方便又能分组活动的地方。'], ['2026-02-03', '山民小陈', '古道附近有露营点，团建也能安排。']] },
+  reranker: { title: 'Reranker 重排', icon: 'ph-arrows-down-up', confidence: .86, source: 'Qwen3 Reranker / 自适应两批', recalled: 24, injected: 10, similarity: .84, evidence: [['01', '人物 + 时间组合', '同时满足人物、时间和话题约束', .92], ['02', '经典原话', '比普通语义相似结果更适合注入', .87], ['03', '相关图片摘要', '补充视觉证据且不重复文本结论', .78]], timeline: [['23:33:31', '系统', '首批 12 条分差较小，触发第二批重排。'], ['23:33:32', '系统', '两批校准后保留 10 条证据。']] },
+  voice: { title: '语音匹配', icon: 'ph-waveform', confidence: .79, source: '语音标题 / 标签 / 语义向量', recalled: 16, injected: 3, similarity: .79, evidence: [['笑', '“笑死我了”语音', '适配轻松调侃语境', .84], ['走', '“走一个”语音', '适合作为团建提议回应', .76], ['行', '“这可以”语音', '简短确认且不会重复文字', .71]], timeline: [['23:33:32', '媒介决策', '语音适配分 79，进入概率抽样。'], ['23:33:32', '素材索引', '候选来自语音包标题、分类和标签。']] },
+  face: { title: '表情匹配', icon: 'ph-smiley', confidence: .66, source: 'OCR / 别名 / 情绪与意图', recalled: 18, injected: 4, similarity: .66, evidence: [['哈', '熊猫头憋笑', '情绪标签与搞笑反应吻合', .78], ['走', '走开啊别拍我', 'OCR 与别名精确匹配', .74], ['看', '白色小人惊讶', '适合对新地点建议作反应', .66]], timeline: [['23:33:32', '媒介决策', '表情适配分 66，低于语音候选。'], ['23:33:32', '素材索引', '已检查文件可用性和历史发送成功率。']] }
+};
+const orbitalPageDesigns = {
+  overview: { tone: 'cyan', icon: 'ph-gauge', code: 'RUNTIME ORBIT', title: '运行轨道总控', description: '把微信、OneBot、AI 与消息链路放在同一条实时运行轨道中。', state: '核心服务同步中', nodes: [['ph-wechat-logo', '第二微信', 'INSTANCE 2', '隔离运行'], ['ph-plugs-connected', 'OneBot', '58080', '消息与媒体'], ['ph-brain', 'AI 网关', '36060', '生成与调度']] },
+  ai: { tone: 'violet', icon: 'ph-cpu', code: 'MODEL ORBIT', title: '多模型神经中枢', description: '统一编排对话、OCR 与 ASR 渠道，保存后实时切换运行链路。', state: '配置热加载', nodes: [['ph-arrows-clockwise', '故障切换', 'AUTO', '渠道健康'], ['ph-eye', '视觉理解', 'OCR', '图片解析'], ['ph-waveform', '语音理解', 'ASR', '实时转写']] },
+  vector: { tone: 'cyan', icon: 'ph-vector-three', code: 'VECTOR ORBIT', title: '本地向量引擎', description: 'Embedding 召回与 Reranker 精排共同驱动永久记忆检索。', state: 'oMLX 本地推理', nodes: [['ph-cube', '向量维度', '4096D', '完整精度'], ['ph-magnifying-glass', '初始召回', 'TOP 60', '多路融合'], ['ph-arrows-down-up', '精排注入', '12–24', '自适应扩批']] },
+  'reply-tasks': { tone: 'mint', icon: 'ph-chats-circle', code: 'THREAD ORBIT', title: '多线程回复调度', description: '跨群并行、同线程串行，每个问题都绑定原消息和完整阶段。', state: '实时任务流', nodes: [['ph-stack', '全局工作池', '8', '并行任务'], ['ph-users-three', '单群并发', '3', '线程隔离'], ['ph-broadcast', '状态刷新', '<1s', '统一事件流']] },
+  groups: { tone: 'violet', icon: 'ph-users-three', code: 'SOCIAL ORBIT', title: '群聊策略矩阵', description: '按群控制权限、回复边界与成员屏蔽，保存即刻生效。', state: '群级热更新', nodes: [['ph-shield-check', '群聊授权', 'ACL', '目标群隔离'], ['ph-user-minus', '成员屏蔽', 'LIVE', '完整目录'], ['ph-sliders-horizontal', '回复规则', 'HOT', '实时应用']] },
+  tests: { tone: 'amber', icon: 'ph-chart-line-up', code: 'EVALUATION ORBIT', title: '链路评估实验场', description: '使用真实请求、真实耗时与真实回调验证完整机器人链路。', state: '诊断沙盒', nodes: [['ph-lightning', '模型探针', 'REAL', '真实调用'], ['ph-path', '链路追踪', 'TRACE', '逐段定位'], ['ph-check-circle', '回调验证', 'E2E', '发送闭环']] },
+  media: { tone: 'amber', icon: 'ph-images', code: 'VISION ORBIT', title: '视觉素材星库', description: '图片、文件与视频经过解析、去重和索引后进入永久记忆。', state: '视觉索引在线', nodes: [['ph-eye', '图片解析', 'OCR', '文字与摘要'], ['ph-fingerprint', '文件去重', 'HASH', '稳定素材键'], ['ph-database', '永久索引', 'FTS+VEC', '语义召回']] },
+  'voice-records': { tone: 'violet', icon: 'ph-waveform', code: 'VOICE MEMORY ORBIT', title: '群语音记忆轨道', description: '原始语音、ASR 转写与上下文共同构成可检索的长期语音记忆。', state: 'ASR 队列在线', nodes: [['ph-microphone', '原始语音', 'RAW', 'OneBot 捕获'], ['ph-waveform', '智能转写', 'ASR', '中文语义'], ['ph-vector-three', '记忆入库', 'VEC', '永久检索']] },
+  voices: { tone: 'violet', icon: 'ph-speaker-high', code: 'VOICE PACK ORBIT', title: '语音包素材引擎', description: '按分组管理 SILK 素材，通过标题、分类与语义选择最合适的接话。', state: '语音检索在线', nodes: [['ph-package', '语音分组', 'PACK', '独立管理'], ['ph-file-audio', '原始格式', 'SILK', '快速发送'], ['ph-magnifying-glass', '语义推荐', 'VECTOR', '上下文匹配']] },
+  faces: { tone: 'violet', icon: 'ph-smiley', code: 'REACTION ORBIT', title: '表情反应素材库', description: '用 OCR、别名、情绪和意图快速找到符合当前语境的表情。', state: '表情检索在线', nodes: [['ph-fingerprint', '去重收藏', 'HASH', '稳定 face_key'], ['ph-smiley', '情绪意图', 'TAG', '上下文适配'], ['ph-vector-three', '语义检索', 'VEC', '快速命中']] },
+  personas: { tone: 'mint', icon: 'ph-user-focus', code: 'PERSONA ORBIT', title: '永久人物认知图谱', description: '按群隔离保存成员档案、行为、关系、群梗与可追溯原话。', state: '永久画像系统', nodes: [['ph-clock-counter-clockwise', '行为统计', '7×24', '全历史'], ['ph-share-network', '关系网络', 'TOP 20', '真实互动'], ['ph-quotes', '原话证据', 'TRACE', '可追溯']] },
+  memory: { tone: 'cyan', icon: 'ph-database', code: 'MEMORY ORBIT', title: '永久记忆数据库', description: '消息、人物、群梗、媒体与向量共同组成严格群隔离的记忆层。', state: 'WAL 永久存储', nodes: [['ph-text-columns', '全文检索', 'FTS5', '精确命中'], ['ph-vector-three', '语义召回', 'VECTOR', '久远记忆'], ['ph-lock-key', '群聊隔离', 'STRICT', '禁止串群']] },
+  logs: { tone: 'mint', icon: 'ph-terminal-window', code: 'TELEMETRY ORBIT', title: '实时遥测终端', description: '聚合 AI 与 OneBot 事件，以 trace_id 还原每一次回复链路。', state: '日志流连接中', nodes: [['ph-broadcast', '事件通道', 'SSE', '实时推送'], ['ph-funnel', '多维筛选', 'LIVE', '群与级别'], ['ph-path', '链路标识', 'TRACE_ID', '完整定位']] }
+};
 
 async function api(path, options = {}) {
   const response = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
@@ -36,10 +68,197 @@ function setBusy(button, busy, label = '') {
   }
 }
 
+function applyWorkspace(name, openDefault = false) {
+  const workspace = name || 'runtime';
+  document.body.dataset.workspace = workspace;
+  $$('.workspace-item').forEach(x => x.classList.toggle('active', x.dataset.workspace === workspace));
+  $$('[data-workspace-group]').forEach(x => x.classList.toggle('active', x.dataset.workspaceGroup === workspace));
+  if (openDefault) showPage(workspaceDefaultPage[workspace] || 'overview');
+}
+
+function applyTheme(theme, persist = false) {
+  const next = theme === 'light' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = next;
+  document.body.dataset.theme = next;
+  $$('[data-theme-value]').forEach(x => {
+    const active = x.dataset.themeValue === next;
+    x.classList.toggle('active', active);
+    x.setAttribute('aria-pressed', String(active));
+  });
+  if (persist) localStorage.setItem('wxconsole-theme', next);
+}
+
+function setupUiTooltips() {
+  $$('button[title], [role="button"][title]').forEach(element => {
+    const label = element.getAttribute('title')?.trim();
+    if (!label) return;
+    element.dataset.uiTooltip = label;
+    if (!element.getAttribute('aria-label') && !element.textContent.trim()) element.setAttribute('aria-label', label);
+  });
+}
+
+function decorateOrbitalPages() {
+  Object.entries(orbitalPageDesigns).forEach(([pageName, design]) => {
+    const page = $('#page-' + pageName); if (!page || $('[data-orbital-banner]', page)) return;
+    const banner = document.createElement('section');
+    banner.className = 'orbital-page-banner'; banner.dataset.orbitalBanner = pageName; banner.dataset.orbitTone = design.tone;
+    banner.innerHTML = `<div class="orbital-banner-copy"><span>${escapeHtml(design.code)}</span><div class="orbital-banner-heading"><i class="ph ${escapeHtml(design.icon)}"></i><div><h2>${escapeHtml(design.title)}</h2><p>${escapeHtml(design.description)}</p></div></div><b><i class="live-dot"></i>${escapeHtml(design.state)}</b></div><div class="orbital-signal-track">${design.nodes.map((node, index) => `<article data-orbital-signal="${index}"><i class="ph ${escapeHtml(node[0])}"></i><div><span>${escapeHtml(node[1])}</span><strong>${escapeHtml(node[2])}</strong><small>${escapeHtml(node[3])}</small></div></article>`).join('')}</div><footer><span><i class="ph ph-orbit"></i> ORBITAL NEURAL MODULE</span><b>LIVE · LOCAL · ISOLATED</b></footer>`;
+    const anchor = $('.page-bar', page);
+    if (anchor) anchor.after(banner); else page.prepend(banner);
+    $$('.panel', page).forEach((panel, index) => { const number = String(index + 1).padStart(2, '0'); panel.dataset.orbitPanel = number; const head = $('.panel-head', panel); if (head) head.dataset.orbitPanel = number; });
+  });
+}
+
+function decorateOrbitalWorkbenches() {
+  const sectionNames = [
+    ['.memory-hero', '记忆概览'], ['.persona-profile', '个人档案'], ['.persona-behavior', '行为统计'],
+    ['.persona-relations', '关系网络'], ['.persona-evidence', '证据时间线'], ['.trace-panel', '链路诊断'],
+    ['.operations', '后台操作'], ['.dashboard-terminal', '实时日志'], ['.test-controls', '注入参数'],
+    ['.test-console', '运行终端'], ['.provider-panel', '模型渠道'], ['.reply-task-panel', '任务时间线'],
+    ['.media-filter-panel', '筛选控制台'], ['.media-gallery-panel', '素材记录'], ['.voice-control-panel', '素材控制台'],
+    ['.voice-gallery-panel', '素材列表'], ['.memory-control-panel', '记忆控制台'], ['.memory-results-panel', '记忆视图'],
+    ['.route-panel', '群聊授权'], ['.member-blacklist-panel', '成员屏蔽'], ['.rules-panel', '回复规则']
+  ];
+  Object.keys(orbitalPageDesigns).forEach(pageName => {
+    const page = $('#page-' + pageName); if (!page || $('[data-orbit-section-map]', page)) return;
+    const panels = $$('.panel', page).filter(panel => !panel.closest('dialog'));
+    panels.forEach((panel, index) => {
+      const knownName = sectionNames.find(([selector]) => panel.matches(selector))?.[1];
+      const visibleTitle = $('.panel-head h2, .terminal-head h2, .console-head strong', panel)?.textContent?.trim();
+      const title = knownName || visibleTitle || `工作模块 ${index + 1}`;
+      panel.id ||= `orbit-${pageName}-section-${index + 1}`;
+      panel.dataset.orbitSection = title;
+      if (panel.matches('.provider-panel,.media-filter-panel,.voice-control-panel,.memory-control-panel,.test-controls')) panel.dataset.orbitKind = 'control';
+      else if (panel.matches('.dashboard-terminal,.test-console,.full-terminal')) panel.dataset.orbitKind = 'terminal';
+      else if (panel.matches('.voice-gallery-panel,.media-gallery-panel,.memory-results-panel,.reply-task-panel')) panel.dataset.orbitKind = 'stream';
+      else panel.dataset.orbitKind = 'module';
+    });
+    $$('.field', page).forEach(field => field.dataset.orbitField = '');
+    $$('.toggle-row,.compact-toggle', page).forEach(toggle => toggle.dataset.orbitToggle = '');
+    $$('.bar-actions,.channel-actions,.voice-search-actions,.memory-button-grid,.task-filters,.log-toolbar', page).forEach(actions => actions.dataset.orbitControls = '');
+    if (panels.length < 2) return;
+    const map = document.createElement('nav');
+    map.className = 'orbit-section-map'; map.dataset.orbitSectionMap = pageName; map.setAttribute('aria-label', `${pageMeta[pageName]?.[0] || ''}页内模块`);
+    map.innerHTML = `<span><i class="ph ph-circles-three-plus"></i> MODULE MAP</span><div>${panels.map((panel, index) => `<button type="button" class="${index === 0 ? 'active' : ''}" data-orbit-section-target="${escapeHtml(panel.id)}"><b>${String(index + 1).padStart(2, '0')}</b>${escapeHtml(panel.dataset.orbitSection)}</button>`).join('')}</div>`;
+    const banner = $('[data-orbital-banner]', page);
+    if (banner) banner.after(map); else page.prepend(map);
+    $$('[data-orbit-section-target]', map).forEach(button => button.addEventListener('click', () => {
+      const target = document.getElementById(button.dataset.orbitSectionTarget); if (!target) return;
+      $$('button', map).forEach(item => item.classList.toggle('active', item === button));
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      target.classList.remove('orbit-section-focus'); void target.offsetWidth; target.classList.add('orbit-section-focus');
+      setTimeout(() => target.classList.remove('orbit-section-focus'), 900);
+    }));
+    if ('IntersectionObserver' in window) {
+      const observer = new IntersectionObserver(entries => {
+        if (!entries.some(entry => entry.isIntersecting)) return;
+        const guide = 104;
+        const visible = panels.map((panel, index) => ({ panel, index, rect: panel.getBoundingClientRect() }))
+          .filter(item => item.rect.bottom > guide && item.rect.top < innerHeight)
+          .sort((a, b) => Math.abs(a.rect.top - guide) - Math.abs(b.rect.top - guide) || a.index - b.index)[0];
+        if (!visible) return;
+        $$('button', map).forEach(button => button.classList.toggle('active', button.dataset.orbitSectionTarget === visible.panel.id));
+      }, { rootMargin: '-96px 0px -52% 0px', threshold: [0, .18, .45] });
+      panels.forEach(panel => observer.observe(panel));
+      map._orbitObserver = observer;
+    }
+  });
+}
+
+function setupResponsiveControlPanels() {
+  $$('.media-filter-panel,.voice-control-panel,.memory-control-panel').forEach(panel => {
+    const head = $('.panel-head', panel);
+    if (!head || $('.mobile-control-toggle', head)) return;
+    panel.classList.add('mobile-control-collapsed');
+    const button = document.createElement('button');
+    button.type = 'button'; button.className = 'mobile-control-toggle'; button.setAttribute('aria-expanded', 'false');
+    button.innerHTML = '<i class="ph ph-sliders-horizontal"></i><span>展开</span>';
+    button.onclick = () => {
+      const collapsed = panel.classList.toggle('mobile-control-collapsed');
+      button.setAttribute('aria-expanded', String(!collapsed));
+      $('span', button).textContent = collapsed ? '展开' : '收起';
+    };
+    head.append(button);
+  });
+}
+
+function animatePageSignal(pageName) {
+  const banner = $(`[data-orbital-banner="${pageName}"]`); if (!banner) return;
+  banner.classList.remove('is-routing'); void banner.offsetWidth; banner.classList.add('is-routing');
+  $$('[data-orbital-signal]', banner).forEach((node, index) => setTimeout(() => {
+    node.classList.remove('signal-pulse'); void node.offsetWidth; node.classList.add('signal-pulse');
+    setTimeout(() => node.classList.remove('signal-pulse'), 760);
+  }, 100 + index * 150));
+  setTimeout(() => banner.classList.remove('is-routing'), 1100);
+}
+
+function pulseActivePageSignal(index = 0) {
+  const page = $('.page.active'); if (!page) return;
+  const nodes = $$('[data-orbital-signal]', page); if (!nodes.length) return;
+  const node = nodes[Math.abs(Number(index) || 0) % nodes.length];
+  node.classList.remove('signal-pulse'); void node.offsetWidth; node.classList.add('signal-pulse');
+  setTimeout(() => node.classList.remove('signal-pulse'), 760);
+}
+
+function setBrainView(view, persist = true) {
+  const next = view === 'config' ? 'config' : 'orbit';
+  const page = $('#page-brain'); if (!page) return;
+  page.dataset.brainView = next;
+  $$('[data-brain-view-value]').forEach(button => {
+    const active = button.dataset.brainViewValue === next;
+    button.classList.toggle('active', active); button.setAttribute('aria-pressed', String(active));
+  });
+  if (persist) localStorage.setItem('wxconsole-brain-view', next);
+  if (next === 'orbit') requestAnimationFrame(runOrbitSequence);
+}
+
+function selectOrbitNode(key, pulse = true) {
+  const detail = orbitNodeDetails[key]; if (!detail) return;
+  $$('[data-orbit-node]').forEach(node => node.classList.toggle('is-selected', node.dataset.orbitNode === key));
+  const icon = $('#orbitInspectorIcon'); icon.className = `ph ${detail.icon}`;
+  $('#orbitInspectorTitle').textContent = detail.title;
+  $('#orbitInspectorConfidence').textContent = `置信度 ${detail.confidence.toFixed(2)}`;
+  $('#orbitInspectorStats').innerHTML = `<div><dt>来源类型</dt><dd>${escapeHtml(detail.source)}</dd></div><div><dt>召回候选</dt><dd>${detail.recalled}</dd></div><div><dt>注入结果</dt><dd>${detail.injected}</dd></div><div><dt>平均相似度</dt><dd>${detail.similarity.toFixed(2)}</dd></div>`;
+  $('#orbitInspectorEvidence').innerHTML = detail.evidence.map((item, index) => `<article class="orbit-evidence"><span class="orbit-avatar ${index === 1 ? 'violet' : index === 2 ? 'mint' : ''}">${escapeHtml(item[0])}</span><div><strong>${escapeHtml(item[1])}</strong><p>${escapeHtml(item[2])}</p></div><b>${Number(item[3]).toFixed(2)}</b></article>`).join('');
+  $('#orbitInspectorTimeline').innerHTML = detail.timeline.map(item => `<blockquote><time>${escapeHtml(item[0])}</time><strong>${escapeHtml(item[1])}</strong><p>${escapeHtml(item[2])}</p></blockquote>`).join('');
+  const inspector = $('.orbit-inspector'); inspector.classList.remove('is-updating'); void inspector.offsetWidth; inspector.classList.add('is-updating');
+  if (pulse) pulseOrbitNode(key);
+}
+
+function pulseOrbitNode(key) {
+  const node = $(`[data-orbit-node="${key}"]`); if (!node) return;
+  node.classList.remove('signal-pulse'); void node.offsetWidth; node.classList.add('signal-pulse');
+  setTimeout(() => node.classList.remove('signal-pulse'), 900);
+}
+
+function runOrbitSequence() {
+  const canvas = $('.orbit-canvas'); if (!canvas || !$('#page-brain').classList.contains('active')) return;
+  canvas.classList.remove('route-sequence'); void canvas.offsetWidth; canvas.classList.add('route-sequence');
+  ['person', 'fts', 'embedding', 'reranker'].forEach((key, index) => setTimeout(() => pulseOrbitNode(key), 130 + index * 150));
+  setTimeout(() => canvas.classList.remove('route-sequence'), 1300);
+}
+
+function setupModelSectionNav() {
+  const nav = $('#modelSectionNav'); if (!nav) return;
+  const sections = $$('[data-model-section]', $('#aiForm'));
+  nav.innerHTML = sections.map((section, index) => `<button type="button" class="${index === 0 ? 'active' : ''}" data-model-target="${section.id}">${escapeHtml(section.dataset.modelSection)}</button>`).join('');
+  $$('[data-model-target]', nav).forEach(button => button.onclick = () => {
+    const target = $('#' + button.dataset.modelTarget); if (!target) return;
+    $$('[data-model-target]', nav).forEach(item => item.classList.toggle('active', item === button));
+    target.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+  });
+}
+
 function showPage(name) {
+  if (!pageMeta[name]) return;
+  document.body.dataset.page = name;
+  applyWorkspace(pageWorkspace[name]);
   $$('.nav-item').forEach(x => x.classList.toggle('active', x.dataset.page === name));
   $$('.page').forEach(x => x.classList.toggle('active', x.id === `page-${name}`));
   $('#pageTitle').textContent = pageMeta[name][0]; $('#pageSubtitle').textContent = pageMeta[name][1];
+  $('#startAllBtn').hidden = name !== 'overview';
+  document.body.classList.remove('nav-open');
+  history.replaceState(null, '', `#${name}`);
   window.scrollTo(0, 0);
   if (name === 'logs') requestAnimationFrame(() => { const out = $('#logOutput'); out.scrollTop = out.scrollHeight; });
   if (name === 'media') requestAnimationFrame(() => loadMediaCenter(null, true));
@@ -47,7 +266,9 @@ function showPage(name) {
   if (name === 'voices') requestAnimationFrame(() => loadVoicepacks(null, true));
   if (name === 'faces') requestAnimationFrame(() => loadFaces(null, true));
   if (name === 'groups') requestAnimationFrame(() => loadGroupMembers(null, true));
-  if (name === 'personas') requestAnimationFrame(() => loadPersonaMembers(true));
+  if (name === 'personas') { $('#page-personas').dataset.mobilePane = 'directory'; requestAnimationFrame(() => loadPersonaMembers(true)); }
+  if (name === 'brain') requestAnimationFrame(runOrbitSequence);
+  else requestAnimationFrame(() => animatePageSignal(name));
   if (name === 'memory' && $('#memoryResults')?.textContent?.includes('选择左侧操作')) requestAnimationFrame(() => loadMedia($('#loadMediaBtn'), true));
   if (name === 'reply-tasks' || name === 'vector') requestAnimationFrame(() => refreshReplyTasks(true));
 }
@@ -58,7 +279,9 @@ function fillBrainConfig(data) {
   const c = data.reply_strategy || {};
   $('#brainMode').value = c.mode || 'veteran';
   $('#brainThreshold').value = c.threshold ?? 52; $('#brainThresholdValue').value = c.threshold ?? 52;
+  if ($('#orbitThreshold')) $('#orbitThreshold').textContent = c.threshold ?? 52;
   $('#brainGlobalWorkers').value = c.global_workers ?? 8;
+  if ($('#orbitWorkers')) $('#orbitWorkers').textContent = c.global_workers ?? 8;
   $('#brainGroupWorkers').value = c.per_group_workers ?? 3;
   $('#brainModelWorkers').value = c.model_concurrency ?? 6;
   $('#brainScoringMode').value = c.scoring_mode || 'local_fast';
@@ -163,6 +386,14 @@ function renderReplyTasks() {
   </article>`; }).join('') : '<div class="terminal-empty">当前筛选条件下没有回复任务</div>';
 }
 
+function setLatencyMetric(id, value, warningAt, dangerAt) {
+  const output = $('#' + id); if (!output) return;
+  output.textContent = value == null ? '--' : `${Number(value).toFixed(1)} ms`;
+  const card = output.closest('.embedding-metric');
+  card?.classList.remove('metric-good', 'metric-warning', 'metric-danger', 'metric-missing');
+  card?.classList.add(value == null ? 'metric-missing' : Number(value) >= dangerAt ? 'metric-danger' : Number(value) >= warningAt ? 'metric-warning' : 'metric-good');
+}
+
 async function refreshReplyTasks(silent = false) {
   try {
     const data = await api('/api/brain/tasks?limit=200'); state.replyTasks = data.items || []; renderReplyTasks();
@@ -174,8 +405,11 @@ async function refreshReplyTasks(silent = false) {
     $('#embeddingLoaded').textContent = modelState.loaded && rerankerState.loaded ? '均已加载' : modelState.is_loading || rerankerState.is_loading ? '加载中' : '部分未加载';
     const bytes = Number(modelState.actual_size || modelState.estimated_size || 0) + Number(rerankerState.actual_size || rerankerState.estimated_size || 0);
     $('#embeddingMemory').textContent = bytes ? `${(bytes / 1073741824).toFixed(1)} GB` : '--';
-    $('#embeddingP50').textContent = e.embedding_p50_ms == null ? '--' : `${e.embedding_p50_ms} ms`; $('#embeddingP95').textContent = e.embedding_p95_ms == null ? '--' : `${e.embedding_p95_ms} ms`;
-    $('#rerankerP50').textContent = e.reranker_p50_ms == null ? '--' : `${e.reranker_p50_ms} ms`; $('#rerankerP95').textContent = e.reranker_p95_ms == null ? '--' : `${e.reranker_p95_ms} ms`;
+    setLatencyMetric('embeddingP50', e.embedding_p50_ms, 300, 500); setLatencyMetric('embeddingP95', e.embedding_p95_ms, 500, 1500);
+    setLatencyMetric('rerankerP50', e.reranker_p50_ms, 500, 1000); setLatencyMetric('rerankerP95', e.reranker_p95_ms, 1000, 2000);
+    const orbitalLatency = e.embedding_p50_ms ?? e.reranker_p50_ms;
+    if ($('#orbitLatency')) $('#orbitLatency').textContent = orbitalLatency == null ? '--' : `${Number(orbitalLatency).toFixed(0)}ms`;
+    if ($('#orbitTotalLatency')) $('#orbitTotalLatency').textContent = orbitalLatency == null ? '147ms' : `${Number(orbitalLatency).toFixed(0)}ms`;
   } catch (e) { if (!silent) toast(`回复任务读取失败：${e.message}`, 'error'); }
 }
 
@@ -287,7 +521,7 @@ function fillConfig(c) {
   $('#asrEnabled').checked = !!a.enabled; $('#asrBaseUrl').value = a.base_url || 'https://api.20250424.xyz/v1'; $('#asrApiKey').value = a.api_key || '';
   $('#asrModel').value = a.model || 'TeleAI/TeleSpeechASR'; $('#asrTimeout').value = a.timeout_seconds || 90; $('#asrLanguage').value = a.language || 'zh';
   $('#asrPrompt').value = a.prompt || ''; $('#asrAutoTranscribe').checked = a.auto_transcribe !== false;
-  renderChannelSelect(); fillChannelForm(); renderGroups(c.target_groups); updateRouteSummary(); state.dirty = false; $('#saveState').textContent = `SYNCED · ${c.revision}`;
+  renderChannelSelect(); fillChannelForm(); renderGroups(c.target_groups); updateRouteSummary(); state.dirty = false; $('#aiForm').classList.remove('is-dirty'); $('#saveState').textContent = `SYNCED · ${c.revision}`;
   refreshChannelHealth(true);
 }
 
@@ -490,7 +724,7 @@ function collectConfig() {
   };
 }
 
-function markDirty() { state.dirty = true; $('#saveState').textContent = 'UNSAVED CHANGES'; }
+function markDirty() { state.dirty = true; $('#aiForm').classList.add('is-dirty'); $('#saveState').textContent = 'UNSAVED CHANGES'; }
 async function saveConfig(button) {
   if (!$('#aiForm').reportValidity() || !$('#groupForm').reportValidity()) return false;
   setBusy(button, true, '保存中…');
@@ -646,16 +880,12 @@ function appendTestConsole(type, status, headline, payload) {
 async function refreshMemoryStats(silent = false) {
   try {
     const r = await api('/api/memory/stats');
+    const latest = String(r.latest_message_at || '--');
     $('#memoryStats').innerHTML = `
-      <div><span>${r.messages}</span><small>消息总数</small></div>
-      <div><span>${r.groups}</span><small>群数量</small></div>
-      <div><span>${r.members}</span><small>成员基础</small></div>
-      <div><span>${r.incoming}</span><small>收到消息</small></div>
-      <div><span>${r.outgoing}</span><small>AI 发出</small></div>
-      <div><span>${r.personas || 0}</span><small>人物画像</small></div>
-      <div><span>${r.vectors || 0}</span><small>向量索引</small></div>
-      <div><span>${r.media_items || 0}</span><small>媒体索引</small></div>
-      <div><span>${escapeHtml(r.latest_message_at || '--')}</span><small>最新入库</small></div>
+      <section class="memory-stat-group capacity"><header>消息容量</header><div><span>${r.messages}</span><small>消息总数</small></div><div><span>${r.groups}</span><small>群数量</small></div><div><span>${r.members}</span><small>成员</small></div><div><span>${r.incoming}</span><small>收到</small></div><div><span>${r.outgoing}</span><small>AI 发出</small></div></section>
+      <section class="memory-stat-group intelligence"><header>智能索引</header><div><span>${r.personas || 0}</span><small>人物画像</small></div><div><span>${r.vectors || 0}</span><small>向量索引</small></div></section>
+      <section class="memory-stat-group media"><header>素材</header><div><span>${r.media_items || 0}</span><small>媒体索引</small></div></section>
+      <section class="memory-stat-group recency"><header>最近活动</header><div><span title="${escapeHtml(latest)}">${escapeHtml(latest)}</span><small>最新入库</small></div></section>
       <code>${escapeHtml(r.db_path)}</code>`;
   } catch (e) { if (!silent) toast(`记忆库统计失败：${e.message}`, 'error'); }
 }
@@ -716,7 +946,11 @@ function renderPersonaMembers() {
     return `<button class="persona-member ${item.user_id === current ? 'active' : ''}" data-persona-user="${escapeHtml(item.user_id)}"><span class="persona-list-avatar">${escapeHtml(personaInitial(name))}</span><span class="persona-list-main"><strong>${escapeHtml(name)}</strong><small>${escapeHtml(aliases ? `外号：${aliases}` : item.user_id)}</small><em>${Number(item.message_count || 0).toLocaleString()} 条 · ${escapeHtml(item.last_seen || '尚无发言')}</em></span><span class="persona-list-state ${escapeHtml(status)}">${escapeHtml(personaStatusLabels[status] || status)}</span></button>`;
   }).join('') : '<div class="terminal-empty">当前筛选条件下没有成员</div>';
   $$('[data-persona-user]', $('#personaMemberList')).forEach(button => button.onclick = () => {
-    state.persona.selectedUserId = button.dataset.personaUser; renderPersonaMembers(); loadPersonaDetail(button.dataset.personaUser);
+    state.persona.selectedUserId = button.dataset.personaUser;
+    $('#page-personas').dataset.mobilePane = 'detail';
+    selectPersonaTab('overview'); renderPersonaMembers();
+    if (matchMedia('(max-width: 640px)').matches) window.scrollTo({ top: 0, behavior: 'auto' });
+    loadPersonaDetail(button.dataset.personaUser);
   });
 }
 
@@ -743,6 +977,7 @@ function renderPersonaDetail(detail) {
   const aliases = (detail.aliases || []).map(x => x.alias).filter(Boolean);
   $('#personaIdentity').textContent = [aliases.length ? `外号 ${aliases.join('、')}` : '', p.user_id, `${Number(p.message_count || 0).toLocaleString()} 条消息`].filter(Boolean).join(' · ');
   const status = p.analysis_status || 'not_analyzed'; $('#personaState').className = `persona-state ${status}`; $('#personaState').textContent = personaStatusLabels[status] || status;
+  $('#personaAnalysisCallout').hidden = !['not_analyzed', 'failed'].includes(status);
   $('#personaSummary').textContent = p.summary || '尚未生成摘要。点击“分析选中成员”读取该成员全部历史消息。';
   const facts = [...(p.manual_facts || []).map(x => ({ value: typeof x === 'string' ? x : x.value, manual: true })), ...(p.tags || []).map(value => ({ value, tag: true }))];
   $('#personaFacts').innerHTML = facts.length ? facts.map(x => `<span class="${x.manual ? 'manual' : ''}">${escapeHtml(x.value || '')}${x.manual ? '<i>人工</i>' : ''}</span>`).join('') : '<small class="persona-muted">暂无永久事实或标签</small>';
@@ -818,6 +1053,11 @@ function selectPersonaTab(tab) {
   if (tab === 'edit') openPersonaEditor();
 }
 
+function showPersonaDirectory() {
+  $('#page-personas').dataset.mobilePane = 'directory';
+  requestAnimationFrame(() => $('#personaMemberList')?.focus?.());
+}
+
 async function loadMembers(button) {
   setBusy(button, true, '读取中…');
   try {
@@ -840,6 +1080,28 @@ function editPersona(btn) {
     .catch(e => toast(`画像保存失败：${e.message}`, 'error'));
 }
 
+function orbitAudioMarkup(src, label = '试听') {
+  return `<div class="orbit-audio-player"><button type="button" class="orbit-audio-toggle" aria-label="${escapeHtml(label)}"><i class="ph ph-play"></i><span>${escapeHtml(label)}</span></button><span class="orbit-audio-track"><i></i></span><time>--:--</time><audio preload="metadata" src="${escapeHtml(src)}"></audio></div>`;
+}
+
+function bindOrbitAudioPlayers(root = document) {
+  $$('.orbit-audio-player', root).forEach(player => {
+    if (player.dataset.bound) return; player.dataset.bound = '1';
+    const audio = $('audio', player); const button = $('.orbit-audio-toggle', player); const icon = $('i', button); const label = $('span', button); const progress = $('.orbit-audio-track i', player); const time = $('time', player);
+    const format = seconds => Number.isFinite(seconds) ? `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}` : '--:--';
+    const sync = () => { progress.style.width = `${audio.duration ? Math.min(100, audio.currentTime / audio.duration * 100) : 0}%`; time.textContent = format(audio.currentTime || audio.duration); };
+    audio.addEventListener('loadedmetadata', () => { time.textContent = format(audio.duration); });
+    audio.addEventListener('timeupdate', sync);
+    audio.addEventListener('ended', () => { icon.className = 'ph ph-play'; label.textContent = '试听'; audio.currentTime = 0; sync(); });
+    button.addEventListener('click', async () => {
+      if (audio.paused) {
+        $$('audio').forEach(other => { if (other !== audio && !other.paused) other.pause(); });
+        try { await audio.play(); icon.className = 'ph ph-pause'; label.textContent = '暂停'; } catch (error) { toast(`音频试听失败：${error.message}`, 'error'); }
+      } else { audio.pause(); icon.className = 'ph ph-play'; label.textContent = '试听'; }
+    });
+  });
+}
+
 function bindMediaCardActions(root = document) {
   $$('.media-analyze', root).forEach(btn => btn.onclick = () => analyzeMedia(btn));
   $$('.media-annotate', root).forEach(btn => btn.onclick = () => editMedia(btn));
@@ -847,6 +1109,7 @@ function bindMediaCardActions(root = document) {
   $$('.media-asr', root).forEach(btn => btn.onclick = () => asrMedia(btn));
   $$('.media-preview', root).forEach(btn => btn.onclick = () => previewMedia(btn));
   $$('.media-expand', root).forEach(btn => btn.onclick = () => previewContent(btn));
+  bindOrbitAudioPlayers(root);
 }
 
 async function loadMedia(button, silent = false) {
@@ -908,13 +1171,21 @@ async function loadVoiceRecords(button, silent = false) {
   } finally { if (button) setBusy(button, false); }
 }
 
+function compactFileLabel(value) {
+  const raw = String(value || '');
+  if (!raw) return '';
+  const clean = raw.split(/[?#]/)[0];
+  return decodeURIComponent(clean.split(/[\\/]/).filter(Boolean).at(-1) || clean);
+}
+
 function mediaCard(x) {
   const tags = [...(x.tags || []), ...(x.keywords || [])].filter(Boolean).slice(0, 12);
   const typeLabel = (x.media_type || 'MEDIA').toUpperCase();
   const isVoiceWaiting = x.media_type === 'record' && x.status === 'waiting_transcript';
-  const preview = x.data_url ? `<button class="media-thumb media-preview" data-src="${escapeHtml(x.data_url)}" data-title="媒体 #${x.id}"><img src="${escapeHtml(x.data_url)}" alt="media ${x.id}"></button>` : `<div class="media-thumb placeholder ${escapeHtml(x.media_type || '')}"><span>${escapeHtml(typeLabel)}</span><small>${escapeHtml(x.file || x.url || '已建立索引')}</small></div>`;
-  const audio = x.audio_url ? `<audio class="media-audio" controls src="${escapeHtml(x.audio_url)}"></audio>` : '';
-  const fileText = x.file || x.url || '';
+  const rawFile = x.file || x.url || '', shortFile = compactFileLabel(rawFile);
+  const preview = x.data_url ? `<button class="media-thumb media-preview" data-src="${escapeHtml(x.data_url)}" data-title="媒体 #${x.id}"><img src="${escapeHtml(x.data_url)}" alt="media ${x.id}"></button>` : `<div class="media-thumb placeholder ${escapeHtml(x.media_type || '')}" title="${escapeHtml(rawFile)}"><span>${escapeHtml(typeLabel)}</span><small>${escapeHtml(shortFile || '已建立索引')}</small></div>`;
+  const audio = x.audio_url ? orbitAudioMarkup(x.audio_url, '试听') : '';
+  const fileText = rawFile;
   return `<article class="media-card" data-media-id="${x.id}">
     ${preview}
     <div class="media-card-body">
@@ -923,7 +1194,7 @@ function mediaCard(x) {
       ${contentBlock('摘要', x.image_summary || '待解析', `媒体 #${x.id} 摘要`)}
       ${contentBlock('OCR', x.ocr_text || '无', `媒体 #${x.id} OCR`)}
       ${audio}
-      ${fileText ? contentBlock('文件', fileText, `媒体 #${x.id} 文件`) : ''}
+      ${fileText ? contentBlock('文件', shortFile, `媒体 #${x.id} 文件`) : ''}
       ${tags.length ? `<div class="tag-list">${tags.map(t => `<span>${escapeHtml(t)}</span>`).join('')}</div>` : '<div class="tag-list muted-tags"><span>暂无标签</span></div>'}
       ${x.error ? `<p class="${isVoiceWaiting ? 'notice-text' : 'error-text'}">${escapeHtml(x.error)}</p>` : ''}
       <div class="media-actions">
@@ -939,7 +1210,7 @@ function mediaCard(x) {
 
 function voiceRecordCard(x) {
   const tags = [...(x.tags || []), ...(x.keywords || [])].filter(Boolean).slice(0, 12);
-  const audio = x.audio_url ? `<audio class="media-audio" controls src="${escapeHtml(x.audio_url)}"></audio>` : '<div class="media-help-card"><strong>暂无可试听音频</strong><p>还没拿到本地 silk/wav 文件，等待 OneBot 下载缓存入库。</p></div>';
+  const audio = x.audio_url ? orbitAudioMarkup(x.audio_url, '试听') : '<div class="media-help-card"><strong>暂无可试听音频</strong><p>还没拿到本地 silk/wav 文件，等待 OneBot 下载缓存入库。</p></div>';
   const transcript = x.ocr_text || '';
   const fileText = x.file || x.url || '';
   return `<article class="media-card voice-record-card" data-media-id="${x.id}">
@@ -1070,7 +1341,7 @@ function voiceListRow(x) {
     <div class="voice-list-index">${x.list_index || '--'}</div>
     <div class="voice-list-content">${contentBlock('语音内容', text, '语音素材 #' + x.id + ' 内容')}</div>
     <div class="voice-list-pack"><strong>${escapeHtml(x.pack_name || '未命名语音包')}</strong><small>${escapeHtml(x.category || '未分类')}</small><small>#${x.id} · ${(x.file_ext || 'voice').toUpperCase()}</small></div>
-    <div class="voice-list-player"><audio class="voice-audio" controls preload="none" src="/api/voicepacks/audio?id=${encodeURIComponent(x.id)}"></audio><small>${Math.round((x.duration_ms || 0) / 1000)} 秒 · ${Math.round((x.size || 0) / 1024)} KB · 使用 ${x.usage_count || 0} 次</small></div>
+    <div class="voice-list-player">${orbitAudioMarkup(`/api/voicepacks/audio?id=${encodeURIComponent(x.id)}`, '试听')}<small>${Math.round((x.duration_ms || 0) / 1000)} 秒 · ${Math.round((x.size || 0) / 1024)} KB · 使用 ${x.usage_count || 0} 次</small></div>
     <div class="voice-list-tags">${match}${tagHtml}</div>
     <div class="voice-list-actions"><button class="link-btn voice-send" data-voice-id="${x.id}">发送</button><button class="link-btn voice-copy" data-text="${escapeHtml(text)}">复制</button><button class="link-btn danger-text voice-delete" data-voice-id="${x.id}" data-voice-title="${escapeHtml(text)}">删除</button></div>
   </div>`;
@@ -1081,11 +1352,12 @@ function bindVoiceListActions(root) {
   $$('.voice-copy', root).forEach(btn => btn.onclick = async () => { await navigator.clipboard.writeText(btn.dataset.text || ''); toast('语音文案已复制'); });
   $$('.voice-delete', root).forEach(btn => btn.onclick = () => deleteVoiceItem(btn));
   $$('.media-expand', root).forEach(btn => btn.onclick = () => previewContent(btn));
+  bindOrbitAudioPlayers(root);
 }
 
 function renderVoiceVirtualList(items) {
   const root = $('#voiceResults');
-  const rowHeight = 82;
+  const rowHeight = matchMedia('(max-width: 640px)').matches ? 272 : 82;
   const overscan = 8;
   root.innerHTML = `<div class="voice-list voice-list-virtual">
     <div class="voice-list-head"><span>序号</span><span>语音内容</span><span>所属语音包</span><span>试听</span><span>匹配/标签</span><span>操作</span></div>
@@ -1234,31 +1506,49 @@ async function deleteCurrentVoicePack(button) {
 }
 
 function faceCard(x) {
-  const tags = (x.tags || []).slice(0, 8);
-  const keywords = (x.keywords || []).slice(0, 8);
+  const tags = [...(x.tags || []), ...(x.keywords || []), ...(x.emotions || [])].slice(0, 5);
   const src = x.data_url || '';
   const title = x.image_summary || x.ocr_text || '未解析表情包';
   return `<article class="face-card media-card" data-face-id="${x.id}">
     <div class="media-thumb ${src ? '' : 'empty'}">
-      ${src ? `<img src="${src}" alt="face">` : '<span>GIF</span>'}
+      ${src ? `<img src="${escapeHtml(src)}" alt="${escapeHtml(title)}">` : '<span>GIF</span>'}
     </div>
     <div class="media-info">
       <div class="media-title"><strong>face #${x.id}</strong><span>${escapeHtml(x.status || 'indexed')}</span></div>
-      ${contentBlock('摘要', title, `表情 #${x.id} 摘要`)}
-      ${contentBlock('OCR', x.ocr_text || '无', `表情 #${x.id} OCR`)}
-      ${contentBlock('文件', x.file || '', `表情 #${x.id} 文件`)}
-      ${tags.length || keywords.length ? `<div class="tag-list">${[...tags, ...keywords].slice(0, 12).map(t => `<span>${escapeHtml(t)}</span>`).join('')}</div>` : ''}
+      <p class="face-card-summary">${escapeHtml(title)}</p>
+      ${tags.length ? `<div class="tag-list">${tags.map(t => `<span>${escapeHtml(t)}</span>`).join('')}</div>` : '<div class="tag-list"><span>待补充语义</span></div>'}
       <div class="media-actions">
-        ${src ? `<button class="link-btn face-preview" data-src="${escapeHtml(src)}" data-title="face #${x.id}">预览</button>` : ''}
         <button class="link-btn face-send" data-face-id="${x.id}">发送到目标群</button>
-        <button class="link-btn media-ocr" data-media-id="${x.canonical_media_id}">重新解析</button>
-        <button class="link-btn media-edit" data-media-id="${x.canonical_media_id}" data-summary="${escapeHtml(x.image_summary || '')}" data-ocr="${escapeHtml(x.ocr_text || '')}" data-tags="${escapeHtml((x.tags || []).join('，'))}" data-keywords="${escapeHtml((x.keywords || []).join('，'))}">编辑</button>
-        <button class="link-btn face-semantic-edit" data-face-id="${x.id}" data-aliases="${escapeHtml((x.aliases || []).join('，'))}" data-emotions="${escapeHtml((x.emotions || []).join('，'))}" data-intents="${escapeHtml((x.intents || []).join('，'))}">语义标签</button>
-        <button class="link-btn face-toggle" data-face-id="${x.id}" data-enabled="${Number(x.enabled) ? '1' : '0'}">${Number(x.enabled) ? '屏蔽' : '启用'}</button>
-        <button class="link-btn face-group-toggle" data-face-id="${x.id}" data-enabled="${Number(x.group_enabled) ? '1' : '0'}">${Number(x.group_enabled) ? '当前群禁用' : '当前群启用'}</button>
+        <button class="link-btn face-details" data-face-id="${x.id}">查看详情</button>
       </div>
     </div>
   </article>`;
+}
+
+function openFaceDetail(faceId) {
+  const x = state.faceItems.find(item => String(item.id) === String(faceId)); if (!x) return;
+  const src = x.data_url || '', tags = [...(x.tags || []), ...(x.keywords || []), ...(x.aliases || []), ...(x.emotions || []), ...(x.intents || [])];
+  $('#faceDetailTitle').textContent = `face #${x.id}`;
+  $('#faceDetailBody').innerHTML = `${src ? `<div class="face-detail-preview"><img src="${escapeHtml(src)}" alt="表情 #${x.id}"></div>` : '<div class="face-detail-preview"><span>暂无可预览文件</span></div>'}
+    <section class="face-detail-section"><h3>摘要</h3><p>${escapeHtml(x.image_summary || '尚未生成摘要')}</p></section>
+    <section class="face-detail-section"><h3>OCR 与语义</h3><p>${escapeHtml(x.ocr_text || '没有识别到文字')}</p>${tags.length ? `<div class="tag-list">${[...new Set(tags)].map(tag => `<span>${escapeHtml(tag)}</span>`).join('')}</div>` : ''}</section>
+    <section class="face-detail-section"><h3>文件与索引</h3><code>${escapeHtml(x.file || '文件路径不可用')}</code></section>
+    <div class="face-detail-actions">
+      <button class="btn primary face-send" data-face-id="${x.id}">发送到目标群</button>
+      <button class="btn subtle media-ocr" data-media-id="${x.canonical_media_id || ''}">重新解析</button>
+      <button class="btn subtle media-edit" data-media-id="${x.canonical_media_id || ''}" data-summary="${escapeHtml(x.image_summary || '')}" data-ocr="${escapeHtml(x.ocr_text || '')}" data-tags="${escapeHtml((x.tags || []).join('，'))}" data-keywords="${escapeHtml((x.keywords || []).join('，'))}">编辑内容</button>
+      <button class="btn subtle face-semantic-edit" data-face-id="${x.id}" data-aliases="${escapeHtml((x.aliases || []).join('，'))}" data-emotions="${escapeHtml((x.emotions || []).join('，'))}" data-intents="${escapeHtml((x.intents || []).join('，'))}">语义标签</button>
+      <button class="btn ghost face-toggle" data-face-id="${x.id}" data-enabled="${Number(x.enabled) ? '1' : '0'}">${Number(x.enabled) ? '屏蔽素材' : '启用素材'}</button>
+      <button class="btn ghost face-group-toggle" data-face-id="${x.id}" data-enabled="${Number(x.group_enabled) ? '1' : '0'}">${Number(x.group_enabled) ? '当前群禁用' : '当前群启用'}</button>
+    </div>`;
+  const root = $('#faceDetailBody');
+  $$('.face-send', root).forEach(button => button.onclick = () => sendFace(button));
+  $$('.media-ocr', root).forEach(button => button.onclick = () => ocrMedia(button));
+  $$('.media-edit', root).forEach(button => button.onclick = () => editMedia(button));
+  $$('.face-toggle', root).forEach(button => button.onclick = () => toggleFace(button));
+  $$('.face-group-toggle', root).forEach(button => button.onclick = () => toggleFaceForGroup(button));
+  $$('.face-semantic-edit', root).forEach(button => button.onclick = () => editFaceSemantics(button));
+  $('#faceDetailDialog').showModal();
 }
 
 async function loadFaces(button, silent = false) {
@@ -1270,6 +1560,7 @@ async function loadFaces(button, silent = false) {
     $('#faceTitle').textContent = '表情素材库';
     $('#faceSub').textContent = `当前去重显示 ${r.count} 个 face / GIF 表情`;
     $('#faceMode').textContent = r.count ? 'FACE' : 'EMPTY';
+    state.faceItems = r.items || [];
     $('#faceResults').innerHTML = r.items.length ? `<div class="face-grid media-gallery">${r.items.map(faceCard).join('')}</div>` : '<div class="voice-empty">暂无 face 表情包。群里收到表情包后会自动进入这里。</div>';
     $$('.face-preview', $('#faceResults')).forEach(btn => btn.onclick = () => previewMedia(btn));
     $$('.face-send', $('#faceResults')).forEach(btn => btn.onclick = () => sendFace(btn));
@@ -1278,6 +1569,7 @@ async function loadFaces(button, silent = false) {
     $$('.face-toggle', $('#faceResults')).forEach(btn => btn.onclick = () => toggleFace(btn));
     $$('.face-group-toggle', $('#faceResults')).forEach(btn => btn.onclick = () => toggleFaceForGroup(btn));
     $$('.face-semantic-edit', $('#faceResults')).forEach(btn => btn.onclick = () => editFaceSemantics(btn));
+    $$('.face-details', $('#faceResults')).forEach(btn => btn.onclick = () => openFaceDetail(btn.dataset.faceId));
     $$('.media-expand', $('#faceResults')).forEach(btn => btn.onclick = () => previewContent(btn));
     if (chip) { chip.textContent = `表情 ${r.count} 个`; chip.className = 'health-chip good'; }
   } catch (e) {
@@ -1409,12 +1701,42 @@ function addLog(item) {
   if (!state.paused) renderLogs();
 }
 
+function isHeartbeatLog(item) {
+  const text = `${item.event || ''} ${item.message || ''}`;
+  return /(?:GET|POST)\s+\/?(?:api\/)?status\b|http_access[\s\S]*\/?(?:api\/)?status\b|message=["']?(?:GET|POST)[\s\S]*\/?(?:api\/)?status\b/i.test(text);
+}
+
+function collapseRepeatedLogs(rows) {
+  return rows.reduce((result, item) => {
+    const key = `${item.source || ''}|${item.level || ''}|${item.event || ''}|${item.message || ''}`;
+    const last = result[result.length - 1];
+    if (last && last._key === key) {
+      last.repeat += 1;
+      last.time = item.time;
+      return result;
+    }
+    result.push({ ...item, _key: key, repeat: 1 });
+    return result;
+  }, []);
+}
+
+function dashboardLogSummary(item) {
+  const message = String(item.message || '');
+  if (/protobuf_msg: cannot extract message data/i.test(message)) return '跳过无法解析的微信系统消息';
+  if (/\[JS日志\][\s\S]*捕获到 StartTask/i.test(message)) return '微信 Hook 捕获到新的消息任务';
+  if (/发送数据\s+msg=/i.test(message)) return 'OneBot 正在把新消息送入 AI 链路';
+  if (/返回内容\s+body=/i.test(message)) return /"status"\s*:\s*"ok"/i.test(message) ? 'AI 链路已接收并处理消息' : 'AI 链路返回处理结果';
+  if (/send_group|ONEBOT SEND|send/i.test(`${item.event || ''} ${message}`)) return 'OneBot 执行群消息发送';
+  return message.length > 160 ? `${message.slice(0, 157)}…` : message;
+}
+
 function renderLogs() {
   const enabled = new Set($$('.level-filters input:checked').map(x => x.value));
   const groupFilter = ($('#logGroupFilter')?.value || '').trim();
   const traceFilter = ($('#logTraceFilter')?.value || '').trim();
   const errorsOnly = $('#logErrorsOnly')?.checked;
   const sendOnly = $('#logSendOnly')?.checked;
+  const hideHeartbeat = $('#logHideHeartbeat')?.checked;
   const rows = state.logs.filter(x => {
     if (state.source !== 'all' && x.source !== state.source) return false;
     if (!enabled.has(x.level)) return false;
@@ -1422,30 +1744,57 @@ function renderLogs() {
     if (traceFilter && !String(x.trace_id || x.message || '').includes(traceFilter)) return false;
     if (errorsOnly && !['error', 'critical'].includes(x.level)) return false;
     if (sendOnly && !/send_group|ONEBOT SEND|send/i.test(`${x.event || ''} ${x.message || ''}`)) return false;
+    if (hideHeartbeat && isHeartbeatLog(x)) return false;
     return true;
   });
+  const compactRows = collapseRepeatedLogs(rows);
   const out = $('#logOutput'), nearBottom = out.scrollHeight - out.scrollTop - out.clientHeight < 70;
-  out.innerHTML = rows.length ? rows.slice(-700).map(x => `<div class="log-line ${x.level}"><span class="time">${escapeHtml(formatLogTime(x.time))}</span><span class="source">${x.source === 'ai' ? 'AI' : 'ONEBOT'}</span><span class="level">${x.level.toUpperCase()}</span><span class="message">${escapeHtml(x.message)}</span></div>`).join('') : '<div class="terminal-empty">当前筛选条件下没有日志</div>';
-  $('#logCounter').textContent = `${rows.length} events`; if (nearBottom || rows.length < 80) out.scrollTop = out.scrollHeight;
+  out.innerHTML = compactRows.length ? compactRows.slice(-700).map(x => `<div class="log-line ${x.level}"><span class="time">${escapeHtml(formatLogTime(x.time))}</span><span class="source">${x.source === 'ai' ? 'AI' : 'ONEBOT'}</span><span class="level">${x.level.toUpperCase()}</span><span class="message">${escapeHtml(x.message)}${x.repeat > 1 ? `<b class="log-repeat">×${x.repeat}</b>` : ''}</span></div>`).join('') : '<div class="terminal-empty">当前筛选条件下没有日志</div>';
+  const merged = rows.length - compactRows.length;
+  $('#logCounter').textContent = merged > 0 ? `${compactRows.length} 条 · 合并 ${merged}` : `${compactRows.length} 条`;
+  if (nearBottom || compactRows.length < 80) out.scrollTop = out.scrollHeight;
   renderDashboardLogs();
 }
 
 function renderDashboardLogs() {
-  const rows = state.logs.filter(x => state.miniSource === 'all' || x.source === state.miniSource).slice(-180);
+  const rawRows = state.logs.filter(x => (state.miniSource === 'all' || x.source === state.miniSource) && !isHeartbeatLog(x));
+  const rows = collapseRepeatedLogs(rawRows).slice(-100);
   const out = $('#dashboardLogOutput'), nearBottom = out.scrollHeight - out.scrollTop - out.clientHeight < 60;
-  out.innerHTML = rows.length ? rows.map(x => `<div class="mini-log-line ${x.level}"><span class="time">${escapeHtml(formatLogTime(x.time))}</span><span class="source">${x.source === 'ai' ? 'AI' : 'ONEBOT'}</span><span class="level">${x.level.toUpperCase()}</span><span class="message">${escapeHtml(x.message)}</span></div>`).join('') : '<div class="terminal-empty">当前来源没有日志</div>';
-  $('#miniLogCount').textContent = `${rows.length} events`; if (nearBottom || rows.length < 60) out.scrollTop = out.scrollHeight;
+  out.innerHTML = rows.length ? rows.map(x => `<div class="mini-log-line ${x.level}" title="${escapeHtml(x.message)}"><span class="time">${escapeHtml(formatLogTime(x.time))}</span><span class="source">${x.source === 'ai' ? 'AI' : 'ONEBOT'}</span><span class="level">${x.level.toUpperCase()}</span><span class="message">${escapeHtml(dashboardLogSummary(x))}${x.repeat > 1 ? `<b class="log-repeat">×${x.repeat}</b>` : ''}</span></div>`).join('') : '<div class="terminal-empty">当前来源没有有效日志</div>';
+  $('#miniLogCount').textContent = `${rows.length} 条`; if (nearBottom || rows.length < 60) out.scrollTop = out.scrollHeight;
 }
 
 function connectLogs() {
   state.eventSource?.close(); const es = new EventSource('/api/events/stream'); state.eventSource = es;
-  es.onmessage = e => { try { const item = JSON.parse(e.data); if (item.type === 'log') addLog(item); else if (item.type === 'reply_task') refreshReplyTasks(true); else if (item.type === 'memory_backfill') refreshReplyTasks(true); else if (item.type === 'persona_analysis') { clearTimeout(state.persona.refreshTimer); state.persona.refreshTimer = setTimeout(() => { if ($('#page-personas').classList.contains('active')) loadPersonaMembers(true); }, 180); } } catch (_) {} };
+  es.onmessage = e => { try { const item = JSON.parse(e.data); pulseActivePageSignal(item.type === 'reply_task' ? 1 : item.type === 'persona_analysis' ? 2 : 0); if (item.type === 'log') addLog(item); else if (item.type === 'reply_task') { refreshReplyTasks(true); const phase = item.state || item.data?.state || ''; const node = phase.includes('rerank') ? 'reranker' : phase.includes('retriev') ? 'embedding' : phase.includes('voice') ? 'voice' : phase.includes('face') ? 'face' : phase.includes('generat') ? 'person' : 'fts'; pulseOrbitNode(node); } else if (item.type === 'memory_backfill') { refreshReplyTasks(true); pulseOrbitNode('embedding'); } else if (item.type === 'persona_analysis') { pulseOrbitNode('person'); clearTimeout(state.persona.refreshTimer); state.persona.refreshTimer = setTimeout(() => { if ($('#page-personas').classList.contains('active')) loadPersonaMembers(true); }, 180); } } catch (_) {} };
   es.onerror = () => { $('#logPulse').style.opacity = '.3'; };
 }
 
 function bind() {
   $$('.nav-item').forEach(x => x.onclick = () => showPage(x.dataset.page)); $$('[data-jump]').forEach(x => x.onclick = () => showPage(x.dataset.jump));
-  $('#refreshBtn').onclick = () => { refreshStatus(); refreshTraces(); }; $('#refreshTraceBtn').onclick = () => refreshTraces(); $('#startAllBtn').onclick = e => action('start_all', e.currentTarget); $$('.action-btn').forEach(x => x.onclick = () => action(x.dataset.action, x));
+  $$('.workspace-item').forEach(x => x.onclick = () => applyWorkspace(x.dataset.workspace, true));
+  $$('[data-theme-value]').forEach(x => x.onclick = () => applyTheme(x.dataset.themeValue, true));
+  $$('[data-brain-view-value]').forEach(x => x.onclick = () => setBrainView(x.dataset.brainViewValue));
+  $$('[data-orbit-node]').forEach(x => x.onclick = () => selectOrbitNode(x.dataset.orbitNode));
+  $('#mobileNavBtn').onclick = () => document.body.classList.toggle('nav-open');
+  $('#contextCloseBtn').onclick = () => document.body.classList.remove('nav-open');
+  $('#globalCommand').onkeydown = e => {
+    if (e.key === 'Escape') { e.currentTarget.value = ''; e.currentTarget.blur(); return; }
+    if (e.key !== 'Enter') return;
+    const query = e.currentTarget.value.trim().toLowerCase();
+    if (!query) return;
+    const target = Object.entries(pageMeta).find(([key, value]) => `${key} ${value.join(' ')}`.toLowerCase().includes(query));
+    if (target) { showPage(target[0]); e.currentTarget.value = ''; }
+    else toast(`没有找到“${e.currentTarget.value.trim()}”`, 'error');
+  };
+  document.addEventListener('keydown', e => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); $('#globalCommand').focus(); }
+  });
+  window.addEventListener('hashchange', () => {
+    const requested = location.hash.replace(/^#/, '');
+    if (pageMeta[requested] && !$('#page-' + requested).classList.contains('active')) showPage(requested);
+  });
+  $('#refreshBtn').onclick = () => { refreshStatus(); refreshTraces(); }; $('#refreshTraceBtn').onclick = () => refreshTraces(); $('#startAllBtn').onclick = e => { if (confirm('确认启动第二微信、OneBot 与 AI 服务？')) action('start_all', e.currentTarget); }; $$('.action-btn').forEach(x => x.onclick = () => action(x.dataset.action, x));
   $('#channelSelect').onchange = e => selectChannel(e.target.value); $('#addChannelBtn').onclick = openChannelDialog; $('#deleteChannelBtn').onclick = deleteCurrentChannel;
   $('#testAllChannelsBtn').onclick = e => testAllChannels(e.currentTarget); $('#refreshHealthBtn').onclick = () => refreshChannelHealth();
   $('#channelProvider').onchange = e => applyProviderPreset(e.target.value); $('#newChannelProvider').onchange = e => applyProviderPreset(e.target.value, 'new');
@@ -1458,20 +1807,29 @@ function bind() {
   $('#temperature').oninput = e => { $('#temperatureValue').value = e.target.value; markDirty(); }; $('#systemPrompt').oninput = e => { $('#promptCount').textContent = e.target.value.length; markDirty(); }; $('#personality').oninput = e => { $('#personalityCount').textContent = e.target.value.length; markDirty(); };
   $('#aiForm').onsubmit = e => { e.preventDefault(); saveConfig(e.submitter); }; $('#groupForm').onsubmit = e => { e.preventDefault(); saveConfig(e.submitter); };
   $('#brainForm').onsubmit = e => { e.preventDefault(); saveBrainConfig(e.submitter); };
-  $('#brainThreshold').oninput = e => { $('#brainThresholdValue').value = e.target.value; $('#brainMode').value = 'custom'; };
-  $('#brainMode').onchange = e => { const values = { reserved: 78, natural: 65, veteran: 52 }; if (values[e.target.value] != null) { $('#brainThreshold').value = values[e.target.value]; $('#brainThresholdValue').value = values[e.target.value]; } };
+  $('#brainThreshold').oninput = e => { $('#brainThresholdValue').value = e.target.value; $('#brainMode').value = 'custom'; if ($('#orbitThreshold')) $('#orbitThreshold').textContent = e.target.value; };
+  $('#brainMode').onchange = e => { const values = { reserved: 78, natural: 65, veteran: 52 }; if (values[e.target.value] != null) { $('#brainThreshold').value = values[e.target.value]; $('#brainThresholdValue').value = values[e.target.value]; if ($('#orbitThreshold')) $('#orbitThreshold').textContent = values[e.target.value]; } };
+  $('#brainGlobalWorkers').oninput = e => { if ($('#orbitWorkers')) $('#orbitWorkers').textContent = e.target.value; };
   $('#refreshReplyTasksBtn').onclick = () => refreshReplyTasks(); $('#taskStateFilter').onchange = renderReplyTasks; $('#taskQuery').oninput = renderReplyTasks;
-  $('#personaGroup').onchange = () => { state.persona.selectedUserId = ''; loadPersonaMembers(); };
+  $('#personaGroup').onchange = () => { state.persona.selectedUserId = ''; $('#page-personas').dataset.mobilePane = 'directory'; loadPersonaMembers(); };
   $('#personaStatus').onchange = () => loadPersonaMembers(); $('#personaSearchBtn').onclick = () => loadPersonaMembers();
   $('#personaSearch').oninput = () => { clearTimeout(state.persona.searchTimer); state.persona.searchTimer = setTimeout(() => loadPersonaMembers(true), 220); };
   $('#personaSearch').onkeydown = e => { if (e.key === 'Enter') loadPersonaMembers(); };
   $('#personaAnalyzeSelected').onclick = e => analyzePersona('member', e.currentTarget); $('#personaAnalyzeGroup').onclick = e => analyzePersona('group', e.currentTarget);
+  $('#personaAnalyzeInline').onclick = e => analyzePersona('member', e.currentTarget);
+  $('#personaFiltersToggle').onclick = e => {
+    const open = $('#page-personas').classList.toggle('persona-filters-open');
+    e.currentTarget.setAttribute('aria-expanded', String(open));
+    e.currentTarget.innerHTML = `<i class="ph ph-funnel"></i>${open ? '收起筛选' : '筛选成员'}`;
+  };
   $('#personaClaimFilter').onchange = () => renderPersonaEvidence(state.persona.detail?.claims || []); $('#personaEditBtn').onclick = openPersonaEditor;
   $('#personaProgressAction').onclick = e => controlPersonaJob(e.currentTarget);
   $$('[data-persona-tab]').forEach(x => x.onclick = () => selectPersonaTab(x.dataset.personaTab));
   $('#personaEditorForm').onsubmit = e => { e.preventDefault(); savePersonaEditor().catch(error => toast(`画像保存失败：${error.message}`, 'error')); };
   $('#personaEditorClose').onclick = $('#personaEditorCancel').onclick = () => $('#personaEditor').close();
+  $('#personaBackBtn').onclick = showPersonaDirectory;
   $('#brainPreviewBtn').onclick = e => previewBrain(e.currentTarget); $('#closeBrainPreview').onclick = () => $('#brainPreviewDialog').close();
+  $$('[data-brain-preview-clone]').forEach(x => x.onclick = e => previewBrain(e.currentTarget));
   $('#backfillStartBtn').onclick = e => controlBackfill('start', e.currentTarget); $('#backfillPauseBtn').onclick = e => { const resume = $('#embeddingState').textContent === '已暂停'; controlBackfill(resume ? 'resume' : 'pause', e.currentTarget); };
   $('#saveEmbeddingBtn').onclick = e => saveBrainConfig(e.currentTarget);
   $('#embeddingTestBtn').onclick = e => testEmbedding(e.currentTarget);
@@ -1508,17 +1866,28 @@ function bind() {
   $('#faceMediaSaveBtn').onclick = e => saveMediaReplyConfig(e.currentTarget, 'face');
   $('#faceContextTestBtn').onclick = e => testMediaContext(e.currentTarget, 'face');
   $('#faceReindexBtn').onclick = e => reindexFaces(e.currentTarget);
+  $('#faceDetailClose').onclick = () => $('#faceDetailDialog').close();
   $$('#faceGroup').forEach(x => x.addEventListener('change', () => loadFaces(null, true)));
   $('#faceQuery').addEventListener('keydown', e => { if (e.key === 'Enter') loadFaces($('#faceSearchBtn')); });
   $('#loadGroupMemoryBtn').onclick = e => loadGroupMemory(e.currentTarget); $('#saveGroupMemoryBtn').onclick = e => saveGroupMemory(e.currentTarget);
   $('#rebuildMemoryBtn').onclick = e => rebuildMemory(e.currentTarget); $('#importMemoryBtn').onclick = e => importMemory(e.currentTarget); $('#exportMemoryBtn').onclick = e => exportMemory(e.currentTarget);
   $$('[data-mini-source]').forEach(x => x.onclick = () => { $$('[data-mini-source]').forEach(y => y.classList.toggle('active', y === x)); state.miniSource = x.dataset.miniSource; renderDashboardLogs(); });
   $$('.source-tabs button').forEach(x => x.onclick = () => { $$('.source-tabs button').forEach(y => y.classList.toggle('active', y === x)); state.source = x.dataset.source; renderLogs(); });
-  $$('.level-filters input').forEach(x => x.onchange = renderLogs); $$('#logGroupFilter,#logTraceFilter,#logErrorsOnly,#logSendOnly').forEach(x => x.addEventListener('input', renderLogs)); $$('#logErrorsOnly,#logSendOnly').forEach(x => x.addEventListener('change', renderLogs)); $('#clearLogs').onclick = () => { state.logs = []; renderLogs(); };
+  $$('.level-filters input').forEach(x => x.onchange = renderLogs); $$('#logGroupFilter,#logTraceFilter,#logErrorsOnly,#logSendOnly,#logHideHeartbeat').forEach(x => x.addEventListener('input', renderLogs)); $$('#logErrorsOnly,#logSendOnly,#logHideHeartbeat').forEach(x => x.addEventListener('change', renderLogs)); $('#clearLogs').onclick = () => { state.logs = []; renderLogs(); };
+  $('#logFiltersToggle').onclick = e => {
+    const open = $('#page-logs').classList.toggle('filters-open');
+    e.currentTarget.setAttribute('aria-expanded', String(open));
+    e.currentTarget.innerHTML = `<i class="ph ph-funnel"></i>${open ? '收起过滤' : '过滤条件'}`;
+  };
   $('#pauseLogs').onclick = e => { state.paused = !state.paused; e.currentTarget.textContent = state.paused ? '继续' : '暂停'; if (!state.paused) renderLogs(); };
 }
 
 async function init() {
+  applyTheme(localStorage.getItem('wxconsole-theme') || document.documentElement.dataset.theme || 'dark');
+  decorateOrbitalPages(); decorateOrbitalWorkbenches(); setupResponsiveControlPanels(); setupUiTooltips(); setupModelSectionNav(); setBrainView(localStorage.getItem('wxconsole-brain-view') || 'orbit', false); selectOrbitNode('person', false);
+  $('#page-personas').dataset.mobilePane = 'directory';
+  const initialPage = location.hash.slice(1);
+  showPage(pageMeta[initialPage] ? initialPage : 'overview');
   bind(); connectLogs();
   try { fillConfig(await api('/api/config')); } catch (e) { toast(`配置加载失败：${e.message}`, 'error'); }
   await loadBrainConfig(true); await refreshReplyTasks(true);

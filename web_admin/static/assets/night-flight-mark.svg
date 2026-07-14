@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" role="img" aria-labelledby="title desc">
+  <title id="title">夜航驾驶舱</title>
+  <desc id="desc">由航线与纸飞机组成的本地控制台标记</desc>
+  <defs>
+    <linearGradient id="flight" x1="8" y1="40" x2="40" y2="8" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2f7dff"/>
+      <stop offset="1" stop-color="#58d5ff"/>
+    </linearGradient>
+  </defs>
+  <path d="M7.5 18.1 40.2 7.5 29.7 40l-6.2-12.2-11.1 6.9 3.2-11.5-8.1-5.1Z" fill="none" stroke="url(#flight)" stroke-width="2.2" stroke-linejoin="round"/>
+  <path d="m15.7 23.2 24.5-15.7-16.7 20.3" fill="none" stroke="url(#flight)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="8.2" cy="39.7" r="1.6" fill="#54d889"/>
+  <path d="M12.5 39.7h9.8" stroke="#54d889" stroke-width="1.7" stroke-linecap="round" stroke-dasharray="1.2 3.2"/>
+</svg>
