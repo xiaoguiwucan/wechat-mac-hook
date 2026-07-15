@@ -1002,3 +1002,48 @@ html[data-theme="light"] #page-personas .persona-list-main strong{color:#17324e}
   body #page-reply-tasks .reply-summary>div:last-child:nth-child(odd){grid-column:1/-1}
   body #page-reply-tasks .reply-summary>div{min-height:72px!important}
 }
+
+/* Face workbench: keep the panel heading visible while long controls scroll.
+   The generic `.panel{overflow:hidden!important}` used to clip this column. */
+#page-faces .voice-control-panel{
+  display:grid;
+  grid-template-rows:auto minmax(0,1fr);
+  height:calc(100vh - 92px);
+  height:calc(100dvh - 92px);
+  max-height:calc(100vh - 92px);
+  max-height:calc(100dvh - 92px);
+  overflow:hidden!important;
+}
+#page-faces .voice-control-panel>.panel-head{
+  position:relative;
+  z-index:2;
+  box-shadow:0 1px 0 var(--orb-line),0 8px 18px rgba(2,8,18,.16);
+}
+#page-faces .voice-control-panel>.panel-body{
+  min-height:0;
+  overflow-x:hidden;
+  overflow-y:scroll;
+  overscroll-behavior:contain;
+  scrollbar-gutter:stable;
+  scroll-padding-block:12px 32px;
+  padding-bottom:34px!important;
+}
+#page-faces .voice-control-panel>.panel-body::-webkit-scrollbar{width:8px}
+#page-faces .voice-control-panel>.panel-body::-webkit-scrollbar-track{background:var(--orb-base-2)}
+#page-faces .voice-control-panel>.panel-body::-webkit-scrollbar-thumb{border:2px solid var(--orb-base-2);border-radius:8px;background:var(--orb-line-strong)}
+#page-faces .voice-control-panel>.panel-body::-webkit-scrollbar-thumb:hover{background:var(--orb-blue)}
+
+@media(max-width:900px){
+  #page-faces .voice-control-panel{
+    display:block;
+    height:auto;
+    max-height:none;
+    overflow:visible!important;
+  }
+  #page-faces .voice-control-panel>.panel-head{box-shadow:none}
+  #page-faces .voice-control-panel>.panel-body{
+    overflow:visible;
+    scrollbar-gutter:auto;
+    padding-bottom:22px!important;
+  }
+}
