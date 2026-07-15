@@ -1,6 +1,6 @@
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
-const state = { config: null, status: null, brainConfig: null, replyTasks: [], faceItems: [], pokeFaceIds: new Set(), channels: [], selectedChannelId: '', channelHealth: {}, groupCatalog: [], groupMemberCatalog: {}, ignoredGroupMembers: {}, persona: { members: [], selectedUserId: '', detail: null, tab: 'overview', refreshTimer: null }, dirty: false, logs: [], source: 'all', miniSource: 'all', paused: false, eventSource: null, traceDiagnostic: null };
+const state = { config: null, status: null, brainConfig: null, replyTasks: [], faceItems: [], pokeFaceIds: new Set(), channels: [], selectedChannelId: '', channelHealth: {}, groupCatalog: [], groupMemberCatalog: {}, groupMemberCatalogMeta: {}, ignoredGroupMembers: {}, persona: { members: [], selectedUserId: '', detail: null, tab: 'overview', refreshTimer: null }, dirty: false, logs: [], source: 'all', miniSource: 'all', paused: false, eventSource: null, traceDiagnostic: null };
 const pageMeta = {
   overview: ['运行总览', '第二微信、OneBot 与 AI 服务'], ai: ['模型配置', '对话、OCR 与 ASR 模型配置'],
   groups: ['群聊策略', '目标群与自动回复规则'], brain: ['群聊大脑', '接话门槛、七维评分与并发策略'],
@@ -36,7 +36,7 @@ const orbitalPageDesigns = {
   ai: { tone: 'violet', icon: 'ph-cpu', code: 'MODEL ORBIT', title: '多模型神经中枢', description: '统一编排对话、OCR 与 ASR 渠道，保存后实时切换运行链路。', state: '配置热加载', nodes: [['ph-arrows-clockwise', '故障切换', 'AUTO', '渠道健康'], ['ph-eye', '视觉理解', 'OCR', '图片解析'], ['ph-waveform', '语音理解', 'ASR', '实时转写']] },
   vector: { tone: 'cyan', icon: 'ph-vector-three', code: 'VECTOR ORBIT', title: '本地向量引擎', description: 'Embedding 召回与 Reranker 精排共同驱动永久记忆检索。', state: 'oMLX 本地推理', nodes: [['ph-cube', '向量维度', '4096D', '完整精度'], ['ph-magnifying-glass', '初始召回', 'TOP 60', '多路融合'], ['ph-arrows-down-up', '精排注入', '12–24', '自适应扩批']] },
   'reply-tasks': { tone: 'mint', icon: 'ph-chats-circle', code: 'THREAD ORBIT', title: '多线程回复调度', description: '跨群并行、同线程串行，每个问题都绑定原消息和完整阶段。', state: '实时任务流', nodes: [['ph-stack', '全局工作池', '8', '并行任务'], ['ph-users-three', '单群并发', '3', '线程隔离'], ['ph-broadcast', '状态刷新', '<1s', '统一事件流']] },
-  groups: { tone: 'violet', icon: 'ph-users-three', code: 'SOCIAL ORBIT', title: '群聊策略矩阵', description: '按群控制权限、回复边界与成员屏蔽，保存即刻生效。', state: '群级热更新', nodes: [['ph-shield-check', '群聊授权', 'ACL', '目标群隔离'], ['ph-user-minus', '成员屏蔽', 'LIVE', '完整目录'], ['ph-sliders-horizontal', '回复规则', 'HOT', '实时应用']] },
+  groups: { tone: 'violet', icon: 'ph-users-three', code: 'SOCIAL ORBIT', title: '群聊策略矩阵', description: '按群控制权限、回复边界与成员屏蔽，保存即刻生效。', state: '群级热更新', nodes: [['ph-shield-check', '群聊授权', 'ACL', '目标群隔离'], ['ph-user-minus', '成员屏蔽', 'LIVE', '历史目录'], ['ph-sliders-horizontal', '回复规则', 'HOT', '实时应用']] },
   tests: { tone: 'amber', icon: 'ph-chart-line-up', code: 'EVALUATION ORBIT', title: '链路评估实验场', description: '使用真实请求、真实耗时与真实回调验证完整机器人链路。', state: '诊断沙盒', nodes: [['ph-lightning', '模型探针', 'REAL', '真实调用'], ['ph-path', '链路追踪', 'TRACE', '逐段定位'], ['ph-check-circle', '回调验证', 'E2E', '发送闭环']] },
   media: { tone: 'amber', icon: 'ph-images', code: 'VISION ORBIT', title: '视觉素材星库', description: '图片、文件与视频经过解析、去重和索引后进入永久记忆。', state: '视觉索引在线', nodes: [['ph-eye', '图片解析', 'OCR', '文字与摘要'], ['ph-fingerprint', '文件去重', 'HASH', '稳定素材键'], ['ph-database', '永久索引', 'FTS+VEC', '语义召回']] },
   'voice-records': { tone: 'violet', icon: 'ph-waveform', code: 'VOICE MEMORY ORBIT', title: '群语音记忆轨道', description: '原始语音、ASR 转写与上下文共同构成可检索的长期语音记忆。', state: 'ASR 队列在线', nodes: [['ph-microphone', '原始语音', 'RAW', 'OneBot 捕获'], ['ph-waveform', '智能转写', 'ASR', '中文语义'], ['ph-vector-three', '记忆入库', 'VEC', '永久检索']] },
@@ -599,22 +599,35 @@ function mergeGroupCatalog(groups) {
   const existing = new Map(state.groupCatalog.map(x => [x.id, x]));
   groups.forEach(item => {
     const old = existing.get(item.id);
-    existing.set(item.id, old ? { ...item, name: old.name && old.name !== old.id ? old.name : item.name, selected: old.selected } : { ...item });
+    existing.set(item.id, old ? { ...item, name: item.source === 'alias' ? item.name : (old.name && old.name !== old.id ? old.name : item.name), selected: old.selected } : { ...item });
   });
   state.groupCatalog = [...existing.values()].sort((a, b) => Number(b.selected) - Number(a.selected) || a.name.localeCompare(b.name, 'zh-CN'));
+}
+function groupDisplayName(group) {
+  const id = String(group?.id || '');
+  const name = String(group?.name || '').trim();
+  if (name && name !== id && !name.endsWith('@chatroom')) return name;
+  const number = id.replace('@chatroom', '');
+  return `未识别群聊 · 尾号${number.slice(-4) || '未知'}`;
+}
+function groupSelectLabel(group) {
+  const count = Number(group?.observed_members || 0);
+  return `${groupDisplayName(group)}${count ? ` · 已识别 ${count} 人` : ''}`;
 }
 function renderGroupPermissions() {
   $('#groupList').innerHTML = state.groupCatalog.map(group => {
     const confidence = group.confidence == null ? '' : ` · ${group.confidence}%`;
     const source = group.source || (group.last_seen ? 'event' : 'config');
-    return `<div class="group-permission-row" data-group-id="${escapeHtml(group.id)}"><label class="permission-check"><input class="group-enabled" type="checkbox" ${group.selected ? 'checked' : ''}><i></i><span>${group.selected ? '已授权' : '未授权'}</span></label><div class="field"><input class="group-name" value="${escapeHtml(group.name)}" aria-label="群聊名称"></div><code>${escapeHtml(group.id)}</code><span class="discovery-source" title="${escapeHtml(group.preview || '')}"><i></i><span>${escapeHtml(source)}${confidence}<small>${group.preview ? escapeHtml(group.preview) : escapeHtml(group.last_seen || '可编辑别名')}</small></span></span></div>`;
+    const editableName = groupDisplayName(group) === group.name ? group.name : '';
+    const count = Number(group.observed_members || 0);
+    return `<div class="group-permission-row" data-group-id="${escapeHtml(group.id)}"><label class="permission-check"><input class="group-enabled" type="checkbox" ${group.selected ? 'checked' : ''}><i></i><span>${group.selected ? '已授权' : '未授权'}</span></label><div class="field group-name-field"><input class="group-name" value="${escapeHtml(editableName)}" placeholder="${escapeHtml(groupDisplayName(group))}" aria-label="群聊名称"><small>${editableName ? '真实群名 · 可直接修改' : '尚未绑定真实群名'}</small></div><code title="微信内部群 ID">${escapeHtml(group.id)}</code><span class="discovery-source" title="${escapeHtml(group.preview || '')}"><i></i><span>${escapeHtml(source)}${confidence}<small>${count ? `已识别 ${count} 名成员` : (group.preview ? escapeHtml(group.preview) : escapeHtml(group.last_seen || '暂无成员记录'))}</small></span></span></div>`;
   }).join('');
   $$('.group-permission-row').forEach(row => {
     const group = state.groupCatalog.find(x => x.id === row.dataset.groupId);
     $('.group-enabled', row).onchange = e => { group.selected = e.target.checked; $('.permission-check span', row).textContent = group.selected ? '已授权' : '未授权'; updateGroupCount(); updateTestGroups(); markDirty(); };
     $('.group-name', row).oninput = e => { group.name = e.target.value.trim() || group.id; updateTestGroups(); markDirty(); };
   });
-  $('#groupQuickSelect').innerHTML = state.groupCatalog.map(x => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)}${x.preview ? ` · ${escapeHtml(x.preview)}` : ''} · ${escapeHtml(x.id)}</option>`).join('');
+  $('#groupQuickSelect').innerHTML = state.groupCatalog.map(x => `<option value="${escapeHtml(x.id)}">${escapeHtml(groupSelectLabel(x))}</option>`).join('');
   updateGroupCount(); updateTestGroups();
 }
 async function loadDiscoveredGroups(silent = false) {
@@ -638,23 +651,25 @@ function updateRouteSummary() {
   $('#routeCooldown').textContent = `${$('#cooldown').value || 0}s`;
 }
 function updateTestGroups() {
-  const select = $('#testGroup'), old = select.value; select.innerHTML = groupsData().filter(x => x.id).map(x => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)} · ${escapeHtml(x.id)}</option>`).join('');
+  const select = $('#testGroup'), old = select.value; select.innerHTML = state.groupCatalog.filter(x => x.selected && x.id).map(x => `<option value="${escapeHtml(x.id)}">${escapeHtml(groupSelectLabel(x))}</option>`).join('');
   if ([...select.options].some(x => x.value === old)) select.value = old;
-  const mem = $('#memoryGroup'); if (mem) { const oldMem = mem.value; mem.innerHTML = state.groupCatalog.filter(x => x.id).map(x => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)} · ${escapeHtml(x.id)}</option>`).join(''); if ([...mem.options].some(x => x.value === oldMem)) mem.value = oldMem; }
-  const personaGroup = $('#personaGroup'); if (personaGroup) { const oldPersona = personaGroup.value; personaGroup.innerHTML = state.groupCatalog.filter(x => x.id).map(x => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)} · ${escapeHtml(x.id)}</option>`).join(''); if ([...personaGroup.options].some(x => x.value === oldPersona)) personaGroup.value = oldPersona; }
-  const media = $('#mediaGroup'); if (media) { const oldMedia = media.value; media.innerHTML = `<option value="">全部群媒体</option>` + state.groupCatalog.filter(x => x.id).map(x => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)} · ${escapeHtml(x.id)}</option>`).join(''); if ([...media.options].some(x => x.value === oldMedia)) media.value = oldMedia; }
-  const voiceRecords = $('#voiceRecordsGroup'); if (voiceRecords) { const oldVoiceRecords = voiceRecords.value; voiceRecords.innerHTML = `<option value="">全部来源群</option>` + state.groupCatalog.filter(x => x.id).map(x => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)} · ${escapeHtml(x.id)}</option>`).join(''); if ([...voiceRecords.options].some(x => x.value === oldVoiceRecords)) voiceRecords.value = oldVoiceRecords; }
-  const voice = $('#voiceTargetGroup'); if (voice) { const oldVoice = voice.value; voice.innerHTML = groupsData().filter(x => x.id).map(x => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)} · ${escapeHtml(x.id)}</option>`).join(''); if ([...voice.options].some(x => x.value === oldVoice)) voice.value = oldVoice; }
-  const faceTarget = $('#faceTargetGroup'); if (faceTarget) { const oldFaceTarget = faceTarget.value; faceTarget.innerHTML = groupsData().filter(x => x.id).map(x => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)} · ${escapeHtml(x.id)}</option>`).join(''); if ([...faceTarget.options].some(x => x.value === oldFaceTarget)) faceTarget.value = oldFaceTarget; }
-  const faceGroup = $('#faceGroup'); if (faceGroup) { const oldFaceGroup = faceGroup.value; faceGroup.innerHTML = `<option value="">全部来源群</option>` + state.groupCatalog.filter(x => x.id).map(x => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name)} · ${escapeHtml(x.id)}</option>`).join(''); if ([...faceGroup.options].some(x => x.value === oldFaceGroup)) faceGroup.value = oldFaceGroup; }
+  const groupOptions = () => state.groupCatalog.filter(x => x.id).map(x => `<option value="${escapeHtml(x.id)}">${escapeHtml(groupSelectLabel(x))}</option>`).join('');
+  const selectedOptions = () => state.groupCatalog.filter(x => x.selected && x.id).map(x => `<option value="${escapeHtml(x.id)}">${escapeHtml(groupSelectLabel(x))}</option>`).join('');
+  const mem = $('#memoryGroup'); if (mem) { const oldMem = mem.value; mem.innerHTML = groupOptions(); if ([...mem.options].some(x => x.value === oldMem)) mem.value = oldMem; }
+  const personaGroup = $('#personaGroup'); if (personaGroup) { const oldPersona = personaGroup.value; personaGroup.innerHTML = groupOptions(); if ([...personaGroup.options].some(x => x.value === oldPersona)) personaGroup.value = oldPersona; }
+  const media = $('#mediaGroup'); if (media) { const oldMedia = media.value; media.innerHTML = `<option value="">全部群媒体</option>` + groupOptions(); if ([...media.options].some(x => x.value === oldMedia)) media.value = oldMedia; }
+  const voiceRecords = $('#voiceRecordsGroup'); if (voiceRecords) { const oldVoiceRecords = voiceRecords.value; voiceRecords.innerHTML = `<option value="">全部来源群</option>` + groupOptions(); if ([...voiceRecords.options].some(x => x.value === oldVoiceRecords)) voiceRecords.value = oldVoiceRecords; }
+  const voice = $('#voiceTargetGroup'); if (voice) { const oldVoice = voice.value; voice.innerHTML = selectedOptions(); if ([...voice.options].some(x => x.value === oldVoice)) voice.value = oldVoice; }
+  const faceTarget = $('#faceTargetGroup'); if (faceTarget) { const oldFaceTarget = faceTarget.value; faceTarget.innerHTML = selectedOptions(); if ([...faceTarget.options].some(x => x.value === oldFaceTarget)) faceTarget.value = oldFaceTarget; }
+  const faceGroup = $('#faceGroup'); if (faceGroup) { const oldFaceGroup = faceGroup.value; faceGroup.innerHTML = `<option value="">全部来源群</option>` + groupOptions(); if ([...faceGroup.options].some(x => x.value === oldFaceGroup)) faceGroup.value = oldFaceGroup; }
   updateBlacklistGroupOptions();
 }
 
 function updateBlacklistGroupOptions() {
   const select = $('#memberBlacklistGroup'); if (!select) return;
   const old = select.value;
-  const groups = state.groupCatalog.filter(x => x.id?.endsWith('@chatroom') && (x.selected || (state.ignoredGroupMembers[x.id] || []).length));
-  select.innerHTML = groups.map(x => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.name || x.id)} · ${escapeHtml(x.id)}</option>`).join('');
+  const groups = state.groupCatalog.filter(x => x.id?.endsWith('@chatroom'));
+  select.innerHTML = groups.map(x => `<option value="${escapeHtml(x.id)}">${escapeHtml(groupSelectLabel(x))}</option>`).join('');
   if ([...select.options].some(x => x.value === old)) select.value = old;
   updateBlacklistCount();
 }
@@ -673,14 +688,20 @@ function renderGroupMembers() {
   const groupId = $('#memberBlacklistGroup')?.value || '';
   const query = ($('#memberBlacklistQuery')?.value || '').trim().toLowerCase();
   const rows = state.groupMemberCatalog[groupId] || [];
+  const meta = state.groupMemberCatalogMeta[groupId] || {};
   const ignored = currentBlacklistIds();
   const visible = rows.filter(x => !query || `${x.name || ''} ${x.nickname || ''} ${x.card || ''} ${x.user_id || ''}`.toLowerCase().includes(query));
-  $('#memberCatalogCount').textContent = rows.length ? `成员目录 ${rows.length} 人，当前显示 ${visible.length} 人` : '尚未拉取成员目录';
+  const declared = Number(meta.declared_member_count || 0), named = Number(meta.named_member_count || 0);
+  $('#memberCatalogCount').textContent = rows.length ? (declared ? `已识别 ${rows.length} / 群总人数约 ${declared} · 有名称 ${named} · 当前显示 ${visible.length}` : `历史已识别 ${rows.length} 人 · 有名称 ${named} · 当前显示 ${visible.length}`) : '尚未刷新成员目录';
   $('#memberBlacklistList').innerHTML = visible.length ? visible.map(item => {
-    const sources = (item.sources || []).map(x => x === 'onebot_live' ? '微信实时' : x === 'permanent_memory' ? '永久记忆' : '已保存').join(' + ');
+    const sourceLabels = { onebot_live: '微信实时', message_history: '真实消息', quoted_history: '引用原话', permanent_memory: '永久记忆', saved_blacklist: '已保存' };
+    const sources = (item.sources || []).map(x => sourceLabels[x] || x).join(' + ');
     const detail = [item.card && `群昵称 ${item.card}`, item.nickname && `昵称 ${item.nickname}`, item.message_count ? `已记录 ${item.message_count} 条消息` : ''].filter(Boolean).join(' · ');
-    return `<label class="member-blacklist-row"><input type="checkbox" data-member-id="${escapeHtml(item.user_id)}" ${ignored.has(String(item.user_id)) ? 'checked' : ''}><span class="member-avatar">${escapeHtml((item.name || '群').slice(0, 1))}</span><span class="member-identity"><strong>${escapeHtml(item.name || '群友')}</strong><small>${escapeHtml(detail || '暂无可读群昵称')}</small><code>${escapeHtml(item.user_id)}</code></span><span class="member-source">${escapeHtml(sources || '成员目录')}</span></label>`;
-  }).join('') : `<div class="terminal-empty">${rows.length ? '没有匹配的成员' : '暂无成员数据，请点击“完整拉取成员”'}</div>`;
+    const readable = item.name && item.name !== '群友';
+    const fallback = `未识别成员 · ${String(item.user_id || '').slice(-6)}`;
+    const name = readable ? item.name : fallback;
+    return `<label class="member-blacklist-row"><input type="checkbox" data-member-id="${escapeHtml(item.user_id)}" ${ignored.has(String(item.user_id)) ? 'checked' : ''}><span class="member-avatar">${escapeHtml((name || '群').slice(0, 1))}</span><span class="member-identity"><strong>${escapeHtml(name)}</strong><small>${escapeHtml(detail || '暂无可读群昵称')}</small><code title="微信内部成员 ID">${escapeHtml(item.user_id)}</code></span><span class="member-source">${escapeHtml(sources || '成员目录')}</span></label>`;
+  }).join('') : `<div class="terminal-empty">${rows.length ? '没有匹配的成员' : '暂无成员数据，请点击“刷新成员目录”'}</div>`;
   $$('[data-member-id]', $('#memberBlacklistList')).forEach(box => box.onchange = () => {
     const ids = currentBlacklistIds();
     if (box.checked) ids.add(box.dataset.memberId); else ids.delete(box.dataset.memberId);
@@ -700,10 +721,11 @@ async function loadGroupMembers(button = null, silent = false) {
   try {
     const data = await api(`/api/groups/members?group_id=${encodeURIComponent(groupId)}`);
     state.groupMemberCatalog[groupId] = data.items || [];
+    state.groupMemberCatalogMeta[groupId] = data;
     state.ignoredGroupMembers[groupId] = [...new Set((data.ignored_ids || []).map(String))];
     renderGroupMembers();
-    const live = Number(data.source_counts?.onebot_live || 0), memory = Number(data.source_counts?.permanent_memory || 0);
-    $('#memberBlacklistState').textContent = `已拉取 ${data.count} 名成员 · 实时 ${live} · 永久记忆 ${memory}`;
+    const live = Number(data.source_counts?.onebot_live || 0), history = Number(data.source_counts?.message_history || 0), quoted = Number(data.source_counts?.quoted_history || 0);
+    $('#memberBlacklistState').textContent = data.onebot_complete ? `完整名册 ${data.count} 人 · 实时生效` : `历史已识别 ${data.count} 人 · 实时 ${live} · 发言 ${history} · 引用补全 ${quoted}`;
     if (data.onebot_error && !silent) toast(`微信实时目录暂不可用，已显示全部永久记忆成员：${data.onebot_error}`, 'error', 7000);
   } catch (e) {
     $('#memberBlacklistState').textContent = '成员拉取失败';

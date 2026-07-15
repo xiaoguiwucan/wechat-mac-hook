@@ -355,7 +355,7 @@
             <div class="route-table-wrap"><div class="route-head permission-head"><span>AI 权限</span><span>群聊名称</span><span>群 ID</span><span>发现状态</span></div><div id="groupList" class="group-list permission-list"></div></div>
           </div>
           <div class="panel member-blacklist-panel">
-            <div class="panel-head"><div><h2>群成员对话黑名单</h2><p>屏蔽其他机器人或指定成员，消息仍保存但不进入评分与回复</p></div><div class="bar-actions"><button type="button" class="btn subtle" id="refreshGroupMembersBtn">完整拉取成员</button><button type="button" class="btn primary" id="saveGroupBlacklistBtn">保存并立即生效</button></div></div>
+            <div class="panel-head"><div><h2>群成员目录与对话黑名单</h2><p>优先显示真实群昵称，合并微信实时事件、全部历史发言和引用原话；勾选后可屏蔽其他机器人</p></div><div class="bar-actions"><button type="button" class="btn subtle" id="refreshGroupMembersBtn">刷新成员目录</button><button type="button" class="btn primary" id="saveGroupBlacklistBtn">保存并立即生效</button></div></div>
             <div class="panel-body member-blacklist-body">
               <div class="member-blacklist-toolbar">
                 <div class="field"><label for="memberBlacklistGroup">选择群聊</label><select id="memberBlacklistGroup"></select></div>
@@ -363,7 +363,7 @@
                 <span id="memberBlacklistState" class="save-state">选择群后拉取成员</span>
               </div>
               <div class="member-blacklist-summary"><strong id="memberBlacklistCount">0</strong><span>人已屏蔽</span><small id="memberCatalogCount">尚未拉取成员目录</small></div>
-              <div id="memberBlacklistList" class="member-blacklist-list"><div class="terminal-empty">选择群聊并点击“完整拉取成员”</div></div>
+              <div id="memberBlacklistList" class="member-blacklist-list"><div class="terminal-empty">选择群聊并点击“刷新成员目录”</div></div>
             </div>
           </div>
           <div class="panel rules-panel">

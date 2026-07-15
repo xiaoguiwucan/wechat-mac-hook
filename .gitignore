@@ -38,6 +38,7 @@ bin/
 # Generated media / local verification artifacts
 artifacts/
 outputs/
+/backups/
 
 # Runtime OneBot extracted assets
 external/

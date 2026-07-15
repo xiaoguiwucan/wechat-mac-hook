@@ -8,6 +8,7 @@ import base64
 import collections
 import ctypes
 import hashlib
+import html
 import json
 import mimetypes
 import os
@@ -1436,10 +1437,64 @@ def test_all_channels() -> Dict[str, Any]:
     return {"results": results, "healthy": sum(x["status"] == "healthy" for x in results), "total": len(results)}
 
 
+def readable_group_name(value: Any, group_id: str) -> str:
+    name = str(value or "").strip()
+    return name if name and name != group_id and not name.endswith("@chatroom") else ""
+
+
+def member_id_is_real(value: Any, group_id: str = "") -> bool:
+    user_id = str(value or "").strip()
+    if not user_id or user_id == group_id or user_id.endswith("@chatroom"):
+        return False
+    if user_id.lower() in {"ai", "onebot-log", "web-admin-test-user", "voice-test-user", "voice-fix-test-user"}:
+        return False
+    return bool(re.fullmatch(r"[A-Za-z0-9_@.\-]{3,100}", user_id))
+
+
+def quoted_member_pairs(value: Any, group_id: str = "") -> Dict[str, str]:
+    """Extract real wxid/name pairs retained by WeChat quoted-message XML."""
+    text = str(value or "")
+    variants = [text]
+    for _ in range(3):
+        decoded = html.unescape(variants[-1])
+        if decoded == variants[-1]:
+            break
+        variants.append(decoded)
+    found: Dict[str, str] = {}
+    for source in variants:
+        blocks = re.findall(r"<refermsg\b[^>]*>(.*?)</refermsg>", source, flags=re.I | re.S)
+        for block in blocks:
+            user_match = re.search(r"<chatusr>([^<]{2,120})</chatusr>", block, flags=re.I)
+            if not user_match:
+                user_match = re.search(r"<fromusr>([^<]{2,120})</fromusr>", block, flags=re.I)
+            name_match = re.search(r"<displayname>([^<]{1,120})</displayname>", block, flags=re.I)
+            if not user_match or not name_match:
+                continue
+            user_id = html.unescape(user_match.group(1)).strip()
+            name = html.unescape(name_match.group(1)).strip()
+            if member_id_is_real(user_id, group_id) and name and name != user_id and not name.endswith("@chatroom"):
+                found[user_id] = name[:120]
+    return found
+
+
+def declared_member_count(values: Iterable[Any]) -> int:
+    """Return the newest credible membercount retained in msgsource/XML."""
+    for value in values:
+        text = html.unescape(str(value or ""))
+        match = re.search(r"<membercount>\s*(\d{1,5})\s*</membercount>", text, flags=re.I)
+        if match:
+            count = int(match.group(1))
+            if 1 <= count <= 20000:
+                return count
+    return 0
+
+
 def discover_groups() -> Dict[str, Any]:
     cfg = read_config()
-    aliases = {str(k): str(v) for k, v in (cfg.get("group_aliases") or {}).items() if str(k).endswith("@chatroom") and str(v).strip()}
-    selected = {str(x["id"]): str(x.get("name") or aliases.get(str(x["id"])) or x["id"]) for x in cfg.get("target_groups", []) if isinstance(x, dict) and x.get("id")}
+    aliases = {str(k): str(v) for k, v in (cfg.get("group_aliases") or {}).items()
+               if str(k).endswith("@chatroom") and readable_group_name(v, str(k))}
+    selected = {str(x["id"]): readable_group_name(x.get("name") or aliases.get(str(x["id"])), str(x["id"])) or str(x["id"])
+                for x in cfg.get("target_groups", []) if isinstance(x, dict) and x.get("id")}
     groups: Dict[str, Dict[str, Any]] = {
         gid: {"id": gid, "name": aliases.get(gid, name), "selected": True, "last_seen": "", "source": "alias" if aliases.get(gid) else "config", "confidence": 95 if aliases.get(gid) else 85}
         for gid, name in selected.items()
@@ -1504,7 +1559,40 @@ def discover_groups() -> Dict[str, Any]:
         except OSError:
             pass
 
-    result = sorted(groups.values(), key=lambda x: (not x["selected"], x["name"] == x["id"], x["name"].lower()))
+    memory_stats: Dict[str, Dict[str, int]] = {}
+    try:
+        with MEMORY.connect() as db:
+            self_row = db.execute(
+                """SELECT json_extract(raw_json,'$.self_id') AS self_id FROM messages
+                   WHERE COALESCE(json_extract(raw_json,'$.self_id'),'') LIKE 'wxid_%'
+                   ORDER BY event_time DESC,rowid DESC LIMIT 1"""
+            ).fetchone()
+            current_self_id = str(self_row["self_id"] or "") if self_row else ""
+            for row in db.execute(
+                """SELECT g.group_id,
+                          (SELECT COUNT(*) FROM messages m WHERE m.group_id=g.group_id) AS message_count,
+                          (SELECT COUNT(DISTINCT m2.user_id) FROM messages m2 WHERE m2.group_id=g.group_id
+                             AND json_extract(m2.raw_json,'$.self_id')=?
+                             AND m2.user_id!=g.group_id AND m2.user_id NOT IN ('AI','onebot-log')
+                             AND (COALESCE(json_extract(m2.raw_json,'$.msgsource'),'')!=''
+                                  OR (m2.message_id!='' AND m2.message_id NOT GLOB '*[^0-9]*'))) AS observed_members
+                   FROM groups g""",
+                (current_self_id,),
+            ).fetchall():
+                memory_stats[str(row["group_id"])] = {
+                    "message_count": int(row["message_count"] or 0),
+                    "observed_members": int(row["observed_members"] or 0),
+                }
+    except Exception:
+        pass
+    for item in groups.values():
+        stats = memory_stats.get(str(item["id"]), {})
+        item.update(stats)
+        item["known_name"] = bool(readable_group_name(item.get("name"), str(item["id"])))
+    # A raw ID found only in an old OneBot log is not a trustworthy live group.
+    groups = {gid: item for gid, item in groups.items()
+              if item.get("selected") or item.get("known_name") or int(item.get("message_count") or 0) > 0}
+    result = sorted(groups.values(), key=lambda x: (not x["selected"], not x.get("known_name"), str(x["name"]).lower()))
     return {"groups": result, "count": len(result), "selected_count": sum(x["selected"] for x in result)}
 
 
@@ -1515,7 +1603,7 @@ def group_members_catalog(group_id: str) -> Dict[str, Any]:
     cfg = json_read(CONFIG_PATH, {})
     ignored = set(str(x) for x in (cfg.get("ignored_group_members", {}) or {}).get(group_id, []))
     merged: Dict[str, Dict[str, Any]] = {}
-    source_counts: Dict[str, int] = collections.defaultdict(int)
+    source_members: Dict[str, set[str]] = collections.defaultdict(set)
 
     def readable_name(value: Any, user_id: str) -> str:
         name = str(value or "").strip()
@@ -1549,7 +1637,7 @@ def group_members_catalog(group_id: str) -> Dict[str, Any]:
                 "last_seen": str(item.get("last_seen") or ""), "sources": [source],
                 "ignored": user_id in ignored,
             }
-        source_counts[source] += 1
+        source_members[source].add(user_id)
 
     onebot_error = ""
     onebot_complete = False
@@ -1610,23 +1698,39 @@ def group_members_catalog(group_id: str) -> Dict[str, Any]:
         except Exception:
             pass
     genuine_memory_ids: set[str] = set()
+    history_rows: List[Dict[str, Any]] = []
     if onebot_self_id:
         try:
             with MEMORY.connect() as db:
-                genuine_memory_ids = {
-                    str(row["user_id"] or "") for row in db.execute(
-                        """SELECT DISTINCT user_id FROM messages
+                history_rows = [dict(row) for row in db.execute(
+                        """SELECT user_id,sender_name,raw_message,text,raw_json,event_time FROM messages
                            WHERE group_id=? AND json_extract(raw_json,'$.self_id')=?
                              AND (COALESCE(json_extract(raw_json,'$.msgsource'),'')!=''
                                   OR (message_id!='' AND message_id NOT GLOB '*[^0-9]*'))""",
                         (group_id, onebot_self_id),
-                    ).fetchall() if str(row["user_id"] or "")
-                }
+                    ).fetchall()]
+                genuine_memory_ids = {str(row.get("user_id") or "") for row in history_rows
+                                      if member_id_is_real(row.get("user_id"), group_id)}
         except Exception:
             genuine_memory_ids = set()
+            history_rows = []
+
+    # Rebuild the observed directory from every genuine message, then recover
+    # quoted senders whose display names are embedded in WeChat's XML.
+    quoted_members: Dict[str, str] = {}
+    for row in history_rows:
+        user_id = str(row.get("user_id") or "").strip()
+        if member_id_is_real(user_id, group_id):
+            remember({"user_id": user_id, "display_name": row.get("sender_name") or ""}, "message_history")
+        for field in (row.get("raw_message"), row.get("text"), row.get("raw_json")):
+            quoted_members.update(quoted_member_pairs(field, group_id))
+    for user_id, name in quoted_members.items():
+        MEMORY.upsert_directory_member(group_id, user_id, name, name, "")
+        remember({"user_id": user_id, "display_name": name, "nickname": name}, "quoted_history")
+
     for item in MEMORY.members(group_id, 1000):
         user_id = str(item.get("user_id") or "")
-        if user_id in genuine_memory_ids or user_id in ignored:
+        if user_id in genuine_memory_ids or user_id in quoted_members or user_id in ignored:
             remember(item, "permanent_memory")
     for user_id in ignored:
         if user_id not in merged:
@@ -1639,10 +1743,20 @@ def group_members_catalog(group_id: str) -> Dict[str, Any]:
     rows = sorted(merged.values(), key=lambda x: (
         not x["ignored"], x["name"] == "群友", -int(x.get("message_count") or 0), x["name"].lower(), x["user_id"]
     ))
+    latest_member_count = declared_member_count(
+        value for row in sorted(history_rows, key=lambda x: int(x.get("event_time") or 0), reverse=True)
+        for value in (row.get("raw_json"), row.get("raw_message"), row.get("text"))
+    )
+    named_count = sum(1 for item in rows if item.get("name") != "群友")
+    observed_count = len(rows)
+    coverage = round(observed_count * 100 / latest_member_count, 1) if latest_member_count else None
     return {
         "group_id": group_id, "items": rows, "count": len(rows), "ignored_ids": sorted(ignored),
-        "source_counts": dict(source_counts), "onebot_complete": onebot_complete,
+        "source_counts": {key: len(value) for key, value in source_members.items()}, "onebot_complete": onebot_complete,
         "onebot_error": onebot_error,
+        "catalog_mode": "complete" if onebot_complete else "observed",
+        "declared_member_count": latest_member_count, "observed_member_count": observed_count,
+        "named_member_count": named_count, "coverage_percent": coverage,
     }
 
 
@@ -1693,6 +1807,14 @@ def save_group_aliases(data: Dict[str, Any]) -> Dict[str, Any]:
         else:
             clean.pop(gid, None)
     current["group_aliases"] = clean
+    target_groups = current.get("target_groups") if isinstance(current.get("target_groups"), list) else []
+    for item in target_groups:
+        if not isinstance(item, dict):
+            continue
+        gid = str(item.get("id") or "").strip()
+        if gid in clean:
+            item["name"] = clean[gid]
+    current["target_groups"] = target_groups
     atomic_write(CONFIG_PATH, json.dumps(current, ensure_ascii=False, indent=2) + "\n")
     return discover_groups()
 
