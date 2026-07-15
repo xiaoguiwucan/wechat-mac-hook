@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import html
 import math
 import re
 import sqlite3
@@ -75,9 +76,11 @@ def voice_search_text(value: Any) -> str:
 def is_readable_member_name(value: Any, user_id: str = "") -> bool:
     name = str(value or "").strip()
     lowered = name.lower()
+    placeholders = {"群友", "群成员", "未知成员", "未知发送者", "unknown", "member"}
     return bool(
         name
         and name != str(user_id or "").strip()
+        and lowered not in placeholders
         and not lowered.startswith("wxid_")
         and not lowered.endswith("@chatroom")
     )
@@ -629,6 +632,25 @@ class MemoryStore:
                 (user_id, group_id, display_name or nickname or card or user_id, nickname, card, ts, ts),
             )
 
+    def upsert_directory_member(self, group_id: str, user_id: str, display_name: str = "", nickname: str = "", card: str = "") -> None:
+        """Merge a contact-directory row without pretending it is a new message."""
+        if not group_id or not user_id:
+            return
+        ts = now_ts()
+        with self.connect() as db:
+            db.execute(
+                """
+                INSERT INTO members(user_id,group_id,display_name,nickname,card,message_count,last_seen,updated_at)
+                VALUES(?,?,?,?,?,0,'',?)
+                ON CONFLICT(user_id,group_id) DO UPDATE SET
+                  display_name=CASE WHEN excluded.display_name!='' THEN excluded.display_name ELSE members.display_name END,
+                  nickname=CASE WHEN excluded.nickname!='' THEN excluded.nickname ELSE members.nickname END,
+                  card=CASE WHEN excluded.card!='' THEN excluded.card ELSE members.card END,
+                  updated_at=excluded.updated_at
+                """,
+                (user_id, group_id, display_name or nickname or card or user_id, nickname, card, ts),
+            )
+
     def add_message(self, item: Dict[str, Any]) -> bool:
         group_id = str(item.get("group_id") or "")
         if not group_id:
@@ -920,7 +942,51 @@ class MemoryStore:
                 """,
                 (user_id, group_id),
             ).fetchall()
-        for row in rows:
+        # A member may use a different nickname in every group. Prefer only the
+        # current group's row before inspecting local quoted-message evidence.
+        for row in (item for item in rows if item["group_id"] == group_id):
+            for key in ("card", "display_name", "nickname"):
+                if is_readable_member_name(row[key], user_id):
+                    return str(row[key]).strip()
+        # Quoted group messages preserve the pair <chatusr>/<displayname> even when
+        # OneBot only reported an internal wxid for the original sender. Recover
+        # that evidence before falling back to a generic label.
+        patterns = (f"%<chatusr>{user_id}</chatusr>%", f"%&lt;chatusr&gt;{user_id}&lt;/chatusr&gt;%")
+        with self.connect() as db:
+            evidence_rows = db.execute(
+                """SELECT raw_message,text FROM messages
+                   WHERE group_id=? AND (raw_message LIKE ? OR raw_message LIKE ? OR text LIKE ? OR text LIKE ?)
+                   ORDER BY event_time DESC,created_at DESC LIMIT 80""",
+                (group_id, patterns[0], patterns[1], patterns[0], patterns[1]),
+            ).fetchall()
+        for evidence in evidence_rows:
+            source = "\n".join(str(evidence[key] or "") for key in ("raw_message", "text"))
+            variants = [source]
+            for _ in range(2):
+                decoded = html.unescape(variants[-1])
+                if decoded == variants[-1]:
+                    break
+                variants.append(decoded)
+            for value in variants:
+                for block in re.findall(r"<refermsg\b[^>]*>(.*?)</refermsg>", value, re.I | re.S):
+                    uid_match = re.search(r"<chatusr>(.*?)</chatusr>", block, re.I | re.S)
+                    name_match = re.search(r"<displayname>(.*?)</displayname>", block, re.I | re.S)
+                    if not uid_match or not name_match or html.unescape(uid_match.group(1)).strip() != user_id:
+                        continue
+                    recovered = html.unescape(name_match.group(1)).strip()
+                    if not is_readable_member_name(recovered, user_id):
+                        continue
+                    with self.connect() as db:
+                        db.execute(
+                            """UPDATE members SET display_name=?,updated_at=?
+                               WHERE group_id=? AND user_id=?""",
+                            (recovered, now_ts(), group_id, user_id),
+                        )
+                    return recovered
+        # Cross-group identity is the last safe fallback. It is useful when a
+        # group has no nickname evidence yet, but must never override a nickname
+        # observed in the current group.
+        for row in (item for item in rows if item["group_id"] != group_id):
             for key in ("card", "display_name", "nickname"):
                 if is_readable_member_name(row[key], user_id):
                     return str(row[key]).strip()

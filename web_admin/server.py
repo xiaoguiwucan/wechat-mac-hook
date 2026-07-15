@@ -1287,6 +1287,20 @@ def group_members_catalog(group_id: str) -> Dict[str, Any]:
                 if isinstance(item, dict):
                     remember(item, "onebot_live")
             onebot_complete = bool(payload.get("complete", False))
+            if onebot_complete:
+                for item in onebot_rows:
+                    if not isinstance(item, dict):
+                        continue
+                    user_id = str(item.get("user_id") or item.get("id") or "").strip()
+                    if not user_id or user_id.endswith("@chatroom"):
+                        continue
+                    MEMORY.upsert_directory_member(
+                        group_id,
+                        user_id,
+                        readable_name(item.get("display_name") or item.get("name"), user_id),
+                        readable_name(item.get("nickname"), user_id),
+                        readable_name(item.get("card"), user_id),
+                    )
         else:
             onebot_error = f"OneBot HTTP {code}"
     except Exception as exc:

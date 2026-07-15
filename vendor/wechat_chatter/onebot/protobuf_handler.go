@@ -186,11 +186,7 @@ func buildWechatMessageJSON(data *wxproto.WxRecvMsgData) ([]byte, error) {
 		msgType = "group"
 		groupId = sender
 
-		splitIndex := strings.Index(content, ":")
-		sendUserStart := strings.Index(content, "wxid_")
-		if sendUserStart >= 0 && splitIndex > sendUserStart {
-			senderUser = strings.TrimSpace(content[sendUserStart:splitIndex])
-		}
+		senderUser = extractGroupSenderUser(content, senderUser)
 
 		atUserMatch := regexp.MustCompile(`<atuserlist>([\s\S]*?)</atuserlist>`).FindStringSubmatch(xmlStr)
 		if len(atUserMatch) > 1 {

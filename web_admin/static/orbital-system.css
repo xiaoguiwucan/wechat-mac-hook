@@ -822,3 +822,178 @@ body #page-memory .memory-stats>code{grid-column:1/-1;min-height:32px;padding:9p
   body #page-voices .voice-list-actions{grid-template-columns:repeat(3,minmax(0,1fr))}
   body #page-voices .voice-list-actions .voice-delete{grid-column:auto}
 }
+
+/* ========================================================================== */
+/* Polar daylight theme — one coherent light-mode visual system.              */
+/* ========================================================================== */
+html[data-theme="light"]{
+  --orb-base:#e9f0f8;
+  --orb-base-2:#e2ecf6;
+  --orb-rail:#e4edf7;
+  --orb-sidebar:#edf4fb;
+  --orb-panel:#f8fbff;
+  --orb-panel-2:#eef5fb;
+  --orb-panel-3:#e3edf7;
+  --orb-hover:#dceafb;
+  --orb-line:#b9ccdf;
+  --orb-line-strong:#8faac5;
+  --orb-text:#10253e;
+  --orb-muted:#405e79;
+  --orb-dim:#687f96;
+  --orb-blue:#1764d8;
+  --orb-cyan:#087ca6;
+  --orb-mint:#0b8665;
+  --orb-violet:#6949c6;
+  --orb-amber:#a9630a;
+  --orb-red:#ca3d55;
+  --orb-blue-soft:#dce9fb;
+  --orb-mint-soft:#d9f0e8;
+  --orb-violet-soft:#e9e2f8;
+  --orb-red-soft:#f9e2e6;
+  --orb-shadow:0 20px 48px rgba(46,79,116,.13);
+  --orb-shadow-soft:0 7px 20px rgba(46,79,116,.085);
+  --base:var(--orb-base);
+  --surface:var(--orb-panel);
+  --surface-2:var(--orb-panel-2);
+  --surface-3:var(--orb-panel-3);
+  --surface-hover:var(--orb-hover);
+  --line:var(--orb-line);
+  --line-strong:var(--orb-line-strong);
+  --text:var(--orb-text);
+  --muted:var(--orb-muted);
+  --dim:var(--orb-dim);
+  --blue:var(--orb-blue);
+  --green:var(--orb-mint);
+  --violet:var(--orb-violet);
+  --amber:var(--orb-amber);
+  --red:var(--orb-red);
+  --blue-soft:var(--orb-blue-soft);
+  --green-soft:var(--orb-mint-soft);
+  --input:#f9fcff;
+  --rail:var(--orb-rail);
+  --sidebar:var(--orb-sidebar);
+  --topbar:rgba(238,245,251,.94);
+  --shadow:var(--orb-shadow);
+  --shadow-soft:var(--orb-shadow-soft);
+}
+
+html[data-theme="light"] body{background:radial-gradient(circle at 76% 0,rgba(171,205,237,.24),transparent 34%),linear-gradient(180deg,#edf4fa 0,#e8f0f8 100%)!important}
+html[data-theme="light"] body:before{opacity:.045;filter:saturate(.55) contrast(.72);mix-blend-mode:multiply}
+html[data-theme="light"] .app-shell,html[data-theme="light"] .main{background:transparent!important}
+html[data-theme="light"] .content{background:transparent!important}
+html[data-theme="light"] .workspace-rail{background:linear-gradient(180deg,#eaf2f9,#dfeaf5)!important;box-shadow:8px 0 28px rgba(53,82,113,.08)!important}
+html[data-theme="light"] .context-sidebar{background:rgba(238,245,251,.96)!important;box-shadow:8px 0 26px rgba(53,82,113,.08)!important;backdrop-filter:blur(18px)}
+html[data-theme="light"] .topbar{background:rgba(238,245,251,.90)!important;box-shadow:0 8px 26px rgba(53,82,113,.06);backdrop-filter:blur(20px)}
+html[data-theme="light"] .rail-brand{background:transparent!important}
+html[data-theme="light"] .workspace-item.active,html[data-theme="light"] .context-sidebar .nav-item.active{border-color:rgba(23,100,216,.25)!important;background:rgba(211,228,247,.92)!important;color:var(--orb-blue)!important;box-shadow:inset 0 0 22px rgba(23,100,216,.06)}
+html[data-theme="light"] .theme-switch,html[data-theme="light"] .global-command{border-color:#adc3d8;background:rgba(248,252,255,.82)}
+
+html[data-theme="light"] .panel,html[data-theme="light"] .status-card,html[data-theme="light"] .connection-strip,html[data-theme="light"] .media-card,html[data-theme="light"] .voice-card,html[data-theme="light"] .reply-task,html[data-theme="light"] .memory-row{border-color:var(--orb-line)!important;background:rgba(248,251,255,.94)!important;box-shadow:var(--orb-shadow-soft)!important}
+html[data-theme="light"] .panel-head[data-orbit-panel],html[data-theme="light"] .panel-head{background:linear-gradient(180deg,rgba(247,251,255,.98),rgba(234,243,251,.92))!important}
+html[data-theme="light"] .panel-head[data-orbit-panel]:before{border-color:rgba(23,100,216,.30);background:#dce9f8;color:var(--orb-blue);box-shadow:none}
+html[data-theme="light"] .page:not(#page-brain) .panel[data-orbit-panel]{border-color:#abc0d5!important;box-shadow:0 10px 28px rgba(46,79,116,.08)!important}
+html[data-theme="light"] .page:not(#page-brain) .panel[data-orbit-panel]:hover{border-color:#7196ba!important;box-shadow:0 13px 32px rgba(46,79,116,.12)!important}
+html[data-theme="light"] input:not([type="checkbox"]):not([type="range"]),html[data-theme="light"] select,html[data-theme="light"] textarea{border-color:#b7cade!important;background:rgba(249,252,255,.92)!important;color:var(--orb-text)!important}
+html[data-theme="light"] .toggle-row,html[data-theme="light"] .compact-toggle,html[data-theme="light"] [data-orbit-field],html[data-theme="light"] [data-orbit-toggle]{background:rgba(236,244,251,.88)!important}
+
+html[data-theme="light"] .orbital-page-banner{
+  border-color:#8faecb!important;
+  background-color:#dce9f5!important;
+  background-image:linear-gradient(108deg,rgba(248,252,255,.96),rgba(222,235,248,.88)),url('/static/assets/orbital-neural-field.png')!important;
+  background-position:center!important;
+  background-size:cover!important;
+  background-blend-mode:normal,soft-light!important;
+  color:var(--orb-text)!important;
+  box-shadow:0 16px 38px rgba(46,79,116,.14),inset 0 1px rgba(255,255,255,.9)!important;
+}
+html[data-theme="light"] .orbital-banner-copy{border-color:rgba(105,139,173,.28)!important;background:rgba(242,248,253,.78)!important;backdrop-filter:blur(10px)}
+html[data-theme="light"] .orbital-banner-heading h2{color:#102944!important}
+html[data-theme="light"] .orbital-banner-heading p{color:#4e6982!important}
+html[data-theme="light"] .orbital-banner-copy>b{color:#5c748b!important}
+html[data-theme="light"] .orbital-signal-track{background:rgba(207,224,241,.26)!important}
+html[data-theme="light"] .orbital-signal-track article{border-color:rgba(93,128,163,.36)!important;background:rgba(246,250,254,.78)!important;box-shadow:0 8px 22px rgba(57,91,126,.09)!important}
+html[data-theme="light"] .orbital-signal-track article:hover{border-color:var(--module-accent)!important;box-shadow:0 0 0 3px color-mix(in srgb,var(--module-accent) 9%,transparent),0 10px 26px rgba(57,91,126,.13)!important}
+html[data-theme="light"] .orbital-signal-track span{color:#526c84!important}
+html[data-theme="light"] .orbital-signal-track strong{color:#142b46!important}
+html[data-theme="light"] .orbital-signal-track small{color:#70859a!important}
+html[data-theme="light"] .orbital-page-banner footer{border-color:rgba(105,139,173,.26)!important;background:rgba(214,229,244,.74)!important;color:#61798f!important}
+html[data-theme="light"] .orbit-section-map{border-color:#a9bfd5;background:rgba(242,248,253,.90);box-shadow:0 7px 18px rgba(46,79,116,.07)}
+html[data-theme="light"] .orbit-section-map:after{opacity:.055;filter:saturate(.55)}
+html[data-theme="light"] .orbit-section-map button.active{border-color:rgba(23,100,216,.30);background:#dce9f8;color:#155fbf}
+
+html[data-theme="light"] .orbit-main-grid{border-color:#8eabc7!important;background:#edf4fb!important;box-shadow:0 18px 42px rgba(46,79,116,.14)!important}
+html[data-theme="light"] .orbit-canvas{
+  border-color:#9bb4cd!important;
+  background-color:#dce9f5!important;
+  background-image:linear-gradient(rgba(233,243,252,.72),rgba(220,234,247,.68)),url('/static/assets/orbital-neural-field.png')!important;
+  background-blend-mode:normal,screen!important;
+  color:#102944!important;
+}
+html[data-theme="light"] .orbit-canvas:after{background:rgba(235,245,253,.06)}
+html[data-theme="light"] .orbit-canvas-head{border-color:rgba(100,134,168,.25);background:rgba(235,244,252,.88);color:#18324f}
+html[data-theme="light"] .orbit-legend span{color:#536e88}
+html[data-theme="light"] .orbit-query-card,html[data-theme="light"] .orbit-route,html[data-theme="light"] .orbit-core{border-color:rgba(56,104,154,.44);background:rgba(244,249,253,.86);box-shadow:0 10px 28px rgba(54,88,123,.13),inset 0 0 20px rgba(31,103,186,.035)}
+html[data-theme="light"] .orbit-query-card>span,html[data-theme="light"] .orbit-route small,html[data-theme="light"] .orbit-core small{color:#607991}
+html[data-theme="light"] .orbit-query-card p,html[data-theme="light"] .orbit-route span,html[data-theme="light"] .orbit-core span{color:#152f4b}
+html[data-theme="light"] .orbit-query-card b{color:#5b748d}
+html[data-theme="light"] .orbit-core strong{color:#1764d8}
+html[data-theme="light"] .orbit-route>b,html[data-theme="light"] .orbit-core>b{border-color:rgba(11,134,101,.25);background:#d9f0e8;color:#0a795c}
+html[data-theme="light"] .orbit-canvas-foot{border-color:rgba(80,117,154,.26);background:rgba(235,244,252,.90);color:#5e7690;box-shadow:0 5px 18px rgba(46,79,116,.10)}
+html[data-theme="light"] .orbit-canvas-foot b{color:#183b61}
+html[data-theme="light"] .orbit-inspector{background:#f4f9fd!important}
+
+html[data-theme="light"] #page-media .media-thumb,html[data-theme="light"] #page-faces .media-thumb,html[data-theme="light"] #page-personas .persona-graph{
+  background-color:#dfeaf5!important;
+  background-image:linear-gradient(rgba(237,246,253,.76),rgba(224,236,248,.72)),url('/static/assets/orbital-neural-field.png')!important;
+  background-blend-mode:normal,screen!important;
+  color:var(--orb-text)!important;
+}
+html[data-theme="light"] #page-personas .persona-graph line{stroke:#7895b1!important}
+html[data-theme="light"] #page-personas .persona-graph text{fill:#435f7a!important}
+html[data-theme="light"] #page-personas .persona-graph-center,html[data-theme="light"] #page-personas .persona-graph-node{border-color:#7697b7!important;background:#f5faff!important;color:#1764d8!important;box-shadow:0 7px 18px rgba(46,79,116,.14)}
+html[data-theme="light"] #page-voices .voice-list-head,html[data-theme="light"] #page-voice-records .voice-list-head{border-color:#a9bfd4!important;background:#dce8f4!important;background-image:none!important;color:#284a6c!important}
+html[data-theme="light"] .orbit-audio-player{border-color:#b4c8db;background:#e9f2fa}
+html[data-theme="light"] .orbit-audio-track{background:#c9d9e8}
+
+html[data-theme="light"] .dashboard-terminal,html[data-theme="light"] .full-terminal,html[data-theme="light"] .test-console{border-color:#8faac5!important;background:#f1f7fc!important;color:#1b3551!important;box-shadow:0 14px 34px rgba(46,79,116,.13)!important}
+html[data-theme="light"] .terminal-head,html[data-theme="light"] .mini-log-toolbar,html[data-theme="light"] .log-toolbar,html[data-theme="light"] .terminal-title,html[data-theme="light"] .console-head{border-color:#abc0d4!important;background:#e1ecf6!important;color:#18324f!important}
+html[data-theme="light"] #page-logs .terminal-title{background-image:linear-gradient(rgba(225,236,246,.86),rgba(225,236,246,.86)),url('/static/assets/orbital-neural-field.png')!important;background-blend-mode:normal,screen!important}
+html[data-theme="light"] .mini-log-output,html[data-theme="light"] .log-output,html[data-theme="light"] .console-body{background:#f5f9fd!important;color:#29445f!important}
+html[data-theme="light"] .mini-log-line,html[data-theme="light"] .log-line{border-color:transparent!important;color:#29445f!important}
+html[data-theme="light"] .mini-log-line:hover,html[data-theme="light"] .log-line:hover{border-color:#bed0e1!important;background:#e7f0f8!important}
+html[data-theme="light"] .mini-log-line .time,html[data-theme="light"] .log-line .time{color:#7890a6!important}
+html[data-theme="light"] .mini-log-toolbar button,html[data-theme="light"] .source-tabs button,html[data-theme="light"] .level-filters label{color:#566f87!important}
+html[data-theme="light"] .mini-log-toolbar button.active,html[data-theme="light"] .source-tabs button.active{background:#cddff0!important;color:#135ead!important}
+html[data-theme="light"] #page-logs .source-tabs{border-color:#a8bfd5;background:#edf4fa}
+html[data-theme="light"] #page-logs .log-search input{border-color:#a9bfd4!important;background:#f8fbfe!important;color:#17304b!important}
+html[data-theme="light"] .terminal-title strong,html[data-theme="light"] .console-head strong{color:#415d76!important}
+html[data-theme="light"] .console-entry{border-color:#c3d3e2;background:#f0f6fb}
+
+html[data-theme="light"] #page-memory .memory-stats{background:#c8d8e7!important}
+html[data-theme="light"] #page-memory .memory-stat-group{border-color:#a9bfd4;background:#c4d5e5}
+html[data-theme="light"] #page-memory .memory-stat-group>header{background:#dbe8f3;color:#155faa}
+html[data-theme="light"] #page-memory .memory-stat-group>div,html[data-theme="light"] #page-memory .memory-stats>code{background:#f6faff!important}
+html[data-theme="light"] .isolation-panel{border-color:#9ecdbd!important;background:#e1f2ec!important}
+html[data-theme="light"] .persona-analysis-callout{border-color:#9fbad4;background:linear-gradient(105deg,#e1edf8,#f7fbfe)}
+
+@media(prefers-reduced-motion:no-preference){
+  html[data-theme="light"] body,html[data-theme="light"] .topbar,html[data-theme="light"] .workspace-rail,html[data-theme="light"] .context-sidebar,html[data-theme="light"] .panel,html[data-theme="light"] .orbital-page-banner{transition:background-color .22s ease,border-color .22s ease,color .22s ease,box-shadow .22s ease}
+}
+
+/* Daylight detail pass: legibility, dense data and interaction affordances. */
+html[data-theme="light"]{--orb-dim:#536f89;--dim:var(--orb-dim)}
+html[data-theme="light"] .theme-switch button{width:34px;height:34px}
+html[data-theme="light"] .orbit-section-map button{min-height:34px}
+html[data-theme="light"] input::placeholder,html[data-theme="light"] textarea::placeholder{color:#6b8298;opacity:1}
+html[data-theme="light"] button:focus-visible,html[data-theme="light"] a:focus-visible,html[data-theme="light"] input:focus-visible,html[data-theme="light"] select:focus-visible,html[data-theme="light"] textarea:focus-visible{outline:2px solid rgba(23,100,216,.72);outline-offset:2px}
+html[data-theme="light"] #page-groups .group-permission-row code,html[data-theme="light"] #page-groups .discovery-source,html[data-theme="light"] #page-groups .save-state,html[data-theme="light"] #page-reply-tasks .task-meta span,html[data-theme="light"] #page-voices .voice-list-player small,html[data-theme="light"] .media-card small{color:#526d86!important}
+html[data-theme="light"] #page-personas .persona-list-main strong{color:#17324e}
+#page-reply-tasks .task-main>p{display:-webkit-box;overflow:hidden;white-space:normal;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow-wrap:anywhere;line-height:1.5}
+
+@media(max-width:620px){
+  body #page-groups .route-summary{grid-template-columns:repeat(2,minmax(0,1fr))!important}
+  body #page-groups .route-summary>div{min-height:82px;border-right:1px solid var(--orb-line);border-bottom:1px solid var(--orb-line)}
+  body #page-groups .route-summary>div:nth-child(even){border-right:0}
+  body #page-reply-tasks .reply-summary>div:last-child:nth-child(odd){grid-column:1/-1}
+  body #page-reply-tasks .reply-summary>div{min-height:72px!important}
+}

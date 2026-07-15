@@ -164,6 +164,29 @@ class BrainSystemTest(unittest.TestCase):
         self.assertEqual(self.store.resolve_member_name("group-large", user_id, user_id), "风")
         self.assertEqual(self.store.resolve_member_name("group-large", "wxid_unknown", "wxid_unknown"), "群友")
 
+    def test_member_name_resolution_recovers_quoted_display_name(self) -> None:
+        group_id = "18725461928@chatroom"
+        user_id = "wxid_8f3s1m3giuy022"
+        self.store.upsert_member(group_id, user_id, user_id, "群友")
+        self.store.upsert_member("another-group", user_id, "跨群昵称", "跨群昵称")
+        quoted = (
+            "<msg><appmsg><refermsg><chatusr>wxid_8f3s1m3giuy022</chatusr>"
+            "<displayname>粉嘟嘟.</displayname><content>历史消息</content>"
+            "</refermsg></appmsg></msg>"
+        )
+        self.store.add_message({
+            "event_id": "quoted-name", "direction": "incoming", "group_id": group_id,
+            "user_id": "other-member", "sender_name": "其他成员", "message_id": "quoted-name",
+            "event_time": time.time(), "text": "引用历史消息", "raw_message": quoted,
+        })
+        self.assertEqual(self.store.resolve_member_name(group_id, user_id, user_id), "粉嘟嘟.")
+        with self.store.connect() as db:
+            row = db.execute(
+                "SELECT display_name FROM members WHERE group_id=? AND user_id=?",
+                (group_id, user_id),
+            ).fetchone()
+        self.assertEqual(row["display_name"], "粉嘟嘟.")
+
     def test_parse_event_uses_known_human_name_for_internal_nickname(self) -> None:
         service = object.__new__(AIReplyService)
         service.store = self.store
@@ -178,6 +201,24 @@ class BrainSystemTest(unittest.TestCase):
         self.assertEqual(reason, "ok")
         self.assertIsNotNone(evt)
         self.assertEqual(evt.sender_name, "风")
+
+    def test_parse_event_repairs_chatroom_sender_from_raw_prefix(self) -> None:
+        service = object.__new__(AIReplyService)
+        service.store = self.store
+        group_id = "18725461928@chatroom"
+        service.cfg = SimpleNamespace(target_groups={group_id: "PT站看片狂魔小群"})
+        evt, reason = service.parse_event({
+            "post_type": "message", "message_type": "group", "group_id": group_id,
+            "user_id": group_id, "self_id": "bot", "message_id": "m-legacy-user",
+            "time": int(time.time()), "sender": {"user_id": group_id, "nickname": group_id},
+            "raw_message": "saarjoye:\n姆巴佩回家了？",
+            "message": [{"type": "text", "data": {"text": "姆巴佩回家了？"}}],
+        })
+        self.assertEqual(reason, "ok")
+        self.assertIsNotNone(evt)
+        self.assertEqual(evt.user_id, "saarjoye")
+        self.assertEqual(evt.sender_name, "群友")
+        self.assertFalse(evt.sender_name.endswith("@chatroom"))
 
     def test_model_face_marker_sends_only_media(self) -> None:
         service = object.__new__(AIReplyService)

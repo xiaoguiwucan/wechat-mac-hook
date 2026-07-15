@@ -381,7 +381,7 @@ function renderReplyTasks() {
     return !query || `${x.group_name} ${x.sender_name} ${x.thread_id} ${x.question}`.toLowerCase().includes(query);
   });
   $('#replyTaskList').innerHTML = rows.length ? rows.map(x => { const t = x.details?.timings_ms || {}, routes = x.details?.route_counts || {}; const routeText = Object.entries(routes).map(([k,v]) => `${k} ${v}`).join(' · '); return `<article class="reply-task state-${escapeHtml(x.state)}">
-    <div class="task-main"><span class="task-state">${escapeHtml(x.state_label || x.state)}</span><strong>${escapeHtml(x.group_name || x.group_id)} · ${escapeHtml(x.sender_name || x.user_id)}</strong><p>${escapeHtml(x.question || '')}</p><code>${escapeHtml(x.thread_id || '')}</code></div>
+    <div class="task-main"><span class="task-state">${escapeHtml(x.state_label || x.state)}</span><strong>${escapeHtml(x.group_name || x.group_id)} · ${escapeHtml(x.sender_name || x.user_id)}</strong><p title="${escapeHtml(x.question || '')}">${escapeHtml(x.question || '')}</p><code title="${escapeHtml(x.thread_id || '')}">${escapeHtml(x.thread_id || '')}</code></div>
     <div class="task-meta"><span>${x.queue_position ? `排队 ${x.queue_position}` : `${Number(x.elapsed_seconds || 0).toFixed(1)}s`}</span><span>${x.score == null ? '评分 --' : `评分 ${x.score} / ${x.threshold}`}</span><span>${escapeHtml(x.model || '等待模型')}</span><b>${escapeHtml(x.medium || '待选择媒介')}</b><span class="task-timing">向量 ${Number(t.embedding_and_recall || 0).toFixed(0)}ms · 结构 ${Number(t.structured_routes || 0).toFixed(0)}ms · 重排 ${Number(t.rerank || 0).toFixed(0)}ms · 生成 ${Number(t.generation || 0).toFixed(0)}ms${x.details?.expanded_second_batch ? ' · 已扩批' : ''}${routeText ? `<br>${escapeHtml(routeText)}` : ''}</span></div>
   </article>`; }).join('') : '<div class="terminal-empty">当前筛选条件下没有回复任务</div>';
 }
@@ -943,7 +943,8 @@ function renderPersonaMembers() {
     const name = item.display_name || item.card || item.nickname || item.user_id;
     const aliases = (item.aliases || []).join('、');
     const status = item.analysis_status || 'not_analyzed';
-    return `<button class="persona-member ${item.user_id === current ? 'active' : ''}" data-persona-user="${escapeHtml(item.user_id)}"><span class="persona-list-avatar">${escapeHtml(personaInitial(name))}</span><span class="persona-list-main"><strong>${escapeHtml(name)}</strong><small>${escapeHtml(aliases ? `外号：${aliases}` : item.user_id)}</small><em>${Number(item.message_count || 0).toLocaleString()} 条 · ${escapeHtml(item.last_seen || '尚无发言')}</em></span><span class="persona-list-state ${escapeHtml(status)}">${escapeHtml(personaStatusLabels[status] || status)}</span></button>`;
+    const memberTitle = `${name} · ${item.user_id}${aliases ? ` · 外号：${aliases}` : ''}`;
+    return `<button class="persona-member ${item.user_id === current ? 'active' : ''}" data-persona-user="${escapeHtml(item.user_id)}" title="${escapeHtml(memberTitle)}"><span class="persona-list-avatar">${escapeHtml(personaInitial(name))}</span><span class="persona-list-main"><strong title="${escapeHtml(name)}">${escapeHtml(name)}</strong><small title="${escapeHtml(aliases ? `外号：${aliases}` : item.user_id)}">${escapeHtml(aliases ? `外号：${aliases}` : item.user_id)}</small><em>${Number(item.message_count || 0).toLocaleString()} 条 · ${escapeHtml(item.last_seen || '尚无发言')}</em></span><span class="persona-list-state ${escapeHtml(status)}">${escapeHtml(personaStatusLabels[status] || status)}</span></button>`;
   }).join('') : '<div class="terminal-empty">当前筛选条件下没有成员</div>';
   $$('[data-persona-user]', $('#personaMemberList')).forEach(button => button.onclick = () => {
     state.persona.selectedUserId = button.dataset.personaUser;

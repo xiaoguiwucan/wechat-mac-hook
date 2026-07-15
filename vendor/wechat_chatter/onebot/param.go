@@ -133,6 +133,8 @@ type SendRequestData struct {
 	File         string         `json:"file,omitempty"`
 	URL          string         `json:"url,omitempty"`
 	QQ           string         `json:"qq,omitempty"`
+	UserID       string         `json:"user_id,omitempty"`
+	Name         string         `json:"name,omitempty"`
 	Media        []byte         `json:"media,omitempty"`
 	ReplyMessage *WechatMessage `json:"reply_message,omitempty"`
 }

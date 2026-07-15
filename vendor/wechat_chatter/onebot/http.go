@@ -84,9 +84,9 @@ func sendHandler(w http.ResponseWriter, r *http.Request) {
 			sendContent += v.Data.Text
 		} else if v.Type == "at" {
 			if req.GroupID != "" {
-				if nicknameInter, ok := userID2NicknameMap.Load(req.GroupID + "_" + v.Data.QQ); ok {
-					sendContent += fmt.Sprintf("@%s\u2005", nicknameInter.(string))
-					atUserID += v.Data.QQ + ","
+				if userID, displayName, ok := resolveMention(req.GroupID, v.Data); ok {
+					sendContent += fmt.Sprintf("@%s\u2005", displayName)
+					atUserID += userID + ","
 				}
 			}
 

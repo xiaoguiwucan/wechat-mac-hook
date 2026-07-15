@@ -44,7 +44,7 @@ EVENTS_PATH = DEFAULT_HOME / "logs" / "brain-events.jsonl"
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-from memory_store import MemoryStore  # noqa: E402
+from memory_store import MemoryStore, is_readable_member_name  # noqa: E402
 from brain_engine import BrainConfig, FINAL_STATES, OpportunityScorer, ReplyScheduler, ReplyTask, TaskRegistry  # noqa: E402
 from embedding_service import EmbeddingConfig, EmbeddingService  # noqa: E402
 
@@ -705,14 +705,21 @@ class AIReplyService:
             return None, "no_text"
 
         sender = raw.get("sender") or {}
-        user_id = str(raw.get("user_id") or sender.get("user_id") or "")
+        raw_message = str(raw.get("raw_message") or "")
+        user_id = str(raw.get("user_id") or sender.get("user_id") or "").strip()
+        # Some group protobuf events carry the chatroom id as user_id when the
+        # sender uses a legacy/non-wxid username. The raw prefix still contains
+        # the real account id (for example "saarjoye:\n...").
+        if not user_id or user_id.endswith("@chatroom"):
+            prefix = raw_message.split(":", 1)[0].strip() if ":" in raw_message else ""
+            if re.fullmatch(r"[A-Za-z0-9_.@-]{2,128}", prefix) and not prefix.endswith("@chatroom"):
+                user_id = prefix
         sender_name = self.store.resolve_member_name(
             group_id,
             user_id,
             str(sender.get("nickname") or sender.get("card") or ""),
         )
         message_id = str(raw.get("message_id") or "")
-        raw_message = str(raw.get("raw_message") or "")
         event_id_src = f"{group_id}|{message_id}|{raw.get('time')}|{text}|{','.join(media_types)}"
         event_id = hashlib.sha1(event_id_src.encode("utf-8", "ignore")).hexdigest()
         trace_id = "wx-" + hashlib.sha1((event_id_src + "|" + str(time.time_ns())).encode("utf-8", "ignore")).hexdigest()[:12]
@@ -2161,14 +2168,19 @@ class AIReplyService:
                                evt: Optional[OneBotEvent]) -> None:
         url = self.cfg.onebot_api.rstrip("/") + "/send_group_msg"
         message: List[Dict[str, Any]] = []
-        if evt and evt.user_id and evt.user_id != evt.self_id:
+        if (evt and evt.user_id and evt.user_id != evt.self_id
+                and not evt.user_id.endswith("@chatroom")):
             display_name = self.store.resolve_member_name(evt.group_id, evt.user_id, evt.sender_name)
-            message.append({"type": "at", "data": {
-                "qq": evt.user_id,
-                "user_id": evt.user_id,
-                "name": display_name,
-            }})
-            message.append({"type": "text", "data": {"text": " "}})
+            if is_readable_member_name(display_name, evt.user_id):
+                message.append({"type": "at", "data": {
+                    "qq": evt.user_id,
+                    "user_id": evt.user_id,
+                    "name": display_name,
+                }})
+                message.append({"type": "text", "data": {"text": " "}})
+            else:
+                log("warning", "mention_skipped_unresolved_name", group_id=evt.group_id,
+                    user_id=evt.user_id, trace_id=trace_id)
         message.append({"type": "text", "data": {"text": text}})
         payload = {
             "group_id": group_id,
