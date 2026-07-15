@@ -168,6 +168,7 @@
     "image_enabled": false,
     "texts": ["拍我干嘛～", "在呢，别拍了。"],
     "face_ids": [],
+    "bot_target_ids": [],
     "cooldown_seconds": 0
   },
   "vision_ocr": {

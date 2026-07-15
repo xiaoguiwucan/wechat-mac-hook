@@ -21,6 +21,17 @@ class PokeReplyTests(unittest.TestCase):
         raw["target_id"] = "someone_else"
         self.assertIsNone(self.service.parse_poke_event(raw))
 
+    def test_configured_bot_identity_survives_onebot_account_drift(self):
+        self.service.cfg.poke_reply.bot_target_ids = ["wxid_xiaofeng"]
+        raw = {"post_type": "notice", "notice_type": "notify", "sub_type": "poke",
+               "group_id": self.group, "self_id": "wxid_attached_account",
+               "target_id": "wxid_xiaofeng", "user_id": "member"}
+        event = self.service.parse_poke_event(raw)
+        self.assertIsNotNone(event)
+        self.assertEqual(event.self_id, "wxid_attached_account")
+        raw["target_id"] = "wxid_ordinary_member"
+        self.assertIsNone(self.service.parse_poke_event(raw))
+
     def test_zero_cooldown_keeps_consecutive_pokes(self):
         self.service.cfg.poke_reply.cooldown_seconds = 0
         base = {"post_type": "notice", "notice_type": "notify", "sub_type": "poke",
@@ -41,6 +52,25 @@ class PokeReplyTests(unittest.TestCase):
         self.assertEqual(first, (True, "poke_reply_queued"))
         self.assertEqual(second, (True, "poke_reply_queued"))
         self.assertEqual(len(started), 2)
+
+    def test_poke_reply_is_global_even_outside_ai_target_groups(self):
+        other_group = "654321@chatroom"
+        raw = {"post_type": "notice", "notice_type": "notify", "sub_type": "poke",
+               "group_id": other_group, "self_id": "bot", "target_id": "bot", "user_id": "member"}
+        started = []
+
+        class ImmediateThread:
+            def __init__(self, target, args, **_kwargs):
+                self.target = target
+                self.args = args
+
+            def start(self):
+                started.append(self.args[0].group_id)
+
+        with patch("ai_reply.ai_reply_server.threading.Thread", ImmediateThread):
+            result = self.service.enqueue_raw(raw)
+        self.assertEqual(result, (True, "poke_reply_queued"))
+        self.assertEqual(started, [other_group])
 
     def test_pat_xml_is_recognized_but_plain_text_is_not(self):
         base = {"post_type": "message", "message_type": "group", "group_id": self.group, "self_id": "bot"}

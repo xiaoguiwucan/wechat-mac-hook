@@ -262,6 +262,11 @@ class PokeReplyConfig:
     image_enabled: bool = False
     texts: List[str] = field(default_factory=lambda: ["拍我干嘛～", "在呢，别拍了。"])
     face_ids: List[int] = field(default_factory=list)
+    # Stable WeChat identities that represent the bot even when OneBot was
+    # attached to another saved account after an automatic login.  This is an
+    # explicit allowlist: arbitrary group members are never inferred as bot
+    # targets from their nickname, aliases or historical messages.
+    bot_target_ids: List[str] = field(default_factory=list)
     cooldown_seconds: int = 8
 
     @classmethod
@@ -270,9 +275,13 @@ class PokeReplyConfig:
         source_texts = value.get("texts") if "texts" in value else ["拍我干嘛～", "在呢，别拍了。"]
         texts = [str(x).strip()[:200] for x in (source_texts or []) if str(x).strip()]
         face_ids = list(dict.fromkeys(int(x) for x in (value.get("face_ids") or []) if str(x).isdigit() and int(x) > 0))
+        bot_target_ids = list(dict.fromkeys(
+            str(x).strip()[:128] for x in (value.get("bot_target_ids") or []) if str(x).strip()
+        ))
         return cls(enabled=bool(value.get("enabled", False)), text_enabled=bool(value.get("text_enabled", True)),
                    image_enabled=bool(value.get("image_enabled", False)), texts=texts,
-                   face_ids=face_ids[:100], cooldown_seconds=max(0, min(300, int(value.get("cooldown_seconds", 8)))))
+                   face_ids=face_ids[:100], bot_target_ids=bot_target_ids[:20],
+                   cooldown_seconds=max(0, min(300, int(value.get("cooldown_seconds", 8)))))
 
 
 @dataclass
@@ -596,8 +605,10 @@ class AIReplyService:
         if poke:
             if not self.cfg.poke_reply.enabled:
                 return False, "poke_reply_disabled"
-            if poke.group_id not in self.cfg.target_groups:
-                return False, "poke_group_not_enabled"
+            # Poke replies are a dedicated global feature.  The ordinary AI
+            # target-group ACL must not silently disable them in other groups;
+            # parse_poke_event has already verified that this is a group event
+            # and that a configured bot identity is the member being patted.
             now = time.time()
             with self.state_lock:
                 if now - self.poke_last_reply_at[poke.group_id] < self.cfg.poke_reply.cooldown_seconds:
@@ -670,11 +681,21 @@ class AIReplyService:
         group_id = str(raw.get("group_id") or raw.get("from_id") or "")
         self_id = str(raw.get("self_id") or "")
         target_id = str(raw.get("target_id") or raw.get("receiver_id") or pat_xml_value("pattedusername"))
-        # A pat event must positively identify this bot as the target. Older
-        # logic accepted target-less system XML and therefore replied when one
-        # group member patted another member.
-        if not group_id.endswith("@chatroom") or not self_id or target_id != self_id:
+        # A pat event must positively identify either the currently attached
+        # OneBot account or one of the explicitly configured bot identities.
+        # The latter keeps the bot responsive when WeChat's saved-account
+        # auto-login attaches OneBot to another local account, without
+        # reintroducing the old "pat any member and the bot replies" bug.
+        accepted_target_ids = {self_id, *self.cfg.poke_reply.bot_target_ids}
+        accepted_target_ids.discard("")
+        if not group_id.endswith("@chatroom") or not self_id or target_id not in accepted_target_ids:
+            if group_id.endswith("@chatroom") and target_id:
+                log("info", "poke_target_rejected", group_id=group_id, self_id=self_id,
+                    target_id=target_id, configured_target_count=len(self.cfg.poke_reply.bot_target_ids))
             return None
+        if target_id != self_id:
+            log("warning", "poke_bot_identity_fallback", group_id=group_id, self_id=self_id,
+                target_id=target_id, reason="onebot_account_differs_from_configured_bot_identity")
         user_id = str(raw.get("operator_id") or raw.get("user_id") or raw.get("sender_id") or "")
         if not user_id or user_id.endswith("@chatroom"):
             user_id = pat_xml_value("fromusername")

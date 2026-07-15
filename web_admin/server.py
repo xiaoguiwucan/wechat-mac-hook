@@ -394,6 +394,9 @@ def normalize_poke_reply_config(raw: Any) -> Dict[str, Any]:
     source_texts = value.get("texts") if "texts" in value else ["拍我干嘛～", "在呢，别拍了。"]
     texts = [str(x).strip()[:200] for x in (source_texts or []) if str(x).strip()]
     face_ids = list(dict.fromkeys(int(x) for x in (value.get("face_ids") or []) if str(x).isdigit() and int(x) > 0))
+    bot_target_ids = list(dict.fromkeys(
+        str(x).strip()[:128] for x in (value.get("bot_target_ids") or []) if str(x).strip()
+    ))
     enabled = bool(value.get("enabled", False))
     text_enabled = bool(value.get("text_enabled", True))
     image_enabled = bool(value.get("image_enabled", False))
@@ -404,7 +407,8 @@ def normalize_poke_reply_config(raw: Any) -> Dict[str, Any]:
         image_enabled = True
     return {"enabled": enabled, "text_enabled": text_enabled,
             "image_enabled": image_enabled, "texts": texts[:100],
-            "face_ids": face_ids[:100], "cooldown_seconds": max(0, min(300, int(value.get("cooldown_seconds", 8))))}
+            "face_ids": face_ids[:100], "bot_target_ids": bot_target_ids[:20],
+            "cooldown_seconds": max(0, min(300, int(value.get("cooldown_seconds", 8))))}
 
 
 def read_config() -> Dict[str, Any]:
@@ -867,11 +871,17 @@ def save_wechat2_auto_login_config(data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def save_poke_reply_config(data: Dict[str, Any]) -> Dict[str, Any]:
-    config = normalize_poke_reply_config(data)
-    if config["enabled"] and not ((config["text_enabled"] and config["texts"]) or (config["image_enabled"] and config["face_ids"])):
-        raise ValueError("开启拍一拍回复前，至少配置一条文字或一张图片")
     with CONFIG_WRITE_LOCK:
         current = json_read(CONFIG_PATH, {})
+        merged = dict(data)
+        current_poke = current.get("poke_reply") if isinstance(current.get("poke_reply"), dict) else {}
+        # Existing UI builds do not expose bot_target_ids.  Preserve the
+        # identity allowlist when the user only changes text/images/switches.
+        if "bot_target_ids" not in merged:
+            merged["bot_target_ids"] = current_poke.get("bot_target_ids", [])
+        config = normalize_poke_reply_config(merged)
+        if config["enabled"] and not ((config["text_enabled"] and config["texts"]) or (config["image_enabled"] and config["face_ids"])):
+            raise ValueError("开启拍一拍回复前，至少配置一条文字或一张图片")
         current["poke_reply"] = config
         atomic_write(CONFIG_PATH, json.dumps(current, ensure_ascii=False, indent=2) + "\n")
     try:
