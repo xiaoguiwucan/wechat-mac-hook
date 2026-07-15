@@ -30,12 +30,14 @@ static CGImageRef CaptureWindow(CGWindowID window) {
     return NULL;
   }
   if (task.terminationStatus != 0) return NULL;
-  NSBitmapImageRep *rep = [NSBitmapImageRep imageRepWithContentsOfFile:path];
+  NSImageRep *imageRep = [NSBitmapImageRep imageRepWithContentsOfFile:path];
   [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
-  return rep.CGImage ? CGImageRetain(rep.CGImage) : NULL;
+  if (![imageRep isKindOfClass:[NSBitmapImageRep class]]) return NULL;
+  CGImageRef cgImage = [(NSBitmapImageRep *)imageRep CGImage];
+  return cgImage ? CGImageRetain(cgImage) : NULL;
 }
 
-static CGWindowID FindWindow(pid_t pid) {
+static CGWindowID FindWindow(pid_t pid, CGRect *bestBounds) {
   CFArrayRef copied = CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID);
   NSArray<NSDictionary *> *rows = CFBridgingRelease(copied);
   CGWindowID best = kCGNullWindowID;
@@ -45,9 +47,12 @@ static CGWindowID FindWindow(pid_t pid) {
     CGRect bounds = CGRectZero;
     if (!CGRectMakeWithDictionaryRepresentation((CFDictionaryRef)row[(id)kCGWindowBounds], &bounds)) continue;
     CGFloat area = bounds.size.width * bounds.size.height;
-    if (bounds.size.width < 400 || bounds.size.height < 400 || area <= bestArea) continue;
+    // The authorized-login window is intentionally compact (about 280x380).
+    // Keep excluding tiny overlays while allowing that real WeChat window.
+    if (bounds.size.width < 220 || bounds.size.height < 280 || area <= bestArea) continue;
     best = [row[(id)kCGWindowNumber] unsignedIntValue];
     bestArea = area;
+    if (bestBounds) *bestBounds = bounds;
   }
   return best;
 }
@@ -112,7 +117,8 @@ int main(int argc, const char *argv[]) {
     BOOL baseline = YES;
     do {
       @autoreleasepool {
-        CGWindowID window = FindWindow(pid);
+        CGRect windowBounds = CGRectZero;
+        CGWindowID window = FindWindow(pid, &windowBounds);
         if (window == kCGNullWindowID) {
           fprintf(stderr, "second WeChat window not found for pid=%d\n", pid);
         } else {
@@ -126,7 +132,14 @@ int main(int argc, const char *argv[]) {
             if (error) {
               fprintf(stderr, "vision error: %s\n", error.localizedDescription.UTF8String);
             } else if (!watch) {
-              PrintJSON(@{ @"type": @"snapshot", @"items": rows });
+              PrintJSON(@{
+                @"type": @"snapshot",
+                @"items": rows,
+                @"window": @{
+                  @"x": @(windowBounds.origin.x), @"y": @(windowBounds.origin.y),
+                  @"width": @(windowBounds.size.width), @"height": @(windowBounds.size.height)
+                }
+              });
             } else {
               NSDate *now = [NSDate date];
               NSMutableSet<NSString *> *frame = [NSMutableSet set];

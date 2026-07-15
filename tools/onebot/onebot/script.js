@@ -155,6 +155,7 @@ function initAddresses() {
     setImmediate(setupSendReplyMessageDynamic);
     setImmediate(setupDownloadFileDynamic);
     setImmediate(setReceiver);
+    setImmediate(setupNativeEmojiCaptureReplay);
     // UI 语音转文字 Hook 默认停用：改用原始语音文件 + ASR。
     if (typeof ENABLE_UI_VOICE_TRANSCRIPT !== 'undefined' && ENABLE_UI_VOICE_TRANSCRIPT) setImmediate(setupVoiceTranscriptUiHook);
 }
@@ -523,6 +524,267 @@ var fileUploadProtoHexGlobal = "";
 // uploadappattach protobuf全局变量 (从Go直接传入hex编码)
 var appAttachProtoHexGlobal = "";
 
+// 微信 4.1.11.53 ARM64 原生 sendemoji 捕获/重放。捕获与现有 OneBot 共用
+// 同一个 Frida session，只观察明确的 reqid=68 CGI；不扫描内存、不保留微信
+// 对象指针。模板必须同时拥有 payload、task scalars 和 protobuf 才会 ready。
+var NATIVE_EMOJI_MODULE_SIZE = 150126592;
+var nativeEmojiBridgeEnabled = false;
+var nativeEmojiCaptureTasks = {};
+var nativeEmojiTemplates = {};
+var nativeEmojiReplayTaskIds = {};
+var nativeEmojiCgiAddr = ptr(0);
+var nativeEmojiWrapperAddr = ptr(0);
+var nativeEmojiMessageAddr = ptr(0);
+var nativeEmojiProtoHexGlobal = "";
+var nativeEmojiTemplateSeq = 0;
+var nativeEmojiSerializerTaskIds = [];
+var nativeEmojiAutoBufferHooked = false;
+
+function byteArrayHex(raw) {
+    if (!raw) return "";
+    var bytes = new Uint8Array(raw);
+    var out = "";
+    for (var i = 0; i < bytes.length; i++) out += ("0" + bytes[i].toString(16)).slice(-2);
+    return out;
+}
+
+function readCStringPointer(pointerSlot) {
+    try {
+        var value = pointerSlot.readPointer();
+        return isReadablePointer(value) ? (value.readUtf8String() || "") : "";
+    } catch (e) { return ""; }
+}
+
+function nativeEmojiMD5(bytes) {
+    var text = "";
+    for (var i = 0; i < bytes.length; i++) {
+        var c = bytes[i];
+        text += (c >= 32 && c <= 126) ? String.fromCharCode(c) : " ";
+    }
+    var match = text.match(/(?:^|[^0-9a-fA-F])([0-9a-fA-F]{32})(?:$|[^0-9a-fA-F])/);
+    return match ? match[1].toLowerCase() : "";
+}
+
+function setupNativeEmojiCaptureReplay() {
+    if (module.size !== NATIVE_EMOJI_MODULE_SIZE || !isReadablePointer(sendFuncAddr) ||
+        !isReadablePointer(req2bufEnterAddr) || !isReadablePointer(blrX8Addr)) {
+        console.warn("[!] sendemoji disabled: unsupported wechat.dylib size/address set size=" + module.size);
+        return;
+    }
+    nativeEmojiCgiAddr = Memory.alloc(128);
+    nativeEmojiWrapperAddr = Memory.alloc(256);
+    nativeEmojiMessageAddr = Memory.alloc(256);
+    patchString(nativeEmojiCgiAddr, "/cgi-bin/micromsg-bin/sendemoji");
+    attachNativeEmojiAutoBufferCapture();
+    nativeEmojiBridgeEnabled = true;
+    console.log("[+] sendemoji capture/replay armed for WeChat 4.1.11.53 ARM64");
+    send({type: "native_emoji_capture_ready", version: "4.1.11.53", module_size: module.size});
+}
+
+function attachNativeEmojiAutoBufferCapture() {
+    if (nativeEmojiAutoBufferHooked || !isReadablePointer(autoBufferWriteFunc)) return;
+    Interceptor.attach(autoBufferWriteFunc, {
+        onEnter: function(args) {
+            var keys = Object.keys(nativeEmojiCaptureTasks);
+            if (keys.length !== 1) return;
+            var capture = nativeEmojiCaptureTasks[keys[0]];
+            if (!capture || Date.now() - capture.captured_at > 3000) return;
+            this.nativeEmojiTaskId = capture.task_id;
+            this.nativeEmojiAutoBuffer = args[0];
+        },
+        onLeave: function() {
+            if (this.nativeEmojiTaskId) snapshotNativeEmojiProto(this.nativeEmojiTaskId, this.nativeEmojiAutoBuffer);
+        }
+    });
+    nativeEmojiAutoBufferHooked = true;
+}
+
+function observeNativeEmojiStartTask(payload) {
+    if (!nativeEmojiBridgeEnabled || !isReadablePointer(payload)) return;
+    var cgi = readCStringPointer(payload.add(0x18));
+    if (cgi !== "/cgi-bin/micromsg-bin/sendemoji") return;
+    var task = payload.readU32();
+    if (nativeEmojiReplayTaskIds[String(task)]) return;
+    var raw = readByteArrayIfReadable(payload, 0x1a0);
+    if (!raw) return;
+    nativeEmojiCaptureTasks[String(task)] = {
+        task_id: task, payload_hex: byteArrayHex(raw), captured_at: Date.now(),
+        wrapper_scalars: null, message_scalars: null, proto_hex: ""
+    };
+    console.log("[+] captured native sendemoji StartTask taskId=" + task);
+}
+
+function captureNativeEmojiTaskObjects(task, x24) {
+    var capture = nativeEmojiCaptureTasks[String(task)];
+    if (!capture || !isReadablePointer(x24)) return;
+    try {
+        var wrapper = x24.add(0x60).readPointer();
+        var message = wrapper.add(0x28).readPointer();
+        if (!isReadablePointer(wrapper) || !isReadablePointer(message)) return;
+        capture.wrapper_scalars = byteArrayHex(readByteArrayIfReadable(wrapper, 0x40));
+        capture.message_scalars = byteArrayHex(readByteArrayIfReadable(message, 0x40));
+    } catch (e) {
+        console.warn("[!] sendemoji task object capture failed taskId=" + task + " error=" + e);
+    }
+}
+
+function snapshotNativeEmojiProto(task, autoBuffer) {
+    var capture = nativeEmojiCaptureTasks[String(task)];
+    if (!capture || !isReadablePointer(autoBuffer)) return;
+    try {
+        // WeChat 4.1.11.53 中这个参数是 AutoBuffer 外层对象，
+        // +0 指向内部 storage。本机 0x3e7fa8c 实际读写布局为：
+        // storage+0=data pointer, +0x0c=written length, +0x10=capacity。
+        var storage = autoBuffer.readPointer();
+        if (!isReadablePointer(storage)) return;
+        var data = storage.readPointer();
+        var length = storage.add(0x0c).readU32();
+        var capacity = storage.add(0x10).readU32();
+        if (!isReadablePointer(data) || length < 1 || length > 65536 || capacity < length || capacity > 1048576) {
+            console.warn("[!] sendemoji AutoBuffer rejected taskId=" + task + " length=" + length + " capacity=" + capacity);
+            return;
+        }
+        var raw = readByteArrayIfReadable(data, length);
+        if (!raw) return;
+        var bytes = Array.from(new Uint8Array(raw));
+        capture.proto_hex = byteArrayHex(raw);
+        capture.md5 = nativeEmojiMD5(bytes);
+        capture.proto_updated_at = Date.now();
+        var snapshotAt = capture.proto_updated_at;
+        setTimeout(function() {
+            var current = nativeEmojiCaptureTasks[String(task)];
+            if (!current || current.proto_updated_at !== snapshotAt) return;
+            current.key = current.md5 || ("capture_" + (++nativeEmojiTemplateSeq));
+            current.ready = !!(current.payload_hex && current.wrapper_scalars && current.message_scalars && current.proto_hex);
+            if (!current.ready) return;
+            nativeEmojiTemplates[current.key] = current;
+            delete nativeEmojiCaptureTasks[String(task)];
+            console.log("[+] native sendemoji template ready key=" + current.key + " proto_len=" + (current.proto_hex.length / 2));
+            send({type: "native_emoji_template_ready", key: current.key, md5: current.md5 || "", proto_len: current.proto_hex.length / 2});
+        }, 25);
+    } catch (e) {
+        console.warn("[!] sendemoji protobuf capture failed taskId=" + task + " error=" + e);
+    }
+}
+
+function finishNativeEmojiProtoCapture(task, autoBuffer) {
+    snapshotNativeEmojiProto(task, autoBuffer);
+}
+
+function replaceAllAscii(bytes, oldText, newText) {
+    var oldBytes = Array.from(new TextEncoder().encode(oldText));
+    var newBytes = Array.from(new TextEncoder().encode(newText));
+    var output = [], changed = false;
+    for (var i = 0; i < bytes.length;) {
+        var hit = oldBytes.length > 0 && i + oldBytes.length <= bytes.length;
+        for (var j = 0; hit && j < oldBytes.length; j++) if (bytes[i + j] !== oldBytes[j]) hit = false;
+        if (hit) { output.push.apply(output, newBytes); i += oldBytes.length; changed = true; }
+        else { output.push(bytes[i++]); }
+    }
+    return {bytes: output, changed: changed};
+}
+
+function readWireVarint(bytes, offset) {
+    var value = 0, shift = 0, pos = offset;
+    while (pos < bytes.length && pos - offset < 10) {
+        var b = bytes[pos++]; value += (b & 0x7f) * Math.pow(2, shift);
+        if ((b & 0x80) === 0) return {value: value, next: pos};
+        shift += 7;
+    }
+    return null;
+}
+
+function writeWireVarint(value) {
+    var out = [], n = value;
+    do { var b = n % 128; n = Math.floor(n / 128); out.push(b | (n > 0 ? 0x80 : 0)); } while (n > 0);
+    return out;
+}
+
+function patchTalkerInProto(bytes, sourceTalker, targetTalker, depth) {
+    if (depth > 8) return {ok: true, changed: false, bytes: bytes};
+    var pos = 0, out = [], changed = false;
+    while (pos < bytes.length) {
+        var keyStart = pos, key = readWireVarint(bytes, pos);
+        if (!key || key.value === 0) return {ok: false, changed: false, bytes: bytes};
+        pos = key.next; var wire = key.value & 7;
+        out.push.apply(out, bytes.slice(keyStart, pos));
+        if (wire === 0) {
+            var value = readWireVarint(bytes, pos); if (!value) return {ok:false,changed:false,bytes:bytes};
+            out.push.apply(out, bytes.slice(pos, value.next)); pos = value.next;
+        } else if (wire === 1 || wire === 5) {
+            var width = wire === 1 ? 8 : 4; if (pos + width > bytes.length) return {ok:false,changed:false,bytes:bytes};
+            out.push.apply(out, bytes.slice(pos, pos + width)); pos += width;
+        } else if (wire === 2) {
+            var size = readWireVarint(bytes, pos); if (!size) return {ok:false,changed:false,bytes:bytes};
+            pos = size.next; var end = pos + size.value; if (end > bytes.length) return {ok:false,changed:false,bytes:bytes};
+            var body = bytes.slice(pos, end), replacement = replaceAllAscii(body, sourceTalker, targetTalker);
+            if (!replacement.changed) {
+                var nested = patchTalkerInProto(body, sourceTalker, targetTalker, depth + 1);
+                if (nested.ok && nested.changed) replacement = nested;
+            }
+            out.push.apply(out, writeWireVarint(replacement.bytes.length));
+            out.push.apply(out, replacement.bytes); changed = changed || replacement.changed; pos = end;
+        } else return {ok:false,changed:false,bytes:bytes};
+    }
+    return {ok: true, changed: changed, bytes: out};
+}
+
+function findTemplateSourceTalker(protoBytes) {
+    var text = String.fromCharCode.apply(null, protoBytes.slice(0, Math.min(protoBytes.length, 65536)));
+    if (text.indexOf("filehelper") >= 0) return "filehelper";
+    var match = text.match(/[0-9]{5,}@chatroom/);
+    return match ? match[0] : "";
+}
+
+function getNativeEmoticonStatus() {
+    var items = Object.keys(nativeEmojiTemplates).map(function(key) {
+        var item = nativeEmojiTemplates[key];
+        return {key:key, md5:item.md5 || "", captured_at:item.captured_at, ready:item.ready, proto_len:item.proto_hex.length / 2};
+    });
+    var pendingItems = Object.keys(nativeEmojiCaptureTasks).map(function(key) {
+        var item = nativeEmojiCaptureTasks[key];
+        return {task_id:item.task_id, has_payload:!!item.payload_hex, has_wrapper:!!item.wrapper_scalars,
+            has_message:!!item.message_scalars, has_proto:!!item.proto_hex};
+    });
+    return {ready: nativeEmojiBridgeEnabled && items.some(function(item){return item.ready;}), capture_armed:nativeEmojiBridgeEnabled,
+        version:"4.1.11.53", pid:Process.id, items:items, pending:pendingItems.length,
+        pending_items:pendingItems, serializer_task_ids:nativeEmojiSerializerTaskIds.slice(-16)};
+}
+
+function bindNativeEmoticon(captureKey, md5) {
+    var source = nativeEmojiTemplates[String(captureKey || "")], normalized = String(md5 || "").toLowerCase();
+    if (!source || !/^[0-9a-f]{32}$/.test(normalized)) return "invalid";
+    source.md5 = normalized; source.key = normalized; nativeEmojiTemplates[normalized] = source; return "1";
+}
+
+function triggerNativeEmoticon(task, keyOrMd5, talker) {
+    var item = nativeEmojiTemplates[String(keyOrMd5 || "").toLowerCase()] || nativeEmojiTemplates[String(keyOrMd5 || "")];
+    if (!nativeEmojiBridgeEnabled) return "unsupported_version";
+    if (!item || !item.ready) return "template_not_ready";
+    if (!talker || !task || !triggerX0) return "invalid_state";
+    try {
+        var proto = hexToByteArray(item.proto_hex), sourceTalker = findTemplateSourceTalker(proto);
+        if (!sourceTalker) return "source_talker_not_found";
+        var patched = patchTalkerInProto(proto, sourceTalker, String(talker), 0);
+        if (!patched.ok || !patched.changed) return "talker_patch_failed";
+        nativeEmojiProtoHexGlobal = byteArrayHex(new Uint8Array(patched.bytes).buffer);
+        var wrapperBytes = hexToByteArray(item.wrapper_scalars), messageBytes = hexToByteArray(item.message_scalars);
+        nativeEmojiWrapperAddr.writeByteArray(wrapperBytes); nativeEmojiMessageAddr.writeByteArray(messageBytes);
+        nativeEmojiWrapperAddr.writePointer(ptr(0)); nativeEmojiWrapperAddr.add(0x08).writeU64(0); nativeEmojiWrapperAddr.add(0x10).writeU64(0);
+        nativeEmojiWrapperAddr.add(0x20).writeU32(task); nativeEmojiWrapperAddr.add(0x28).writePointer(nativeEmojiMessageAddr);
+        nativeEmojiMessageAddr.writePointer(fakeVtable); nativeEmojiMessageAddr.add(0x08).writeU32(task);
+        nativeEmojiMessageAddr.add(0x18).writePointer(nativeEmojiCgiAddr);
+        var payload = hexToByteArray(item.payload_hex), payloadAddr = stableStartTaskPayload;
+        if (payloadAddr.isNull() || stableStartTaskPayloadSize < payload.length) {
+            stableStartTaskPayloadSize = Math.max(payload.length, 0x400); stableStartTaskPayload = Memory.alloc(stableStartTaskPayloadSize); payloadAddr = stableStartTaskPayload;
+        }
+        payloadAddr.writeByteArray(payload); payloadAddr.writeU32(task); payloadAddr.add(0x18).writePointer(nativeEmojiCgiAddr);
+        payloadAddr.add(0xb8).writePointer(payloadAddr.add(0xc0)); payloadAddr.add(0x190).writePointer(payloadAddr.add(0x198));
+        taskIdGlobal = task; sendMsgType = "emoji"; nativeEmojiReplayTaskIds[String(task)] = true;
+        var startTask = new NativeFunction(sendFuncAddr, 'int64', ['pointer','pointer']); startTask(triggerX0, payloadAddr); return "1";
+    } catch (e) { console.error("[!] native sendemoji replay failed: " + e); return "fail"; }
+}
+
 // 文件消息全局变量
 var fileCgiAddr = ptr(0);
 var sendFileMessageAddr = ptr(0);
@@ -704,6 +966,21 @@ function attachBlrX8Hook() {
     Interceptor.attach(blrX8Addr, {
         onEnter: function(args) {
             var currentTaskId = this.context.x20.toUInt32();
+            if (Object.keys(nativeEmojiCaptureTasks).length > 0 && nativeEmojiSerializerTaskIds.indexOf(currentTaskId) < 0) {
+                nativeEmojiSerializerTaskIds.push(currentTaskId);
+                if (nativeEmojiSerializerTaskIds.length > 32) nativeEmojiSerializerTaskIds.shift();
+            }
+            if (nativeEmojiCaptureTasks[String(currentTaskId)]) {
+                this.nativeEmojiTaskId = currentTaskId;
+                this.nativeEmojiAutoBuffer = this.context.x1;
+                // Interceptor 挂在 BLR 调用点时 onLeave 的语义受 Frida
+                // trampoline 影响。在原生 serializer 恢复执行后再短延迟
+                // 读取 AutoBuffer，避免在 length 尚未写入时误判。
+                (function(task, buffer) {
+                    setTimeout(function() { finishNativeEmojiProtoCapture(task, buffer); }, 10);
+                    setTimeout(function() { finishNativeEmojiProtoCapture(task, buffer); }, 80);
+                })(currentTaskId, this.nativeEmojiAutoBuffer);
+            }
             if (currentTaskId !== taskIdGlobal) {
                 return;
             }
@@ -729,6 +1006,8 @@ function attachBlrX8Hook() {
                 protoHex = appAttachProtoHexGlobal;
             } else if (sendMsgType === "voice") {
                 protoHex = voiceProtoHexGlobal;
+            } else if (sendMsgType === "emoji") {
+                protoHex = nativeEmojiProtoHexGlobal;
             }
 
             if (!protoHex || protoHex.length === 0) {
@@ -745,10 +1024,14 @@ function attachBlrX8Hook() {
 
             // 将 X8 指向 retOneStub，这样 BLR X8 只会返回1，不执行原始逻辑
             this.context.x8 = retOneStub;
+        },
+        onLeave: function() {
+            if (this.nativeEmojiTaskId) {
+                finishNativeEmojiProtoCapture(this.nativeEmojiTaskId, this.nativeEmojiAutoBuffer);
+            }
         }
     });
 }
-
 
 function triggerSendTextMessage(taskId, receiver, content, atUser, protoHex, payloadHex) {
     return triggerSendMediaMessage(taskId, "", receiver, protoHex, payloadHex, "text");
@@ -757,12 +1040,9 @@ function triggerSendTextMessage(taskId, receiver, content, atUser, protoHex, pay
 function AttachSendFunc() {
     Interceptor.attach(sendFuncAddr.add(0x10), {
         onEnter: function (args) {
-            // 原版只保存第一次 X1；实测该 X1 可能很快被微信释放/复用，
-            // 之后继续写它会污染微信内部树结构并导致发送后崩溃。
-            // 这里持续刷新 X0，并仅把 X1 作为“已捕获 StartTask”的信号；
-            // 真正发送时使用 stableStartTaskPayload 自有缓冲区。
             triggerX0 = this.context.x0;
             triggerX1Payload = this.context.x1;
+            observeNativeEmojiStartTask(triggerX1Payload);
             lastStartTaskCaptureMs = Date.now();
             if (lastStartTaskCaptureMs - lastStartTaskLogMs > 10000 || !triggerX1Payload.equals(lastStartTaskPayloadLogged)) {
                 lastStartTaskLogMs = lastStartTaskCaptureMs;
@@ -781,6 +1061,8 @@ function AttachSendFunc() {
 function attachReq2buf() {
     Interceptor.attach(req2bufEnterAddr, {
         onEnter: function (args) {
+            var observedTaskId = this.context.x1.toUInt32();
+            captureNativeEmojiTaskObjects(observedTaskId, this.context.x24);
             if (!this.context.x1.equals(taskIdGlobal)) {
                 return;
             }
@@ -820,6 +1102,9 @@ function attachReq2buf() {
                 insertMsgAddr.writePointer(sendAppAttachMessageAddr);
                 console.log("[+] 发送uploadAppAttach成功! Req2Buf 已将 X24+0x60 指向新地址: " + sendAppAttachMessageAddr +
                     "[+] Req2Buf 写入后内存预览: " + insertMsgAddr);
+            } else if (sendMsgType === "emoji") {
+                insertMsgAddr.writePointer(nativeEmojiWrapperAddr);
+                console.log("[+] 原生sendemoji Req2Buf已绑定 taskId=" + taskIdGlobal);
             }
         }
     });
@@ -1206,6 +1491,11 @@ function patchCdnOnComplete() {
                     }
                 } else {
                     console.error("cdnKey or aesKey 为空");
+                    send({
+                        type: "upload_media_failed",
+                        target_id: targetId,
+                        error: "cdnKey or aesKey empty"
+                    });
                 }
             } catch (e) {
                 console.error("[-] CdnOnComplete error: " + e);
@@ -1365,6 +1655,9 @@ rpc.exports = {
     getUploadStatus: getUploadStatus,
     recoverUploadX0: recoverUploadX0,
     discoverUploadGlobalX0: discoverUploadGlobalX0,
+    getNativeEmoticonStatus: getNativeEmoticonStatus,
+    triggerNativeEmoticon: triggerNativeEmoticon,
+    bindNativeEmoticon: bindNativeEmoticon,
 };
 
 // -------------------------发送图片消息分区-------------------------
@@ -1381,6 +1674,9 @@ function setupDownloadFileDynamic() {
 
 
 function setReceiver() {
+	var receiverDiagCount = 0;
+	var receiverDiagLastMs = 0;
+	try {
 	Interceptor.attach(buf2RespAddr, {
 		onEnter: function (args) {
 			// 通过 SP+0x140 读取当前 buf2resp 对应的 taskId
@@ -1424,9 +1720,21 @@ function setReceiver() {
                 return;
             }
             const uint8Array = new Uint8Array(mem);
-            // 与已验证稳定的旧版本保持一致，只做最宽松的消息候选判断。
-            // 具体结构交给 Go 解析，宁可产生误判日志，也不要在 JS 层漏掉消息。
-            if (uint8Array[0] !== 0x08) {
+            // 4.1.11.53 同时存在 0x08（旧消息体）和 0x0a（新响应外壳）。
+            // 拍一拍等系统事件会走 0x0a，不能继续按旧版规则静默丢弃。
+            // 具体结构交给 Go 解析；无效候选由解析器安全忽略。
+            if (uint8Array[0] !== 0x08 && uint8Array[0] !== 0x0a) {
+				// 拍一拍等系统消息可能使用了不同的响应外壳。只做限频诊断，
+				// 不把未知大缓冲全部送往 Go，避免日志洪泛或拖慢微信。
+				var nowMs = Date.now();
+				if (receiverDiagCount < 12 && nowMs - receiverDiagLastMs >= 1000) {
+					receiverDiagCount += 1;
+					receiverDiagLastMs = nowMs;
+					var prefixLen = Math.min(12, uint8Array.length);
+					var prefix = [];
+					for (var i = 0; i < prefixLen; i++) prefix.push(("0" + uint8Array[i].toString(16)).slice(-2));
+					console.log("[receiver-diag] unsupported response taskId=" + respTaskId + " len=" + x2 + " prefix=" + prefix.join(""));
+				}
                 return;
             }
 
@@ -1434,8 +1742,14 @@ function setReceiver() {
                 type: "protobuf_msg",
                 data: Array.from(uint8Array),
             })
-        },
-    });
+		},
+	});
+	console.log("[+] Receiver buf2resp hook attached at " + buf2RespAddr);
+	send({ type: "receiver_ready", address: buf2RespAddr.toString() });
+	} catch (e) {
+		console.error("[-] Receiver buf2resp hook attach failed at " + buf2RespAddr + ": " + e.stack);
+		return;
+	}
 
     Interceptor.attach(startDownloadMedia, {
         onEnter: function (args) {

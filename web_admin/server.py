@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import base64
 import collections
+import ctypes
 import hashlib
 import json
 import mimetypes
@@ -42,6 +43,7 @@ SECOND_HOME = Path.home() / "Library" / "Application Support" / "WeChatSecond"
 LOG_DIR = SECOND_HOME / "logs"
 VOICE_PACK_DIR = SECOND_HOME / "voice_packs"
 VOICE_CACHE_DIR = SECOND_HOME / "voice_cache"
+POKE_FACE_DIR = SECOND_HOME / "faces" / "poke_uploads"
 VOICE_EXTENSIONS = {".silk", ".wav", ".mp3", ".m4a", ".amr"}
 VOICE_ARCHIVE_EXTENSIONS = {".zip", ".zip1"}
 BIN_DIR = SECOND_HOME / "bin"
@@ -87,6 +89,14 @@ MEDIA_PAYLOAD_CACHE: "collections.OrderedDict[str, Tuple[str, Dict[str, Any]]]" 
 CONFIG_WRITE_LOCK = threading.Lock()
 PERSONA_EVENT_LOCK = threading.Lock()
 PERSONA_WORKER_STOP = threading.Event()
+WECHAT2_AUTO_LOGIN_STOP = threading.Event()
+WECHAT2_AUTO_LOGIN_LOCK = threading.Lock()
+WECHAT2_OCR_BIN = ROOT / "tools" / "voice_transcript_ocr" / "voice-transcript-ocr"
+WECHAT2_AUTO_LOGIN_STATE: Dict[str, Any] = {
+    "status": "starting", "checked_at": "", "consecutive_detections": 0,
+    "last_action": "", "last_click_at": 0.0, "attempts": 0,
+    "last_error": "", "candidate": None,
+}
 
 # 1x1 透明 PNG。用于发到“文件传输助手(filehelper)”暖起 UploadMedia
 # 通道；不污染任何群聊，也不需要用户手动点 UI。
@@ -367,6 +377,35 @@ def shell_value(value: Any) -> str:
     return shlex.quote(str(value))
 
 
+def normalize_auto_login_config(raw: Any) -> Dict[str, Any]:
+    value = raw if isinstance(raw, dict) else {}
+    return {
+        "enabled": bool(value.get("enabled", True)),
+        "check_interval_seconds": max(10, min(300, int(value.get("check_interval_seconds", 20)))),
+        "cooldown_seconds": max(30, min(600, int(value.get("cooldown_seconds", 60)))),
+        "required_consecutive_detections": max(2, min(5, int(value.get("required_consecutive_detections", 2)))),
+        "max_attempts_per_episode": max(1, min(5, int(value.get("max_attempts_per_episode", 3)))),
+    }
+
+
+def normalize_poke_reply_config(raw: Any) -> Dict[str, Any]:
+    value = raw if isinstance(raw, dict) else {}
+    source_texts = value.get("texts") if "texts" in value else ["拍我干嘛～", "在呢，别拍了。"]
+    texts = [str(x).strip()[:200] for x in (source_texts or []) if str(x).strip()]
+    face_ids = list(dict.fromkeys(int(x) for x in (value.get("face_ids") or []) if str(x).isdigit() and int(x) > 0))
+    enabled = bool(value.get("enabled", False))
+    text_enabled = bool(value.get("text_enabled", True))
+    image_enabled = bool(value.get("image_enabled", False))
+    # The face picker and the switches are saved independently by the UI.  If
+    # text has just been disabled while selected faces already exist, preserve
+    # the only usable reply medium instead of rejecting the transient payload.
+    if enabled and not text_enabled and face_ids:
+        image_enabled = True
+    return {"enabled": enabled, "text_enabled": text_enabled,
+            "image_enabled": image_enabled, "texts": texts[:100],
+            "face_ids": face_ids[:100], "cooldown_seconds": max(0, min(300, int(value.get("cooldown_seconds", 8))))}
+
+
 def read_config() -> Dict[str, Any]:
     cfg = json_read(CONFIG_PATH, {})
     env = parse_env(ENV_PATH)
@@ -440,6 +479,8 @@ def read_config() -> Dict[str, Any]:
         "memory": cfg.get("memory", {"enabled": True, "max_turns": 12, "summary_enabled": True}),
         "tools": cfg.get("tools", {"enabled": True, "allowed": ["get_status", "get_recent_logs", "list_groups", "test_model_channel", "send_probe", "search_messages", "get_group_memory", "vector_search", "list_personas", "list_media"]}),
         "onebot_monitor": cfg.get("onebot_monitor", {"enabled": True, "auto_recover": True}),
+        "wechat2_auto_login": normalize_auto_login_config(cfg.get("wechat2_auto_login")),
+        "poke_reply": normalize_poke_reply_config(cfg.get("poke_reply")),
         "media_auto_repair": cfg.get("media_auto_repair", {
             "enabled": True,
             "filehelper_id": "filehelper",
@@ -571,6 +612,8 @@ def save_config(data: Dict[str, Any]) -> Dict[str, Any]:
         "memory": data.get("memory") if isinstance(data.get("memory"), dict) else current.get("memory", {"enabled": True, "max_turns": 12, "summary_enabled": True}),
         "tools": data.get("tools") if isinstance(data.get("tools"), dict) else current.get("tools", {"enabled": True, "allowed": ["get_status", "get_recent_logs", "list_groups", "test_model_channel", "send_probe", "search_messages", "get_group_memory", "vector_search", "list_personas", "list_media"]}),
         "onebot_monitor": data.get("onebot_monitor") if isinstance(data.get("onebot_monitor"), dict) else current.get("onebot_monitor", {"enabled": True, "auto_recover": True}),
+        "wechat2_auto_login": normalize_auto_login_config(data.get("wechat2_auto_login") if isinstance(data.get("wechat2_auto_login"), dict) else current.get("wechat2_auto_login")),
+        "poke_reply": normalize_poke_reply_config(data.get("poke_reply") if isinstance(data.get("poke_reply"), dict) else current.get("poke_reply")),
         "media_auto_repair": data.get("media_auto_repair") if isinstance(data.get("media_auto_repair"), dict) else current.get("media_auto_repair", {"enabled": True, "filehelper_id": "filehelper", "cooldown_seconds": 45, "poll_seconds": 8}),
     })
     vision_in = data.get("vision_ocr") if isinstance(data.get("vision_ocr"), dict) else current.get("vision_ocr", {})
@@ -654,6 +697,227 @@ def find_wechat2() -> Tuple[int, str]:
     return (pid, cmd) if str(WECHAT2_EXE) in cmd else (0, "")
 
 
+def _ocr_text(value: Any) -> str:
+    return re.sub(r"[\s\u2005\u2009\u00a0]+", "", str(value or "")).strip("：:。.!！")
+
+
+def classify_wechat2_login_snapshot(items: Any) -> Dict[str, Any]:
+    """Classify a PID-scoped WeChat window without ever relying on fixed coordinates."""
+    rows = [item for item in (items or []) if isinstance(item, dict)]
+    texts = [_ocr_text(item.get("text")) for item in rows]
+    logged_in_markers = {"文件传输助手", "公众号", "服务号", "通讯录", "微信团队"}
+    present_markers = sorted(marker for marker in logged_in_markers if any(marker in text for text in texts))
+    if present_markers:
+        return {"status": "logged_in", "candidate": None, "markers": present_markers, "item_count": len(rows)}
+    candidates = []
+    for item, text in zip(rows, texts):
+        if text not in {"登录", "进入微信", "重新登录"}:
+            continue
+        try:
+            x, y = float(item.get("x", 0)), float(item.get("y", 0))
+            width, height = float(item.get("width", 0)), float(item.get("height", 0))
+        except (TypeError, ValueError):
+            continue
+        if 0.10 <= x <= 0.88 and 0.10 <= y <= 0.92 and width >= 0.025 and height >= 0.012:
+            candidates.append({"text": text, "x": x, "y": y, "width": width, "height": height})
+    # A real login window is sparse. This also prevents a chat message containing
+    # a standalone “登录” from becoming a clickable candidate.
+    if len(candidates) == 1 and len(rows) <= 18:
+        return {"status": "login_page", "candidate": candidates[0], "markers": [], "item_count": len(rows)}
+    return {"status": "watching", "candidate": None, "markers": [], "item_count": len(rows)}
+
+
+def wechat2_ocr_snapshot(pid: int) -> Dict[str, Any]:
+    if not WECHAT2_OCR_BIN.is_file() or not os.access(WECHAT2_OCR_BIN, os.X_OK):
+        raise RuntimeError(f"本地 Vision OCR 不可用：{WECHAT2_OCR_BIN}")
+    result = subprocess.run([str(WECHAT2_OCR_BIN), "--pid", str(pid)], capture_output=True,
+                            text=True, timeout=10, check=False)
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout or "OCR 检测失败").strip()[:500])
+    if not result.stdout.strip() and "window not found" in result.stderr.lower():
+        return {"type": "snapshot", "items": [], "window_found": False}
+    try:
+        payload = json.loads(result.stdout)
+    except ValueError as exc:
+        raise RuntimeError("OCR 返回了无效数据") from exc
+    if not isinstance(payload.get("items"), list):
+        raise RuntimeError("OCR 未返回窗口文本")
+    payload["window_found"] = True
+    return payload
+
+
+def _wechat2_window_bounds(pid: int) -> Tuple[int, int, int, int]:
+    script = f'''tell application "System Events"
+tell first process whose unix id is {int(pid)}
+set p to position of front window
+set s to size of front window
+return (item 1 of p as text) & "," & (item 2 of p as text) & "," & (item 1 of s as text) & "," & (item 2 of s as text)
+end tell
+end tell'''
+    raw = subprocess.check_output(["/usr/bin/osascript", "-e", script], text=True, timeout=5).strip()
+    parts = [int(float(x.strip())) for x in raw.split(",")]
+    if len(parts) != 4 or parts[2] < 200 or parts[3] < 200:
+        raise RuntimeError("第二微信窗口尺寸异常")
+    return parts[0], parts[1], parts[2], parts[3]
+
+
+def click_wechat2_login_candidate(pid: int, candidate: Dict[str, Any]) -> Dict[str, Any]:
+    current_pid, command = find_wechat2()
+    if current_pid != int(pid) or str(WECHAT2_EXE) not in command:
+        raise RuntimeError("第二微信 PID 已变化，取消点击")
+    captured = candidate.get("_window") if isinstance(candidate.get("_window"), dict) else {}
+    if captured:
+        win_x, win_y = int(float(captured.get("x", 0))), int(float(captured.get("y", 0)))
+        win_w, win_h = int(float(captured.get("width", 0))), int(float(captured.get("height", 0)))
+        if win_w < 220 or win_h < 280:
+            raise RuntimeError("第二微信登录窗口尺寸异常")
+    else:
+        win_x, win_y, win_w, win_h = _wechat2_window_bounds(pid)
+    x = round(win_x + (float(candidate["x"]) + float(candidate["width"]) / 2) * win_w)
+    y = round(win_y + (float(candidate["y"]) + float(candidate["height"]) / 2) * win_h)
+    script = f'''tell application "System Events"
+tell first process whose unix id is {int(pid)} to set frontmost to true
+end tell'''
+    subprocess.check_output(["/usr/bin/osascript", "-e", script], text=True, timeout=5)
+
+    class CGPoint(ctypes.Structure):
+        _fields_ = [("x", ctypes.c_double), ("y", ctypes.c_double)]
+
+    core_graphics = ctypes.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+    core_graphics.CGEventCreateMouseEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint32, CGPoint, ctypes.c_uint32]
+    core_graphics.CGEventCreateMouseEvent.restype = ctypes.c_void_p
+    core_graphics.CGEventPost.argtypes = [ctypes.c_uint32, ctypes.c_void_p]
+    core_graphics.CFRelease.argtypes = [ctypes.c_void_p]
+    # 5=move, 1=left down, 2=left up. WeChat's login window is custom drawn,
+    # so AX/System Events “click at” reports success without delivering a click.
+    for event_type in (5, 1, 2):
+        event = core_graphics.CGEventCreateMouseEvent(None, event_type, CGPoint(x, y), 0)
+        if not event:
+            raise RuntimeError("无法创建 macOS 鼠标事件")
+        core_graphics.CGEventPost(0, event)
+        core_graphics.CFRelease(event)
+        time.sleep(0.12)
+    time.sleep(0.8)
+    confirmation = classify_wechat2_login_snapshot(wechat2_ocr_snapshot(pid).get("items"))
+    if confirmation.get("status") == "login_page":
+        raise RuntimeError("已发送点击，但“进入微信”按钮仍存在")
+    return {"pid": pid, "x": x, "y": y, "label": str(candidate.get("text") or "登录"), "confirmed": True}
+
+
+def inspect_wechat2_auto_login(allow_click: bool = True) -> Dict[str, Any]:
+    config = normalize_auto_login_config(json_read(CONFIG_PATH, {}).get("wechat2_auto_login"))
+    now = time.time()
+    with WECHAT2_AUTO_LOGIN_LOCK:
+        previous = dict(WECHAT2_AUTO_LOGIN_STATE)
+    update: Dict[str, Any] = {"enabled": config["enabled"], "checked_at": time.strftime("%Y-%m-%d %H:%M:%S"), "last_error": ""}
+    if not config["enabled"]:
+        update.update(status="disabled", consecutive_detections=0, candidate=None)
+    else:
+        pid, _ = find_wechat2()
+        if not pid:
+            update.update(status="wechat_not_running", consecutive_detections=0, candidate=None, attempts=0)
+        else:
+            snapshot = wechat2_ocr_snapshot(pid)
+            if not snapshot.get("window_found", True):
+                clicked_recently = bool(previous.get("last_action")) and now - float(previous.get("last_click_at") or 0) < 300
+                update.update(status="login_confirmed" if clicked_recently else "waiting_window",
+                              consecutive_detections=0, candidate=None, item_count=0, markers=[])
+                with WECHAT2_AUTO_LOGIN_LOCK:
+                    WECHAT2_AUTO_LOGIN_STATE.update(update)
+                    return dict(WECHAT2_AUTO_LOGIN_STATE)
+            classified = classify_wechat2_login_snapshot(snapshot.get("items"))
+            if classified.get("candidate") and isinstance(snapshot.get("window"), dict):
+                classified["candidate"]["_window"] = snapshot["window"]
+            update.update(pid=pid, candidate=classified.get("candidate"), item_count=classified.get("item_count", 0), markers=classified.get("markers", []))
+            if classified["status"] == "logged_in":
+                update.update(status="logged_in", consecutive_detections=0, attempts=0)
+            elif classified["status"] != "login_page":
+                update.update(status="watching", consecutive_detections=0)
+            else:
+                old_candidate = previous.get("candidate") if isinstance(previous.get("candidate"), dict) else {}
+                candidate = classified["candidate"]
+                close = old_candidate and abs(float(old_candidate.get("x", -1)) - float(candidate["x"])) < .08 and abs(float(old_candidate.get("y", -1)) - float(candidate["y"])) < .08
+                consecutive = int(previous.get("consecutive_detections") or 0) + 1 if close else 1
+                update.update(status="login_detected", consecutive_detections=consecutive)
+                cooled = now - float(previous.get("last_click_at") or 0) >= config["cooldown_seconds"]
+                attempts = int(previous.get("attempts") or 0)
+                if allow_click and consecutive >= config["required_consecutive_detections"] and cooled and attempts < config["max_attempts_per_episode"]:
+                    action = click_wechat2_login_candidate(pid, candidate)
+                    update.update(status="clicked_login", consecutive_detections=0, last_action=action,
+                                  last_click_at=now, attempts=attempts + 1)
+                elif attempts >= config["max_attempts_per_episode"]:
+                    update["status"] = "attempt_limit"
+    with WECHAT2_AUTO_LOGIN_LOCK:
+        WECHAT2_AUTO_LOGIN_STATE.update(update)
+        return dict(WECHAT2_AUTO_LOGIN_STATE)
+
+
+def save_wechat2_auto_login_config(data: Dict[str, Any]) -> Dict[str, Any]:
+    config = normalize_auto_login_config(data)
+    with CONFIG_WRITE_LOCK:
+        current = json_read(CONFIG_PATH, {})
+        current["wechat2_auto_login"] = config
+        atomic_write(CONFIG_PATH, json.dumps(current, ensure_ascii=False, indent=2) + "\n")
+    with WECHAT2_AUTO_LOGIN_LOCK:
+        WECHAT2_AUTO_LOGIN_STATE["enabled"] = config["enabled"]
+        if not config["enabled"]:
+            WECHAT2_AUTO_LOGIN_STATE.update(status="disabled", consecutive_detections=0, candidate=None)
+    return {"config": config, "state": dict(WECHAT2_AUTO_LOGIN_STATE)}
+
+
+def save_poke_reply_config(data: Dict[str, Any]) -> Dict[str, Any]:
+    config = normalize_poke_reply_config(data)
+    if config["enabled"] and not ((config["text_enabled"] and config["texts"]) or (config["image_enabled"] and config["face_ids"])):
+        raise ValueError("开启拍一拍回复前，至少配置一条文字或一张图片")
+    with CONFIG_WRITE_LOCK:
+        current = json_read(CONFIG_PATH, {})
+        current["poke_reply"] = config
+        atomic_write(CONFIG_PATH, json.dumps(current, ensure_ascii=False, indent=2) + "\n")
+    try:
+        ai_json("/config/reload", "POST", {"config": str(CONFIG_PATH)}, 10)
+    except Exception:
+        pass
+    return config
+
+
+def upload_poke_face(data: Dict[str, Any]) -> Dict[str, Any]:
+    encoded = str(data.get("data_url") or "")
+    match = re.fullmatch(r"data:(image/(?:png|jpeg|gif|webp));base64,([A-Za-z0-9+/=\r\n]+)", encoded)
+    if not match:
+        raise ValueError("仅支持 PNG、JPG、GIF 和 WEBP 图片")
+    raw = base64.b64decode(match.group(2), validate=True)
+    if not raw or len(raw) > 20 * 1024 * 1024:
+        raise ValueError("图片为空或超过 20MB")
+    mime = match.group(1)
+    suffix = {"image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif", "image/webp": ".webp"}[mime]
+    digest = hashlib.sha256(raw).hexdigest()
+    POKE_FACE_DIR.mkdir(parents=True, exist_ok=True)
+    path = POKE_FACE_DIR / (digest + suffix)
+    if not path.exists():
+        fd, tmp = tempfile.mkstemp(prefix="poke-", suffix=suffix, dir=str(POKE_FACE_DIR))
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(raw)
+            os.replace(tmp, path)
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+    item = MEMORY.import_face_asset(str(path), str(data.get("name") or "拍一拍上传图片"))
+    return {"item": item, "data_url": image_data_url(str(path)), "mime": mime, "size": len(raw)}
+
+
+def wechat2_auto_login_loop() -> None:
+    WECHAT2_AUTO_LOGIN_STOP.wait(5)
+    while not WECHAT2_AUTO_LOGIN_STOP.is_set():
+        try:
+            inspect_wechat2_auto_login(True)
+        except Exception as exc:
+            with WECHAT2_AUTO_LOGIN_LOCK:
+                WECHAT2_AUTO_LOGIN_STATE.update(status="error", checked_at=time.strftime("%Y-%m-%d %H:%M:%S"), last_error=str(exc)[:500])
+        config = normalize_auto_login_config(json_read(CONFIG_PATH, {}).get("wechat2_auto_login"))
+        WECHAT2_AUTO_LOGIN_STOP.wait(config["check_interval_seconds"])
+
+
 def port_open(port: int) -> bool:
     try:
         with socket.create_connection(("127.0.0.1", port), timeout=0.35):
@@ -729,19 +993,31 @@ def status() -> Dict[str, Any]:
     onebot_log = onebot_head + onebot_tail
     attached_pid = onebot_target_pid(oc)
     attached_current_wechat = bool(wp and attached_pid == wp)
-    hook_ready = attached_current_wechat and "Dynamic Text Message Setup Complete" in onebot_log and "Cannot locate runtime base" not in onebot_log
+    hook_ready = (
+        attached_current_wechat
+        and "Dynamic Text Message Setup Complete" in onebot_log
+        and "Receiver buf2resp hook attached" in onebot_log
+        and "Receiver buf2resp hook attach failed" not in onebot_log
+        and "Cannot locate runtime base" not in onebot_log
+    )
     send_ready = hook_ready and "捕获到 StartTask" in onebot_tail
     cache_info = upload_x0_cache_info(wp)
     # The OneBot log is truncated on every attach, so a capture in this
     # process is valid for the current WeChat PID. Old cache files are checked
     # separately and are never accepted for a new process.
     recent_capture = "捕获到真实 UploadMedia" in onebot_tail or "使用缓存 UploadMedia X0" in onebot_tail
-    media_upload_ready = hook_ready and (recent_capture or bool(cache_info.get("valid")))
+    # UploadMedia X0 alone is insufficient: the final image send still needs
+    # the StartTask context.  Reporting media ready without it caused poke
+    # replies to enter a 20-second timeout (and repeated attempts could crash
+    # WeChat).  Treat the full path as ready only when both halves exist.
+    media_upload_ready = send_ready and (recent_capture or bool(cache_info.get("valid")))
     cfg = read_config()
     with ONEBOT_MONITOR_LOCK:
         monitor_state = dict(ONEBOT_MONITOR_STATE)
     with MEDIA_REPAIR_LOCK:
         media_repair_state = dict(MEDIA_REPAIR_STATE)
+    with WECHAT2_AUTO_LOGIN_LOCK:
+        auto_login_state = dict(WECHAT2_AUTO_LOGIN_STATE)
     return {
         "wechat2": process_item(wp, wc),
         "onebot": {
@@ -756,7 +1032,10 @@ def status() -> Dict[str, Any]:
                 "current_wechat_pid": wp or 0,
                 "cache": cache_info,
                 "needs_real_upload": not media_upload_ready,
-                "message": "已捕获当前进程上传通道" if media_upload_ready else "后台会自动向文件传输助手发送极小占位图唤醒媒体通道",
+                "message": "已捕获完整媒体发送通道" if media_upload_ready else (
+                    "等待微信首次真实发送以捕获 StartTask" if not send_ready
+                    else "后台会自动向文件传输助手发送极小占位图唤醒媒体通道"
+                ),
                 "auto_repair": media_repair_state,
             },
         },
@@ -766,6 +1045,7 @@ def status() -> Dict[str, Any]:
         )},
         "isolation": {"app": str(WECHAT2_APP), "bundle_id": "com.tencent.xinWeChat.instance2", "main_wechat_touched": False},
         "onebot_monitor": monitor_state,
+        "wechat2_auto_login": auto_login_state,
         "time": time.strftime("%H:%M:%S"),
     }
 
@@ -2098,6 +2378,7 @@ def faces_list(data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def face_send(data: Dict[str, Any]) -> Dict[str, Any]:
+    fast_path = bool(data.get("fast_path"))
     face_id = int(data.get("face_id") or 0)
     media_id = int(data.get("id") or data.get("media_id") or 0)
     group_id = str(data.get("group_id") or "").strip()
@@ -2118,12 +2399,40 @@ def face_send(data: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError("表情包本地文件不存在")
     if path.stat().st_size <= 0 or path.stat().st_size > 25 * 1024 * 1024:
         raise ValueError(f"表情包文件大小异常：{path.stat().st_size} bytes")
+    trace_id = str(data.get("trace_id") or ("face-" + uuid.uuid4().hex[:12]))
+    started = time.monotonic()
+    # 优先走微信 4.1.11.53 自己的收藏表情/sendemoji 通道。素材只要在
+    # 当前微信进程中学习过 EmoticonWrap，即可保持 GIF 动画且不上传文件。
+    native_md5 = str(item.get("face_key") or "").strip().lower()
+    if re.fullmatch(r"[0-9a-f]{32}", native_md5):
+        code, native_result, native_raw = request_json(
+            "http://127.0.0.1:58080/send_native_emoji", "POST",
+            {"group_id": group_id, "md5": native_md5, "length": path.stat().st_size}, timeout=6,
+        )
+        if code < 300 and isinstance(native_result, dict) and native_result.get("status") == "ok":
+            MEMORY.mark_face_used(int(item.get("id") or face_id), True)
+            return {
+                "state": "sent", "trace_id": trace_id, "query": str(data.get("query") or ""),
+                "reason": str(data.get("reason") or ""), "fast_path": True,
+                "transport": "native_emoticon",
+                "elapsed_ms": round((time.monotonic() - started) * 1000),
+                "item": item, "send": native_result,
+            }
+        native_fallback = {
+            "http_status": code,
+            "error": (native_result or {}).get("error") if isinstance(native_result, dict) else native_raw[:300],
+        }
+        if fast_path:
+            MEMORY.mark_face_used(int(item.get("id") or face_id), False)
+            raise RuntimeError(f"原生表情发送失败：{native_fallback['error'] or 'unknown error'}")
+    else:
+        native_fallback = {"error": "face_key is not an md5"}
+
+    transport = "upload_media_fallback"
     if not media_channel_ready():
         repair = ensure_media_channel_ready("face_send_preflight")
         if not repair.get("ready") and not media_channel_ready():
             raise RuntimeError("表情发送前 UploadMedia 通道未就绪")
-    trace_id = str(data.get("trace_id") or ("face-" + uuid.uuid4().hex[:12]))
-    started = time.monotonic()
     state = "failed"
     result: Dict[str, Any] = {}
     with FACE_SEND_LOCK:
@@ -2145,7 +2454,7 @@ def face_send(data: Dict[str, Any]) -> Dict[str, Any]:
                         with log_path.open("rb") as handle:
                             handle.seek(min(offsets.get(str(log_path), 0), log_path.stat().st_size))
                             tail = handle.read().decode("utf-8", "replace")
-                        if "buf2resp: 收到响应, msgType=img" in tail or "发送图片消息成功" in tail:
+                        if "buf2resp: 收到响应, msgType=img" in tail:
                             confirmed = True
                             break
                     except OSError:
@@ -2157,14 +2466,17 @@ def face_send(data: Dict[str, Any]) -> Dict[str, Any]:
                 result = {"ok": True, "latency_ms": round((time.monotonic() - started) * 1000), "timeout": str(exc)}
             else:
                 MEMORY.mark_face_used(int(item.get("id") or face_id), False)
-                raise RuntimeError("表情发送 15 秒超时，5 秒内未收到 OneBot 回调确认") from exc
+                raise RuntimeError("上传表情发送 15 秒超时，5 秒内未收到 OneBot 回调确认") from exc
         except Exception:
             MEMORY.mark_face_used(int(item.get("id") or face_id), False)
             raise
     MEMORY.mark_face_used(int(item.get("id") or face_id), True)
     return {
         "state": state, "trace_id": trace_id, "query": str(data.get("query") or ""),
-        "reason": str(data.get("reason") or ""), "elapsed_ms": round((time.monotonic() - started) * 1000),
+        "reason": str(data.get("reason") or ""), "fast_path": fast_path,
+        "transport": transport,
+        "native_fallback": native_fallback,
+        "elapsed_ms": round((time.monotonic() - started) * 1000),
         "item": item, "send": result,
     }
 
@@ -3002,17 +3314,10 @@ def onebot_monitor_loop() -> None:
                     opened = port_open(58080)
                 except Exception as exc:
                     error = str(exc)[:500]
-            if enabled and auto_recover and opened:
-                try:
-                    st = status()
-                    if st["onebot"].get("send_ready") and not st["onebot"].get("media_upload_ready"):
-                        repair = warm_media_channel("monitor_self_check", force=False)
-                        if repair.get("started"):
-                            action = "media_channel_warmed"
-                        elif repair.get("skipped"):
-                            action = action or f"media_warm_skipped:{repair.get('skipped')}"
-                except Exception as exc:
-                    error = str(exc)[:500]
+            # UploadMedia is discovered independently. Do not enqueue a
+            # filehelper probe from the health monitor: OneBot's native send
+            # worker is serial, so a stalled upload would block instant text
+            # and native-face replies for up to 90 seconds.
             with ONEBOT_MONITOR_LOCK:
                 ONEBOT_MONITOR_STATE.update({
                     "checked_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -3172,6 +3477,11 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.urlparse(self.path).path
         if path == "/api/status":
             return self.json_response(200, {"ok": True, "data": status()})
+        if path == "/api/auto-login/status":
+            with WECHAT2_AUTO_LOGIN_LOCK:
+                return self.json_response(200, {"ok": True, "data": dict(WECHAT2_AUTO_LOGIN_STATE)})
+        if path == "/api/poke-reply/config":
+            return self.json_response(200, {"ok": True, "data": normalize_poke_reply_config(json_read(CONFIG_PATH, {}).get("poke_reply"))})
         if path == "/api/config":
             return self.json_response(200, {"ok": True, "data": read_config()})
         if path == "/api/channels/health":
@@ -3246,6 +3556,16 @@ class Handler(BaseHTTPRequestHandler):
                 result = save_config(data)
                 if ai_was_running:
                     run_action("restart_ai")
+            elif path == "/api/auto-login/config":
+                result = save_wechat2_auto_login_config(data)
+            elif path == "/api/auto-login/check":
+                # Manual checks are deliberately read-only. Only the guarded
+                # background watchdog is allowed to click after two detections.
+                result = inspect_wechat2_auto_login(False)
+            elif path == "/api/poke-reply/config":
+                result = save_poke_reply_config(data)
+            elif path == "/api/poke-reply/upload":
+                result = upload_poke_face(data)
             elif path == "/api/brain/config":
                 result = save_brain_config(data)
             elif path == "/api/personas/analyze":
@@ -3449,10 +3769,11 @@ def main() -> int:
     normalize_existing_voice_titles()
     threading.Thread(target=health_check_loop, name="channel-health-check", daemon=True).start()
     threading.Thread(target=onebot_monitor_loop, name="onebot-monitor", daemon=True).start()
+    threading.Thread(target=wechat2_auto_login_loop, name="wechat2-auto-login", daemon=True).start()
     threading.Thread(target=persona_worker_loop, name="persona-analysis", daemon=True).start()
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"第二微信 Web 管理后台：http://{args.host}:{args.port}", flush=True)
-    signal.signal(signal.SIGTERM, lambda *_: (PERSONA_WORKER_STOP.set(), threading.Thread(target=server.shutdown, daemon=True).start()))
+    signal.signal(signal.SIGTERM, lambda *_: (PERSONA_WORKER_STOP.set(), WECHAT2_AUTO_LOGIN_STOP.set(), threading.Thread(target=server.shutdown, daemon=True).start()))
     try:
         server.serve_forever(poll_interval=0.4)
     finally:

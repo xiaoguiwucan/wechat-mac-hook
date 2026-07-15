@@ -11,11 +11,25 @@ PID_FILE="$SECOND_HOME/onebot-wechat2.pid"
 RECEIVE_HOST="${ONEBOT_RECEIVE_HOST:-127.0.0.1:58080}"
 SEND_URL="${ONEBOT_SEND_URL:-http://127.0.0.1:36060/onebot}"
 IMAGE_PATH="${ONEBOT_IMAGE_PATH:-$HOME/Library/Containers/com.tencent.xinWeChat.instance2/Data/Documents/xwechat_files}"
+SELF_ID="${ONEBOT_SELF_ID:-}"
 MEDIA_PROBE="${ONEBOT_MEDIA_PROBE:-false}"
 APP="${WECHAT2_APP:-$HOME/Applications/WeChat2.app}"
 EXE="$APP/Contents/MacOS/WeChat"
 TOOL_BIN="$ROOT_DIR/tools/bin"
 mkdir -p "$LOG_DIR" "$IMAGE_PATH" "$TOOL_BIN"
+
+# 新版微信的媒体/原生表情 protobuf 必须带发送账号 wxid。IMAGE_PATH 现在通常
+# 指向 xwechat_files 根目录，已无法从路径推导账号；必须使用最近一条真实消息
+# 的 self_id。按历史数量排序会在切换账号后继续选中旧 wxid。
+if [[ -z "$SELF_ID" ]] && command -v sqlite3 >/dev/null 2>&1; then
+  SELF_ID=$(sqlite3 "$SECOND_HOME/memory/wechat-memory.sqlite3" \
+    "SELECT json_extract(raw_json,'$.self_id') FROM messages WHERE COALESCE(json_extract(raw_json,'$.self_id'),'') LIKE 'wxid_%' AND json_extract(raw_json,'$.self_id') NOT IN ('wxid_self','wxid_test_bot') ORDER BY event_time DESC, rowid DESC LIMIT 1;" \
+    2>/dev/null || true)
+fi
+if [[ -z "$SELF_ID" || "$SELF_ID" != wxid_* ]]; then
+  echo "无法确定第二微信 self_id，拒绝启动可能导致微信崩溃的媒体发送链路" >&2
+  exit 9
+fi
 
 # record/voice 发送需要 ffmpeg 转 SILK。优先使用系统 PATH；没有时使用 Python
 # imageio-ffmpeg 提供的本地二进制，并注入到 OneBot 进程 PATH。
@@ -99,12 +113,12 @@ codesign --force --sign - --timestamp=none "$ONEBOT_BIN" >/dev/null 2>&1 || true
 
 : > "$LOG_FILE"
 # 用 setsid/start_new_session 真正脱离当前执行 shell，避免 Codex/终端回收后台进程时把 OneBot 一起杀掉。
-/usr/bin/python3 - "$ONEBOT_DIR" "$ONEBOT_BIN" "$PID_FILE" "$LOG_FILE" "$PID" "$CONF" "$RECEIVE_HOST" "$SEND_URL" "$IMAGE_PATH" "$MEDIA_PROBE" <<'PY'
+/usr/bin/python3 - "$ONEBOT_DIR" "$ONEBOT_BIN" "$PID_FILE" "$LOG_FILE" "$PID" "$CONF" "$RECEIVE_HOST" "$SEND_URL" "$IMAGE_PATH" "$SELF_ID" "$MEDIA_PROBE" <<'PY'
 import os
 import subprocess
 import sys
 
-onebot_dir, onebot_bin, pid_file, log_file, wechat_pid, conf, receive_host, send_url, image_path, media_probe = sys.argv[1:]
+onebot_dir, onebot_bin, pid_file, log_file, wechat_pid, conf, receive_host, send_url, image_path, self_id, media_probe = sys.argv[1:]
 args = [
     onebot_bin,
     '-type=local',
@@ -113,6 +127,7 @@ args = [
     f'-receive_host={receive_host}',
     f'-send_url={send_url}',
     f'-image_path={image_path}',
+    f'-self_id={self_id}',
     '-conn_type=http',
     '-log_level=info',
     f'-media_probe={media_probe}',
@@ -132,13 +147,20 @@ with open(pid_file, 'w') as f:
 PY
 
 OPID=$(cat "$PID_FILE")
+READY=0
 for _ in {1..80}; do
   if ! kill -0 "$OPID" 2>/dev/null; then
     echo "OneBot 已退出；日志：" >&2
     sed -n '1,260p' "$LOG_FILE" >&2 || true
     exit 5
   fi
-  if /usr/sbin/lsof -tiTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1 && grep -q 'Frida 已就绪\|HTTP 服务启动' "$LOG_FILE" 2>/dev/null; then
+  # “Frida 已就绪”只表示脚本已加载；必须等到动态消息与接收 Hook。
+  # UploadMedia 属于独立发送通道，未就绪时保持 OneBot 在线并由状态页
+  # 标记为降级，不能因此杀掉已经正常工作的消息接收链路。
+  if /usr/sbin/lsof -tiTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1 \
+    && grep -q 'Dynamic Text Message Setup Complete' "$LOG_FILE" 2>/dev/null \
+    && grep -q 'Receiver buf2resp hook attached' "$LOG_FILE" 2>/dev/null; then
+    READY=1
     break
   fi
   sleep 0.5
@@ -155,6 +177,13 @@ if ! /usr/sbin/lsof -tiTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
   kill "$OPID" 2>/dev/null || true
   rm -f "$PID_FILE"
   exit 7
+fi
+if [[ "$READY" != "1" ]]; then
+  echo "OneBot 初始化超时：接收 Hook 未就绪；拒绝误报启动成功" >&2
+  sed -n '1,260p' "$LOG_FILE" >&2 || true
+  kill "$OPID" 2>/dev/null || true
+  rm -f "$PID_FILE"
+  exit 8
 fi
 
 echo "OneBot PID=$OPID attached WeChat2 PID=$PID"

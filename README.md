@@ -5,7 +5,7 @@
 **macOS 第二微信隔离运行、OneBot 接入与 AI 群聊值班后台**
 
 <p>
-  <img alt="version" src="https://img.shields.io/badge/version-V0.0.3-25b77b?style=for-the-badge">
+  <img alt="version" src="https://img.shields.io/badge/version-V0.0.4-25b77b?style=for-the-badge">
   <img alt="macOS" src="https://img.shields.io/badge/macOS-Apple%20Silicon%20%7C%20Intel-111827?style=for-the-badge&logo=apple">
   <img alt="wechat" src="https://img.shields.io/badge/WeChat-4.1.11.53-07c160?style=for-the-badge&logo=wechat">
   <img alt="ai" src="https://img.shields.io/badge/AI-OpenAI%20Compatible-7c3aed?style=for-the-badge">
@@ -25,7 +25,7 @@
 - **接入大模型**：支持 OpenAI-compatible / DeepSeek / 第三方 API 中转站，多渠道健康检查与失败自动切换。
 - **提供 Web 管理后台**：在浏览器里完成运行状态、模型渠道、群权限、机器人性格、测试中心和实时日志管理。
 
-> 当前版本：`V0.0.3`，适配重点为 **微信 macOS 4.1.11.53**。
+> 当前版本：`V0.0.4`，适配重点为 **微信 macOS 4.1.11.53**。
 
 ---
 
@@ -47,6 +47,8 @@
 | 语音理解 | 原始语音提取、SILK 转 WAV、ASR 自动转写与语音内容检索 |
 | 语音包 | 目录 / ZIP 批量导入、分类、搜索、推荐、预览和 AI 自动选取发送 |
 | 表情包 | 表情素材索引、OCR、搜索、标注和 AI 显式请求发送 |
+| 拍一拍回复 | 仅在机器人本人被拍时触发，支持随机文字、多张图片和微信原生动态表情快速发送 |
+| 自动登录 | 只监控第二微信授权登录窗口，本地 OCR 连续确认后自动点击“进入微信” |
 | 媒体发送 | 文本、@、引用、图片、文件、视频、语音完整 OneBot 发送链路 |
 | 媒体自修复 | 自动解析当前微信 UploadMedia 服务，按 PID 缓存并在失败时重试 |
 | 链路诊断 | trace ID、最近链路、完整消息测试、OneBot 健康监控与恢复 |
@@ -222,8 +224,54 @@ flowchart LR
 
 ---
 
+## 👋 拍一拍回复与原生动态表情
+
+`V0.0.4` 的拍一拍回复不经过普通群聊的评分、记忆检索、Reranker 或大模型生成。完整链路为：
+
+```mermaid
+flowchart LR
+  A[微信拍一拍系统消息] --> B{pattedusername}
+  B -->|不是机器人| C[忽略]
+  B -->|等于机器人 self_id| D[随机选择文字或表情]
+  D -->|文字| E[OneBot 文本发送]
+  D -->|表情| F[读取 face_key MD5 与原始长度]
+  F --> G[构造微信 type=8 原生表情消息]
+  G --> H[微信从本地收藏表情层读取并发送]
+```
+
+微信的拍一拍 XML 同时包含：
+
+```xml
+<fromusername>发起拍一拍的成员</fromusername>
+<pattedusername>被拍成员</pattedusername>
+```
+
+服务只在 `pattedusername == 当前第二微信 self_id` 时回复。目标是其他群友或无法确认目标时不会发送任何内容。
+
+对于已入库的收藏表情，服务使用稳定 MD5 与原始文件长度构造微信 `type=8` 表情消息。该方式不会重新上传或重新编码 GIF，不需要 UploadMedia、CDN Key 或 AES Key；OneBot 重启后也不要求用户重新发送表情进行校准。原生表情快速路径还会绕过普通媒体信号量、固定发送间隔和普通图片回调等待。
+
+后台“表情包管理”支持：
+
+- 开关拍一拍自动回复。
+- 输入多条随机文字，每行一条。
+- 从现有表情中选择多张候选并滚动管理。
+- 上传 GIF、PNG、JPEG 或 WebP 作为候选。
+- 将最短间隔设为 `0`，允许连续拍一拍逐次回复。
+
+相关本地接口：
+
+| 接口 | 用途 |
+| --- | --- |
+| `GET /api/poke-reply/config` | 读取拍一拍回复配置 |
+| `POST /api/poke-reply/config` | 保存配置并热加载 |
+| `POST /api/poke-reply/upload` | 导入拍一拍图片素材 |
+| `GET /native_emoji/status` | 查看 OneBot 原生表情通道状态 |
+| `POST /send_native_emoji` | 通过 MD5 与长度发送原生表情 |
+
+---
+
 ## 📌 版本状态
 
-`V0.0.3` 新增永久群聊大脑、七维接话评分、多线程回复、本地 oMLX 向量检索与重排、自动语音/表情回复、群成员黑名单，以及具备真实消息证据的独立用户画像系统。
+`V0.0.4` 新增拍一拍随机文字/图片回复、微信原生动态表情快速发送和第二微信自动登录守护，并修复拍其他群友误回复、连续拍一拍丢失、旧账号 wxid 错配及强制触发仍受阈值限制的问题。
 
 后续计划见 [CHANGELOG.md](CHANGELOG.md)。项目规则见 [RULES.md](RULES.md)。

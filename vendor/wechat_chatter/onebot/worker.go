@@ -60,11 +60,18 @@ func SendWechatMsg(m *SendMsg) {
 		}
 	}()
 
-	time.Sleep(time.Duration(config.SendInterval) * time.Millisecond)
+	// 拍一拍原生表情不需要上传，也不应承受普通消息的固定发送间隔。
+	if m.Type != "native_emoji" {
+		time.Sleep(time.Duration(config.SendInterval) * time.Millisecond)
+	}
 	currTaskId := atomic.AddInt64(&taskId, 1)
 	Info("📩 收到任务", "task_id", currTaskId, "type", m.Type)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	taskTimeout := 15 * time.Second
+	if m.Type == "native_emoji" {
+		taskTimeout = 5 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), taskTimeout)
 	defer cancel()
 
 	targetId := m.UserId
@@ -79,6 +86,35 @@ func SendWechatMsg(m *SendMsg) {
 	}
 
 	switch m.Type {
+	case "native_emoji":
+		if nativeEmojiMD5Pattern.MatchString(m.Content) && m.EmojiSize > 0 {
+			protoHex, err := BuildNativeEmojiAppMsgProto(myWechatId, targetId, m.Content, m.EmojiSize)
+			if err != nil {
+				sendErr = err
+				return
+			}
+			payloadHex := BuildSendPayload(currTaskId, "file")
+			result := fridaScript.ExportsCall("triggerSendFileMessage", currTaskId, myWechatId, targetId, protoHex, payloadHex)
+			Info("📩 原生表情引用任务执行结果", "result", result, "task_id", currTaskId,
+				"target_id", targetId, "md5", m.Content, "length", m.EmojiSize)
+			if result != "1" {
+				sendErr = fmt.Errorf("native emoticon send failed: %s", result)
+				return
+			}
+		} else {
+			// 保留已捕获模板的兼容路径，新路径不再依赖它。
+			result := fridaScript.ExportsCall("triggerNativeEmoticon", currTaskId, m.Content, targetId)
+			Info("📩 原生表情模板任务执行结果", "result", result, "task_id", currTaskId, "target_id", targetId, "key", m.Content)
+			if result != "1" {
+				sendErr = fmt.Errorf("native emoticon template failed: %s", result)
+				return
+			}
+		}
+		// The native type=8 app-message request does not return through the
+		// ordinary text/image buf2resp parser. A successful StartTask call is
+		// the synchronous acceptance signal; waiting here only creates a false
+		// five-second timeout and serialises subsequent poke replies.
+		return
 	case "text":
 		protoHex, err := BuildTextMsgProto(targetId, m.Content, m.AtUser)
 		if err != nil {
@@ -371,7 +407,10 @@ func HandleMsg(jsonData []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	if myWechatId == "" && m.SelfID != "" {
+	if strings.HasPrefix(m.SelfID, "wxid_") && m.SelfID != myWechatId {
+		if myWechatId != "" {
+			Warn("检测到当前第二微信账号变化，已更新发送账号", "old_self_id", myWechatId, "new_self_id", m.SelfID)
+		}
 		myWechatId = m.SelfID
 	}
 	if m.GroupId != "" {

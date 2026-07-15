@@ -17,6 +17,7 @@ import json
 import mimetypes
 import os
 import queue
+import random
 import re
 import signal
 import subprocess
@@ -255,6 +256,26 @@ class MediaReplyConfig:
 
 
 @dataclass
+class PokeReplyConfig:
+    enabled: bool = False
+    text_enabled: bool = True
+    image_enabled: bool = False
+    texts: List[str] = field(default_factory=lambda: ["拍我干嘛～", "在呢，别拍了。"])
+    face_ids: List[int] = field(default_factory=list)
+    cooldown_seconds: int = 8
+
+    @classmethod
+    def from_raw(cls, raw: Dict[str, Any]) -> "PokeReplyConfig":
+        value = raw.get("poke_reply") if isinstance(raw.get("poke_reply"), dict) else {}
+        source_texts = value.get("texts") if "texts" in value else ["拍我干嘛～", "在呢，别拍了。"]
+        texts = [str(x).strip()[:200] for x in (source_texts or []) if str(x).strip()]
+        face_ids = list(dict.fromkeys(int(x) for x in (value.get("face_ids") or []) if str(x).isdigit() and int(x) > 0))
+        return cls(enabled=bool(value.get("enabled", False)), text_enabled=bool(value.get("text_enabled", True)),
+                   image_enabled=bool(value.get("image_enabled", False)), texts=texts,
+                   face_ids=face_ids[:100], cooldown_seconds=max(0, min(300, int(value.get("cooldown_seconds", 8)))))
+
+
+@dataclass
 class ReplyDecision:
     text: str = ""
     medium: str = "text"
@@ -294,6 +315,7 @@ class AppConfig:
     vision_ocr: VisionOCRConfig = field(default_factory=VisionOCRConfig)
     asr: ASRConfig = field(default_factory=ASRConfig)
     media_reply: MediaReplyConfig = field(default_factory=MediaReplyConfig)
+    poke_reply: PokeReplyConfig = field(default_factory=PokeReplyConfig)
     brain: BrainConfig = field(default_factory=BrainConfig)
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
 
@@ -430,6 +452,7 @@ class AppConfig:
                 prompt=str(asr_raw.get("prompt") or ""),
             ),
             media_reply=MediaReplyConfig.from_raw(raw),
+            poke_reply=PokeReplyConfig.from_raw(raw),
             brain=BrainConfig.from_raw(raw),
             embedding=EmbeddingConfig.from_raw(raw),
         )
@@ -469,6 +492,7 @@ class AIReplyService:
         self.culture_pending: set[str] = set()
         self.culture_message_counts: Dict[str, int] = collections.defaultdict(int)
         self.culture_last_run: Dict[str, float] = collections.defaultdict(float)
+        self.poke_last_reply_at: Dict[str, float] = collections.defaultdict(float)
         self.history_locks: Dict[str, threading.RLock] = collections.defaultdict(threading.RLock)
         self.send_locks: Dict[str, threading.RLock] = collections.defaultdict(threading.RLock)
         self.model_semaphore = threading.BoundedSemaphore(cfg.brain.model_concurrency)
@@ -568,6 +592,19 @@ class AIReplyService:
         }
 
     def enqueue_raw(self, raw: Dict[str, Any], signature: str = "") -> Tuple[bool, str]:
+        poke = self.parse_poke_event(raw)
+        if poke:
+            if not self.cfg.poke_reply.enabled:
+                return False, "poke_reply_disabled"
+            if poke.group_id not in self.cfg.target_groups:
+                return False, "poke_group_not_enabled"
+            now = time.time()
+            with self.state_lock:
+                if now - self.poke_last_reply_at[poke.group_id] < self.cfg.poke_reply.cooldown_seconds:
+                    return False, "poke_reply_cooldown"
+                self.poke_last_reply_at[poke.group_id] = now
+            threading.Thread(target=self.handle_poke_reply, args=(poke,), name="poke-reply", daemon=True).start()
+            return True, "poke_reply_queued"
         evt, reason = self.parse_event(raw)
         if not evt:
             return False, reason
@@ -604,6 +641,119 @@ class AIReplyService:
             return False, "ignored"
         task = self.scheduler.submit(evt, self.handle_brain_task)
         return True, "queued:" + task.task_id
+
+    def parse_poke_event(self, raw: Dict[str, Any]) -> Optional[OneBotEvent]:
+        post_type = str(raw.get("post_type") or "")
+        notice_type = str(raw.get("notice_type") or raw.get("event_type") or "").lower()
+        sub_type = str(raw.get("sub_type") or raw.get("type") or "").lower()
+        raw_message = str(raw.get("raw_message") or raw.get("content") or "")
+        if not raw_message:
+            for segment in raw.get("message") or []:
+                if isinstance(segment, dict) and str(segment.get("type") or "") == "sys":
+                    data = segment.get("data") if isinstance(segment.get("data"), dict) else {}
+                    raw_message = str(data.get("text") or "")
+                    if raw_message:
+                        break
+        structured = post_type == "notice" and (notice_type in {"notify", "poke", "pat"} or sub_type in {"poke", "pat"})
+        xml_pat = bool(re.search(r"<(?:sysmsg[^>]+type=[\"']pat[\"']|pat\b|patmsg\b)", raw_message, re.I))
+        if not structured and not xml_pat:
+            return None
+
+        def pat_xml_value(tag: str) -> str:
+            match = re.search(
+                rf"<{tag}>\s*(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?\s*</{tag}>",
+                raw_message,
+                re.I | re.S,
+            )
+            return str(match.group(1) if match else "").strip()
+
+        group_id = str(raw.get("group_id") or raw.get("from_id") or "")
+        self_id = str(raw.get("self_id") or "")
+        target_id = str(raw.get("target_id") or raw.get("receiver_id") or pat_xml_value("pattedusername"))
+        # A pat event must positively identify this bot as the target. Older
+        # logic accepted target-less system XML and therefore replied when one
+        # group member patted another member.
+        if not group_id.endswith("@chatroom") or not self_id or target_id != self_id:
+            return None
+        user_id = str(raw.get("operator_id") or raw.get("user_id") or raw.get("sender_id") or "")
+        if not user_id or user_id.endswith("@chatroom"):
+            user_id = pat_xml_value("fromusername")
+        if not user_id or user_id.endswith("@chatroom"):
+            return None
+        sender = raw.get("sender") if isinstance(raw.get("sender"), dict) else {}
+        sender_name = self.store.resolve_member_name(group_id, user_id, str(sender.get("card") or sender.get("nickname") or ""))
+        seed = f"poke|{group_id}|{user_id}|{raw.get('time')}|{raw.get('message_id')}"
+        return OneBotEvent(event_id=hashlib.sha1(seed.encode()).hexdigest(), group_id=group_id,
+                           group_name=self.cfg.target_groups.get(group_id, group_id), self_id=self_id,
+                           user_id=user_id, sender_name=sender_name, text="[拍一拍机器人]",
+                           raw_message=raw_message, message_id=str(raw.get("message_id") or ""),
+                           timestamp=int(raw.get("time") or time.time()), raw=raw,
+                           trace_id="poke-" + hashlib.sha1((seed + str(time.time_ns())).encode()).hexdigest()[:12])
+
+    def handle_poke_reply(self, evt: OneBotEvent) -> None:
+        started = time.monotonic()
+        config = self.cfg.poke_reply
+        media_options = ["text"] if config.text_enabled and config.texts else []
+        if config.image_enabled and config.face_ids:
+            media_options.append("face")
+        if not media_options:
+            log("warning", "poke_reply_no_content", group_id=evt.group_id, trace_id=evt.trace_id)
+            return
+        medium = random.choice(media_options)
+        try:
+            if medium == "face":
+                face_ids = list(dict.fromkeys(config.face_ids))
+                random.shuffle(face_ids)
+                candidates = []
+                for face_id in face_ids:
+                    item = self.store.face_asset(face_id)
+                    if item and int(item.get("enabled", 0)):
+                        candidates.append(item)
+                if not candidates:
+                    raise RuntimeError("拍一拍没有可用的已选表情")
+                # A native upload can be accepted and still never call CDN
+                # completion (observed with malformed/unsupported GIF assets).
+                # Keep such assets out of the instant-reply pool after their
+                # failures catch up with successes; users can still test them
+                # manually or replace/re-encode the file.
+                reliable = [
+                    item for item in candidates
+                    if int(item.get("failure_count") or 0) < max(1, int(item.get("success_count") or 0))
+                ]
+                if reliable:
+                    candidates = reliable
+                # One poke is exactly one upload attempt. Cascading through all
+                # selected GIFs turns a transient failure into 20+ seconds of
+                # native uploads and can destabilize the WeChat process.
+                item = random.choice(candidates)
+                self.send_poke_face_fast(evt, item)
+            else:
+                self.send_group_msg(evt.group_id, random.choice(config.texts), evt.trace_id, evt)
+            log("info", "poke_reply_sent", group_id=evt.group_id, user_id=evt.user_id,
+                medium=medium, asset_id=int(item.get("id") or 0) if medium == "face" else 0,
+                asset_file=str(item.get("file") or "")[-180:] if medium == "face" else "", fast_path=True,
+                elapsed_ms=round((time.monotonic() - started) * 1000), trace_id=evt.trace_id)
+        except Exception as exc:
+            log("error", "poke_reply_failed", group_id=evt.group_id, medium=medium,
+                fast_path=True, elapsed_ms=round((time.monotonic() - started) * 1000),
+                error=str(exc), trace_id=evt.trace_id)
+
+    def send_poke_face_fast(self, evt: OneBotEvent, item: Dict[str, Any]) -> None:
+        """Send a configured poke image without entering normal reply/tool/task auditing."""
+        file_value = str(item.get("file") or item.get("url") or "")
+        if not file_value:
+            raise RuntimeError("拍一拍表情没有本地文件")
+        # Native type=8 emoticons neither upload nor use the shared media
+        # channel. Waiting on that semaphore made poke replies stall behind an
+        # unrelated voice/image upload.
+        result = self.post_web_admin("/api/faces/send", {
+            "group_id": evt.group_id,
+            "face_id": item["id"],
+            "trace_id": evt.trace_id,
+            "fast_path": True,
+        }, timeout=4)
+        if str(result.get("state") or "") not in {"sent", "timeout_confirmed"}:
+            raise RuntimeError(str(result.get("error") or "表情发送未确认"))
 
     def persist_incoming(self, evt: OneBotEvent) -> None:
         sender = evt.raw.get("sender") if isinstance(evt.raw.get("sender"), dict) else {}
@@ -939,12 +1089,13 @@ class AIReplyService:
                         "rerank_cache_hits": memory.get("rerank_cache_hits", 0),
                         "memory": [{k: v for k, v in x.items() if k != "vector_blob"} for x in (memory.get("items") or [])[:12]]}
         registry.update(task, "scoring", score=score, threshold=self.cfg.brain.threshold, model=score_model, details=task.details)
-        if score < self.cfg.brain.threshold:
+        mandatory_trigger = bool(local.get("mandatory"))
+        if score < self.cfg.brain.threshold and not mandatory_trigger:
             task.details = {
                 **task.details,
                 "threshold_gate": "below_threshold",
                 "below_threshold": True,
-                "trigger_was_mandatory": bool(local.get("mandatory")),
+                "trigger_was_mandatory": False,
             }
             registry.update(task, "skipped", result="score_below_threshold", details=task.details)
             log("info", "score_below_threshold_skip", group_id=evt.group_id,
@@ -953,6 +1104,27 @@ class AIReplyService:
                 alias_hit=str(local.get("alias_hit") or ""), task_id=task.task_id,
                 message_id=evt.message_id, trace_id=evt.trace_id)
             return
+
+        if mandatory_trigger:
+            task.details = {
+                **task.details,
+                "threshold_gate": "mandatory_bypass",
+                "below_threshold": score < self.cfg.brain.threshold,
+                "trigger_was_mandatory": True,
+                "mandatory_reason": (
+                    "at_self" if local.get("at_self") else
+                    "reply" if local.get("reply_id") else
+                    "bot_alias" if local.get("alias_hit") else
+                    "explicit_media"
+                ),
+            }
+            registry.update(task, "scoring", score=score, threshold=self.cfg.brain.threshold,
+                            model=score_model, details=task.details)
+            log("info", "mandatory_trigger_bypass_threshold", group_id=evt.group_id,
+                user_id=evt.user_id, sender=evt.sender_name, score=score,
+                threshold=self.cfg.brain.threshold, reason=task.details["mandatory_reason"],
+                alias_hit=str(local.get("alias_hit") or ""), task_id=task.task_id,
+                message_id=evt.message_id, trace_id=evt.trace_id)
 
         evt.raw["_brain_memory"] = memory
         evt.raw["_brain_score"] = {"score": score, "factors": factors, "reason": score_reason}

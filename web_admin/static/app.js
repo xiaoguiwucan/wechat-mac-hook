@@ -1,6 +1,6 @@
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
-const state = { config: null, status: null, brainConfig: null, replyTasks: [], faceItems: [], channels: [], selectedChannelId: '', channelHealth: {}, groupCatalog: [], groupMemberCatalog: {}, ignoredGroupMembers: {}, persona: { members: [], selectedUserId: '', detail: null, tab: 'overview', refreshTimer: null }, dirty: false, logs: [], source: 'all', miniSource: 'all', paused: false, eventSource: null, traceDiagnostic: null };
+const state = { config: null, status: null, brainConfig: null, replyTasks: [], faceItems: [], pokeFaceIds: new Set(), channels: [], selectedChannelId: '', channelHealth: {}, groupCatalog: [], groupMemberCatalog: {}, ignoredGroupMembers: {}, persona: { members: [], selectedUserId: '', detail: null, tab: 'overview', refreshTimer: null }, dirty: false, logs: [], source: 'all', miniSource: 'all', paused: false, eventSource: null, traceDiagnostic: null };
 const pageMeta = {
   overview: ['运行总览', '第二微信、OneBot 与 AI 服务'], ai: ['模型配置', '对话、OCR 与 ASR 模型配置'],
   groups: ['群聊策略', '目标群与自动回复规则'], brain: ['群聊大脑', '接话门槛、七维评分与并发策略'],
@@ -465,6 +465,36 @@ function renderStatus(data) {
   $('#testHealth').textContent = all ? '服务链路在线' : '部分服务离线'; $('#testHealth').className = `health-chip ${all ? 'good' : 'warn'}`;
   $('#syncTime').textContent = `${data.time} 已同步`;
   $('#isolationPath').textContent = `${data.isolation.app} · ${data.isolation.bundle_id}`;
+  renderAutoLogin(data.wechat2_auto_login || {});
+}
+
+function renderAutoLogin(item) {
+  const labels = {
+    starting: '启动中', disabled: '已关闭', wechat_not_running: '第二微信未运行',
+    logged_in: '已登录 · 不会点击', login_confirmed: '已进入微信', waiting_window: '等待登录窗口', watching: '监控中', login_detected: '已识别登录页',
+    clicked_login: '已点击登录', attempt_limit: '已达尝试上限', error: '检测异常'
+  };
+  const status = item.status || 'starting';
+  $('#autoLoginState').textContent = labels[status] || status;
+  $('#autoLoginState').className = `auto-login-state ${['logged_in','login_confirmed','watching','clicked_login'].includes(status) ? 'good' : ['error','attempt_limit'].includes(status) ? 'bad' : ''}`;
+  $('#autoLoginPulse').className = `auto-login-pulse ${status}`;
+  if ($('#autoLoginEnabled') && document.activeElement !== $('#autoLoginEnabled')) $('#autoLoginEnabled').checked = item.enabled !== false;
+  const count = Number(item.consecutive_detections || 0);
+  $('#autoLoginDetail').textContent = item.last_error || (status === 'login_detected' ? `安全确认 ${count}/2；连续识别后才点击` : `仅检查 WeChat2.app · ${item.checked_at || '等待首次检测'}`);
+}
+
+async function saveAutoLogin(enabled) {
+  try {
+    const result = await api('/api/auto-login/config', { method: 'POST', body: JSON.stringify({ enabled }) });
+    renderAutoLogin(result.state || {}); toast(enabled ? '自动登录守护已开启' : '自动登录守护已关闭');
+  } catch (e) { $('#autoLoginEnabled').checked = !enabled; toast(`保存失败：${e.message}`, 'error'); }
+}
+
+async function checkAutoLogin(button) {
+  setBusy(button, true, '检测中…');
+  try { const result = await api('/api/auto-login/check', { method: 'POST', body: '{}' }); renderAutoLogin(result); toast('已完成安全检测，本次不执行点击'); }
+  catch (e) { toast(`检测失败：${e.message}`, 'error'); }
+  finally { setBusy(button, false); }
 }
 
 async function refreshStatus(silent = false) {
@@ -1519,6 +1549,7 @@ function faceCard(x) {
       <p class="face-card-summary">${escapeHtml(title)}</p>
       ${tags.length ? `<div class="tag-list">${tags.map(t => `<span>${escapeHtml(t)}</span>`).join('')}</div>` : '<div class="tag-list"><span>待补充语义</span></div>'}
       <div class="media-actions">
+        <button class="link-btn poke-face-select" data-face-id="${x.id}">${state.pokeFaceIds.has(Number(x.id)) ? '已选拍一拍' : '选为拍一拍'}</button>
         <button class="link-btn face-send" data-face-id="${x.id}">发送到目标群</button>
         <button class="link-btn face-details" data-face-id="${x.id}">查看详情</button>
       </div>
@@ -1571,12 +1602,105 @@ async function loadFaces(button, silent = false) {
     $$('.face-group-toggle', $('#faceResults')).forEach(btn => btn.onclick = () => toggleFaceForGroup(btn));
     $$('.face-semantic-edit', $('#faceResults')).forEach(btn => btn.onclick = () => editFaceSemantics(btn));
     $$('.face-details', $('#faceResults')).forEach(btn => btn.onclick = () => openFaceDetail(btn.dataset.faceId));
+    $$('.poke-face-select', $('#faceResults')).forEach(btn => btn.onclick = () => togglePokeFace(btn.dataset.faceId));
     $$('.media-expand', $('#faceResults')).forEach(btn => btn.onclick = () => previewContent(btn));
+    renderPokeSelectedFaces();
     if (chip) { chip.textContent = `表情 ${r.count} 个`; chip.className = 'health-chip good'; }
   } catch (e) {
     if (chip) { chip.textContent = '读取失败'; chip.className = 'health-chip warn'; }
     if (!silent) toast(`表情包读取失败：${e.message}`, 'error');
   } finally { if (button) setBusy(button, false); }
+}
+
+function renderPokeSelectedFaces() {
+  const byId = new Map(state.faceItems.map(x => [Number(x.id), x]));
+  const items = [...state.pokeFaceIds].map(id => byId.get(Number(id)) || { id: Number(id), missing: true });
+  const count = $('#pokeSelectedCount'); if (count) count.textContent = `${items.length} 张`;
+  $('#pokeSelectedFaces').innerHTML = items.length ? items.map(x => {
+    const source = String(x.file || x.url || '').toLowerCase();
+    const animated = source.includes('.gif');
+    const nativeReady = String(x.meta_json || '').includes('<emoji');
+    const status = x.missing ? '待加载' : nativeReady && animated ? 'GIF 原生' : animated ? 'GIF 上传' : '图片上传';
+    return `<button type="button" class="poke-selected-face ${animated ? 'is-gif' : ''}" data-face-id="${x.id}" title="点击移除 #${x.id}">${x.data_url ? `<img src="${escapeHtml(x.data_url)}" alt="face #${x.id}">` : `<span>${animated ? 'GIF' : '#' + x.id}</span>`}<i>${escapeHtml(status)}</i><b>#${x.id} ×</b></button>`;
+  }).join('') : '<small>请在右侧素材中点击“选为拍一拍”，或直接上传图片</small>';
+  $$('.poke-selected-face', $('#pokeSelectedFaces')).forEach(button => button.onclick = () => togglePokeFace(button.dataset.faceId));
+}
+
+function togglePokeFace(faceId) {
+  const id = Number(faceId);
+  state.pokeFaceIds.has(id) ? state.pokeFaceIds.delete(id) : state.pokeFaceIds.add(id);
+  if (state.pokeFaceIds.size) $('#pokeImageEnabled').checked = true;
+  else $('#pokeImageEnabled').checked = false;
+  renderPokeSelectedFaces();
+  $$('.poke-face-select').forEach(button => { if (Number(button.dataset.faceId) === id) button.textContent = state.pokeFaceIds.has(id) ? '已选拍一拍' : '选为拍一拍'; });
+  schedulePokeConfigSave('图片选择已保存');
+}
+
+async function loadPokeConfig() {
+  const value = await api('/api/poke-reply/config');
+  $('#pokeEnabled').checked = value.enabled; $('#pokeTextEnabled').checked = value.text_enabled;
+  $('#pokeImageEnabled').checked = value.image_enabled; $('#pokeTexts').value = (value.texts || []).join('\n');
+  $('#pokeCooldown').value = value.cooldown_seconds ?? 8; state.pokeFaceIds = new Set((value.face_ids || []).map(Number));
+  renderPokeSelectedFaces();
+  updatePokeSaveState('已同步', 'good');
+}
+
+let pokeSaveTimer = null;
+let pokeSaveSerial = 0;
+let pokeSaveQueue = Promise.resolve();
+
+function updatePokeSaveState(text, kind = '') {
+  const chip = $('#pokeSaveState'); if (!chip) return;
+  chip.textContent = text; chip.className = `route-status ${kind}`.trim();
+}
+
+function schedulePokeConfigSave(successText = '已自动保存') {
+  clearTimeout(pokeSaveTimer);
+  updatePokeSaveState('待保存', 'warn');
+  pokeSaveTimer = setTimeout(() => savePokeConfig(null, true, successText), 350);
+}
+
+async function savePokeConfig(button, silent = false, successText = '已保存并生效') {
+  const serial = ++pokeSaveSerial;
+  const faceIds = [...state.pokeFaceIds];
+  const textEnabled = $('#pokeTextEnabled').checked;
+  let imageEnabled = $('#pokeImageEnabled').checked;
+  // Closing text while images are selected means "image-only", not "no
+  // content".  Normalize this before saving so the UI never shows a false
+  // validation error during rapid toggle/select operations.
+  if (!textEnabled && faceIds.length) {
+    imageEnabled = true;
+    $('#pokeImageEnabled').checked = true;
+  }
+  const payload = {enabled:$('#pokeEnabled').checked,
+    text_enabled:textEnabled,image_enabled:imageEnabled,
+    texts:$('#pokeTexts').value.split(/\n/).map(x=>x.trim()).filter(Boolean),face_ids:faceIds,
+    cooldown_seconds:Number($('#pokeCooldown').value ?? 8)};
+  if (button) setBusy(button, true, '保存中…');
+  updatePokeSaveState('保存中…', 'warn');
+  try {
+    // Serialize saves. Previously an older request could finish last and
+    // overwrite a newly selected face, producing the misleading "select an
+    // image" error even though the card still looked selected.
+    const request = () => api('/api/poke-reply/config', {method:'POST', body:JSON.stringify(payload)});
+    pokeSaveQueue = pokeSaveQueue.then(request, request);
+    await pokeSaveQueue;
+    if (serial === pokeSaveSerial) updatePokeSaveState(successText, 'good');
+    if (!silent) toast('拍一拍回复已保存并实时生效');
+  } catch(e) {
+    if (serial === pokeSaveSerial) updatePokeSaveState('保存失败', 'bad');
+    toast(`拍一拍保存失败：${e.message}`,'error');
+  } finally { if (button) setBusy(button,false); }
+}
+
+async function uploadPokeFaces(files) {
+  for (const file of [...files]) {
+    if (!/^image\/(png|jpeg|gif|webp)$/.test(file.type) || file.size > 20*1024*1024) { toast(`${file.name} 格式不支持或超过 20MB`,'error'); continue; }
+    const dataUrl = await new Promise((resolve,reject)=>{ const reader=new FileReader(); reader.onload=()=>resolve(reader.result); reader.onerror=reject; reader.readAsDataURL(file); });
+    try { const result=await api('/api/poke-reply/upload',{method:'POST',body:JSON.stringify({name:file.name,data_url:dataUrl})}); state.faceItems.unshift({...result.item,data_url:result.data_url,tags:[],keywords:[]}); state.pokeFaceIds.add(Number(result.item.id)); $('#pokeImageEnabled').checked = true; toast(`已上传并选中 ${file.name}`); }
+    catch(e){ toast(`${file.name} 上传失败：${e.message}`,'error'); }
+  }
+  renderPokeSelectedFaces(); await loadFaces(null,true); schedulePokeConfigSave('上传图片已保存');
 }
 
 async function sendFace(button) {
@@ -1796,6 +1920,8 @@ function bind() {
     if (pageMeta[requested] && !$('#page-' + requested).classList.contains('active')) showPage(requested);
   });
   $('#refreshBtn').onclick = () => { refreshStatus(); refreshTraces(); }; $('#refreshTraceBtn').onclick = () => refreshTraces(); $('#startAllBtn').onclick = e => { if (confirm('确认启动第二微信、OneBot 与 AI 服务？')) action('start_all', e.currentTarget); }; $$('.action-btn').forEach(x => x.onclick = () => action(x.dataset.action, x));
+  $('#autoLoginEnabled').onchange = e => saveAutoLogin(e.target.checked);
+  $('#autoLoginCheckBtn').onclick = e => checkAutoLogin(e.currentTarget);
   $('#channelSelect').onchange = e => selectChannel(e.target.value); $('#addChannelBtn').onclick = openChannelDialog; $('#deleteChannelBtn').onclick = deleteCurrentChannel;
   $('#testAllChannelsBtn').onclick = e => testAllChannels(e.currentTarget); $('#refreshHealthBtn').onclick = () => refreshChannelHealth();
   $('#channelProvider').onchange = e => applyProviderPreset(e.target.value); $('#newChannelProvider').onchange = e => applyProviderPreset(e.target.value, 'new');
@@ -1867,6 +1993,12 @@ function bind() {
   $('#faceMediaSaveBtn').onclick = e => saveMediaReplyConfig(e.currentTarget, 'face');
   $('#faceContextTestBtn').onclick = e => testMediaContext(e.currentTarget, 'face');
   $('#faceReindexBtn').onclick = e => reindexFaces(e.currentTarget);
+  $('#pokeSaveBtn').onclick = e => savePokeConfig(e.currentTarget);
+  $$('#pokeEnabled,#pokeTextEnabled,#pokeImageEnabled').forEach(input => input.addEventListener('change', () => schedulePokeConfigSave()));
+  $('#pokeTexts').addEventListener('input', () => { updatePokeSaveState('正在编辑', 'warn'); });
+  $('#pokeTexts').addEventListener('blur', () => schedulePokeConfigSave('文字已自动保存'));
+  $('#pokeCooldown').addEventListener('change', () => schedulePokeConfigSave());
+  $('#pokeFaceUpload').onchange = e => { uploadPokeFaces(e.target.files).finally(() => { e.target.value = ''; }); };
   $('#faceDetailClose').onclick = () => $('#faceDetailDialog').close();
   $$('#faceGroup').forEach(x => x.addEventListener('change', () => loadFaces(null, true)));
   $('#faceQuery').addEventListener('keydown', e => { if (e.key === 'Enter') loadFaces($('#faceSearchBtn')); });
@@ -1892,6 +2024,7 @@ async function init() {
   bind(); connectLogs();
   try { fillConfig(await api('/api/config')); } catch (e) { toast(`配置加载失败：${e.message}`, 'error'); }
   await loadBrainConfig(true); await refreshReplyTasks(true);
+  try { await loadPokeConfig(); } catch (e) { toast(`拍一拍配置加载失败：${e.message}`, 'error'); }
   await refreshStatus(); await refreshTraces(true); setInterval(() => refreshStatus(true), 5000); setInterval(() => refreshTraces(true), 5000); setInterval(() => refreshChannelHealth(true), 15000);
   refreshMemoryStats(true);
   setInterval(() => { if ($('#page-groups').classList.contains('active') && !state.dirty) loadDiscoveredGroups(true); }, 30000);

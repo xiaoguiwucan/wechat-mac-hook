@@ -1625,6 +1625,34 @@ class MemoryStore:
             self.enqueue_embedding("face_asset", str(face_id), "__global__", searchable)
         return self.face_asset(face_id)
 
+    def import_face_asset(self, file_path: str, label: str = "手动上传") -> Dict[str, Any]:
+        path = Path(file_path).expanduser().resolve()
+        if not path.is_file():
+            raise ValueError("表情文件不存在")
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        ts = now_ts()
+        searchable = str(label or path.stem).strip()[:500]
+        with self.connect() as db:
+            existing = db.execute("SELECT id FROM face_assets WHERE face_key=?", (digest,)).fetchone()
+            if existing:
+                face_id = int(existing["id"])
+                db.execute("UPDATE face_assets SET file=?,enabled=1,updated_at=? WHERE id=?", (str(path), ts, face_id))
+            else:
+                cur = db.execute(
+                    """INSERT INTO face_assets(face_key,canonical_media_id,file,image_summary,tags_json,
+                       keywords_json,searchable_text,updated_at) VALUES(?,0,?,?,?, ?,?,?)""",
+                    (digest, str(path), searchable, json.dumps(["手动上传", "拍一拍"], ensure_ascii=False),
+                     json.dumps([searchable], ensure_ascii=False), searchable, ts),
+                )
+                face_id = int(cur.lastrowid)
+            try:
+                db.execute("DELETE FROM face_assets_fts WHERE face_id=?", (str(face_id),))
+                db.execute("INSERT INTO face_assets_fts(face_id,searchable_text) VALUES(?,?)", (str(face_id), searchable))
+            except sqlite3.Error:
+                pass
+        self.enqueue_embedding("face_asset", str(face_id), "__global__", searchable)
+        return self.face_asset(face_id)
+
     def rebuild_face_assets(self) -> Dict[str, int]:
         with self.connect() as db:
             rows = [dict(row) for row in db.execute(

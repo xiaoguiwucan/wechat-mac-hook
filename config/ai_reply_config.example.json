@@ -155,6 +155,21 @@
     "enabled": true,
     "auto_recover": true
   },
+  "wechat2_auto_login": {
+    "enabled": true,
+    "check_interval_seconds": 20,
+    "cooldown_seconds": 60,
+    "required_consecutive_detections": 2,
+    "max_attempts_per_episode": 3
+  },
+  "poke_reply": {
+    "enabled": false,
+    "text_enabled": true,
+    "image_enabled": false,
+    "texts": ["拍我干嘛～", "在呢，别拍了。"],
+    "face_ids": [],
+    "cooldown_seconds": 0
+  },
   "vision_ocr": {
     "enabled": false,
     "auto_analyze": true,

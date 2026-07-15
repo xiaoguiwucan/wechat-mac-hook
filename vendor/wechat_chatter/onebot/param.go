@@ -92,6 +92,7 @@ type SendMsg struct {
 	VoiceDuration int32
 	SilkDataLen   int32
 	Unknown13     int32
+	EmojiSize     int32
 
 	ReferMsgId       string
 	ReferMsgSender   string

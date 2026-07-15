@@ -314,7 +314,7 @@ class BrainSystemTest(unittest.TestCase):
         self.assertEqual(task.model, "local-fast")
         self.assertLess(task.details["timings_ms"]["scoring"], 100)
 
-    def test_alias_trigger_cannot_bypass_final_threshold(self) -> None:
+    def test_alias_trigger_must_bypass_final_threshold(self) -> None:
         cfg = BrainConfig(threshold=80, scoring_mode="local_fast", rerank_candidates=12)
         registry = TaskRegistry(self.store)
         service = object.__new__(AIReplyService)
@@ -336,13 +336,43 @@ class BrainSystemTest(unittest.TestCase):
         })
         evt = event("group-a", "user-a", "m-hard-threshold", "小风，你在吗")
         task = registry.create(evt, "thread-hard-threshold")
-        service.handle_event = lambda _evt: (_ for _ in ()).throw(AssertionError("低于门槛不得进入回复生成"))
+        service.handle_event = lambda _evt: registry.update(task, "completed", medium="text", result="已回复")
+        service.handle_brain_task(task, evt)
+        self.assertEqual(task.state, "completed")
+        self.assertEqual(task.result, "已回复")
+        self.assertEqual(task.score, 61.2)
+        self.assertEqual(task.details["threshold_gate"], "mandatory_bypass")
+        self.assertTrue(task.details["below_threshold"])
+        self.assertTrue(task.details["trigger_was_mandatory"])
+        self.assertEqual(task.details["mandatory_reason"], "bot_alias")
+
+    def test_ordinary_message_still_obeys_final_threshold(self) -> None:
+        cfg = BrainConfig(threshold=80, scoring_mode="local_fast", rerank_candidates=12)
+        registry = TaskRegistry(self.store)
+        service = object.__new__(AIReplyService)
+        service.cfg = SimpleNamespace(brain=cfg)
+        service.store = self.store
+        service.task_registry = registry
+        local = {
+            "pre_score": 34, "mandatory": False, "at_self": False, "reply_id": "",
+            "alias_hit": "", "explicit_media": False, "reasons": [],
+        }
+        service.scorer = SimpleNamespace(
+            local_score=lambda *_args, **_kwargs: dict(local),
+            local_factors=lambda *_args, **_kwargs: ({key: 50 for key in cfg.factor_weights}, "普通消息"),
+            final_score=lambda *_args, **_kwargs: 61.2,
+        )
+        service.embedding_service = SimpleNamespace(search=lambda *_args, **_kwargs: {
+            "items": [], "culture": {}, "error": "", "timings_ms": {"total": 1.0},
+            "recalled_count": 0, "reranked_count": 0,
+        })
+        evt = event("group-a", "user-a", "m-ordinary-threshold", "大家在聊什么")
+        task = registry.create(evt, "thread-ordinary-threshold")
+        service.handle_event = lambda _evt: (_ for _ in ()).throw(AssertionError("普通低分消息不得进入回复生成"))
         service.handle_brain_task(task, evt)
         self.assertEqual(task.state, "skipped")
         self.assertEqual(task.result, "score_below_threshold")
-        self.assertEqual(task.score, 61.2)
         self.assertEqual(task.details["threshold_gate"], "below_threshold")
-        self.assertTrue(task.details["trigger_was_mandatory"])
 
     def test_explicit_media_command_still_bypasses_opportunity_threshold(self) -> None:
         cfg = BrainConfig(threshold=100, scoring_mode="local_fast")

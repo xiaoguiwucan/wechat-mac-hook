@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"net/http"
@@ -38,6 +39,9 @@ func main() {
 	http.HandleFunc("/send_private_msg", sendHandler)
 	http.HandleFunc("/send_group_msg", sendHandler)
 	http.HandleFunc("/get_group_member_list", groupMemberListHandler)
+	http.HandleFunc("/native_emoji/status", nativeEmojiStatusHandler)
+	http.HandleFunc("/send_native_emoji", nativeEmojiSendHandler)
+	http.HandleFunc("/native_emoji/bind", nativeEmojiBindHandler)
 
 	http.HandleFunc("/ws", handleWebSocket)
 	http.HandleFunc("/test_ws", testWebSocket)
@@ -68,6 +72,7 @@ func initFlag() {
 	flag.StringVar(&config.FridaGadgetAddr, "gadget_addr", "127.0.0.1:27042", "Gadget 地址: 127.0.0.1:27042 仅当 type 为 gadget 时有效")
 	flag.StringVar(&config.OnebotToken, "token", "MuseBot", "OneBot Token: MuseBot")
 	flag.StringVar(&config.ImagePath, "image_path", "", "图片路径: /Users/xxx/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files/xxx/temp/xxx/2026-01/Img/")
+	flag.StringVar(&myWechatId, "self_id", "", "当前微信账号 wxid；媒体和原生表情发送必须提供")
 	flag.StringVar(&config.WechatConf, "wechat_conf", "../wechat_version/4_1_11_53_mac.json", "微信配置文件路径: ../wechat_version/4_1_6_12_mac.json")
 	flag.StringVar(&config.ConnType, "conn_type", "http", "连接类型: http | websocket")
 	flag.IntVar(&config.SendInterval, "send_interval", 1000, "发送间隔: ms")
@@ -100,6 +105,7 @@ func initFlag() {
 	fmt.Println("FridaGadgetAddr", config.FridaGadgetAddr)
 	fmt.Println("OnebotToken", config.OnebotToken)
 	fmt.Println("ImagePath", config.ImagePath)
+	fmt.Println("SelfID", myWechatId)
 	fmt.Println("WechatConf", config.WechatConf)
 	fmt.Println("ConnType", config.ConnType)
 	fmt.Println("SendInterval", config.SendInterval)
@@ -360,6 +366,21 @@ func loadJs() {
 								m.ResultChan = ch.(chan error)
 							}
 							msgChan <- m
+						case "upload_media_failed":
+							targetId := ""
+							if targetIdInter, ok := pMap["target_id"]; ok {
+								targetId, _ = targetIdInter.(string)
+							}
+							errText := "media upload callback missing cdnKey/aesKey"
+							if rawErr, ok := pMap["error"]; ok {
+								if value, ok := rawErr.(string); ok && value != "" {
+									errText = value
+								}
+							}
+							if ch, ok := pendingResultMap.LoadAndDelete(targetId); ok {
+								ch.(chan error) <- errors.New(errText)
+							}
+							Error("媒体上传回调失败", "target_id", targetId, "error", errText)
 						case "upload_video_finish":
 							m := &SendMsg{
 								Type: "send_video",

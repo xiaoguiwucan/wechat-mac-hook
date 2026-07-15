@@ -16,6 +16,94 @@ import (
 	"time"
 )
 
+func nativeEmojiStatusHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "failed", "error": "only GET is supported"})
+		return
+	}
+	result := fridaScript.ExportsCall("getNativeEmoticonStatus")
+	data, ok := result.(map[string]any)
+	if !ok {
+		data = map[string]any{"capture": result}
+	}
+	templateReady, _ := data["ready"].(bool)
+	data["template_ready"] = templateReady
+	data["direct_ready"] = myWechatId != ""
+	data["ready"] = templateReady || myWechatId != ""
+	data["self_id"] = myWechatId
+	_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "data": data})
+}
+
+func nativeEmojiSendHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "failed", "error": "only POST is supported"})
+		return
+	}
+	var req struct {
+		GroupID string `json:"group_id"`
+		MD5     string `json:"md5"`
+		Key     string `json:"key"`
+		Length  int32  `json:"length"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "failed", "error": "invalid json"})
+		return
+	}
+	key := strings.TrimSpace(req.MD5)
+	if key == "" {
+		key = strings.TrimSpace(req.Key)
+	}
+	if !strings.HasSuffix(req.GroupID, "@chatroom") || key == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "failed", "error": "group_id and md5/key are required"})
+		return
+	}
+	started := time.Now()
+	resultChan := make(chan error, 1)
+	msgChan <- &SendMsg{GroupID: req.GroupID, Content: strings.ToLower(key), Type: "native_emoji", EmojiSize: req.Length, ResultChan: resultChan}
+	if err := <-resultChan; err != nil {
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status": "failed", "error": err.Error(), "transport": "native_emoticon",
+			"latency_ms": time.Since(started).Milliseconds(),
+		})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"status": "ok", "transport": "native_emoticon", "latency_ms": time.Since(started).Milliseconds(),
+	})
+}
+
+func nativeEmojiBindHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "failed", "error": "only POST is supported"})
+		return
+	}
+	var req struct {
+		Key string `json:"key"`
+		MD5 string `json:"md5"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "failed", "error": "invalid json"})
+		return
+	}
+	result := fridaScript.ExportsCall("bindNativeEmoticon", strings.TrimSpace(req.Key), strings.TrimSpace(req.MD5))
+	if result != "1" {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "failed", "error": result})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "key": req.Key, "md5": strings.ToLower(req.MD5)})
+}
+
 func groupMemberListHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	if r.Method != http.MethodGet {

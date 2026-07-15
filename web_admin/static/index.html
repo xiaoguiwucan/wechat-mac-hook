@@ -63,7 +63,7 @@
     <div class="sidebar-foot">
       <div class="drawer-theme" aria-label="抽屉主题切换"><span>界面主题</span><div class="theme-switch"><button type="button" data-theme-value="light" title="白色主题"><i class="ph ph-sun"></i></button><button type="button" data-theme-value="dark" title="深色主题"><i class="ph ph-moon"></i></button></div></div>
       <div class="local-node"><span></span><div><strong>本机节点</strong><small>127.0.0.1 · 服务在线</small></div></div>
-      <div class="build">macOS Core Engine · V0.0.3</div>
+      <div class="build">macOS Core Engine · V0.0.4</div>
     </div>
   </aside>
 
@@ -108,6 +108,11 @@
             </div>
 
             <div class="isolation-panel"><div class="isolation-icon">✓</div><div><strong>主微信隔离环境</strong><small id="isolationPath">读取隔离路径中</small></div><span>强制保护</span></div>
+
+            <div class="auto-login-panel panel">
+              <div class="auto-login-copy"><span class="auto-login-pulse" id="autoLoginPulse"></span><div><strong>第二微信自动登录</strong><small id="autoLoginDetail">正在检查守护状态</small></div></div>
+              <div class="auto-login-actions"><span class="auto-login-state" id="autoLoginState">检查中</span><button class="btn ghost" id="autoLoginCheckBtn" type="button">立即检测</button><label class="switch" title="仅在连续两次识别到登录页时点击"><input id="autoLoginEnabled" type="checkbox" checked><i></i></label></div>
+            </div>
 
             <div class="panel trace-panel">
               <div class="panel-head"><div><h2>链路诊断</h2><p>OneBot 回调 → AI 生成 → 微信发送</p></div><button class="btn ghost" id="refreshTraceBtn">刷新诊断</button></div>
@@ -528,6 +533,22 @@
               <div class="field"><label for="faceGroup">表情来源群</label><select id="faceGroup"></select></div>
               <div class="field"><label for="faceQuery">搜索摘要 / OCR / 标签</label><input id="faceQuery" placeholder="走开、别拍我、婴儿、搞笑"></div>
               <button class="btn primary wide" id="faceSearchBtn">搜索表情</button>
+              <div class="poke-reply-config">
+                <div class="panel-head compact"><div><h2>拍一拍自动回复</h2><p>修改后自动保存并立即生效</p></div><span class="route-status" id="pokeSaveState">已同步</span></div>
+                <label class="toggle-row poke-master-toggle"><span><strong>启用拍一拍回复</strong><small>仅对拍机器人本人的事件生效</small></span><span class="switch"><input id="pokeEnabled" type="checkbox"><i></i></span></label>
+                <div class="poke-mode-card">
+                  <label class="poke-mode-title" for="pokeTextEnabled"><span><strong>随机文字</strong><small>每次从多条文字中抽取一条</small></span><span class="switch"><input id="pokeTextEnabled" type="checkbox" checked><i></i></span></label>
+                  <div class="field poke-text-field"><label for="pokeTexts">在这里输入回复文字 <span>每行一条</span></label><textarea id="pokeTexts" rows="4" placeholder="拍我干嘛～&#10;在呢，别拍了。"></textarea><small>输入多条时请换行；离开输入框后自动保存。</small></div>
+                </div>
+                <div class="poke-mode-card">
+                  <label class="poke-mode-title" for="pokeImageEnabled"><span><strong>随机图片</strong><small>从已选表情或上传图片中随机一张</small></span><span class="switch"><input id="pokeImageEnabled" type="checkbox"><i></i></span></label>
+                  <div class="poke-face-toolbar"><label class="btn subtle wide" for="pokeFaceUpload">上传 GIF / 静态图</label><input id="pokeFaceUpload" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden></div>
+                  <div class="poke-selected-summary"><span>已选素材</span><b id="pokeSelectedCount">0 张</b><small>可滚动查看，点击卡片移除</small></div>
+                  <div class="poke-selected-faces" id="pokeSelectedFaces"><small>请在右侧素材中点击“选为拍一拍”，或直接上传图片</small></div>
+                </div>
+                <div class="field"><label for="pokeCooldown">同群最短间隔（秒，0 为不限制）</label><input id="pokeCooldown" type="number" min="0" max="300" value="0"></div>
+                <button class="btn primary wide" id="pokeSaveBtn" type="button">立即保存</button>
+              </div>
               <label class="toggle-row"><span><strong>自动表情接话</strong><small>只在语境和素材均达标后抽样</small></span><span class="switch"><input id="faceAutoEnabled" type="checkbox" checked><i></i></span></label>
               <div class="field"><label for="faceReplyProbability">表情概率 <output id="faceReplyProbabilityValue">20%</output></label><input id="faceReplyProbability" type="range" min="0" max="100" value="20"></div>
               <div class="field"><label for="faceMinFit">表情适配门槛</label><input id="faceMinFit" type="number" min="0" max="100" value="45"></div>
@@ -538,7 +559,7 @@
               <div class="media-help-card">
                 <strong>当前逻辑</strong>
                 <p>同一个表情包按 md5 / 文件哈希去重展示，重复收到不会在管理页刷屏。</p>
-                <p>GIF / WEBP 发送时保留原始动图二进制，不再给动图追加 salt，避免变成静态首帧。</p>
+                <p>源 GIF / WEBP 会完整保留；普通图片上传在部分微信版本仍可能只显示首帧，卡片会明确标记为“GIF 上传”，不再伪装成原生收藏表情。</p>
               </div>
             </div>
           </aside>
