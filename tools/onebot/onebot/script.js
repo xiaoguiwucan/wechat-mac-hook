@@ -217,6 +217,21 @@ function readPointerIfReadable(addr) {
     }
 }
 
+function isUsableUploadGlobalX0(addr) {
+    try {
+        if (!isReadablePointer(addr) || !isReadablePointer(addr.add(0x8))) {
+            return false;
+        }
+        // startUploadMedia() immediately dereferences x0+0x8 and then locks the
+        // mutex at the pointed object's +0x168.  Validate that exact chain so a
+        // stale wrapper/child pointer cannot be advertised as upload-ready.
+        const core = addr.add(0x8).readPointer();
+        return isReadablePointer(core) && isReadablePointer(core.add(0x168));
+    } catch (e) {
+        return false;
+    }
+}
+
 function readUtf8StringIfReadable(addr) {
     try {
         if (!isReadablePointer(addr)) {
@@ -258,8 +273,10 @@ function sendDownloadChunks(dataPtr, dataLen, fileId, cdnUrl) {
 }
 
 function fillUploadX1AndStart(idAddr, pathAddr, x1Buffer, receiver, md5, filePath, payloadHex) {
-    if (uploadGlobalX0.equals(ptr(0))) {
+    if (!isUsableUploadGlobalX0(uploadGlobalX0)) {
+        uploadGlobalX0 = ptr(0);
         console.error("[!] uploadGlobalX0 尚未初始化，尝试通过发送触发 hook 捕获...");
+        setImmediate(discoverUploadGlobalX0);
         // 不直接 fail，返回 need_probe 让 Go 侧触发恢复流程
         return "need_probe";
     }
@@ -285,6 +302,16 @@ function fillUploadX1AndStart(idAddr, pathAddr, x1Buffer, receiver, md5, filePat
     manualUploadInProgress = true;
     try {
         return startUploadMedia(uploadGlobalX0, x1Buffer);
+    } catch (e) {
+        // 微信进程不变时内部 UploadMedia service 仍可能重建。旧 X0 往往
+        // 仍处于可读页，因此“非零/可读”检查会误报就绪，实际调用则在
+        // service 内部字段（常见 0x168）触发 access violation。
+        console.error("[!] UploadMedia X0 已失效，清空并重新解析: " + e);
+        uploadGlobalX0 = ptr(0);
+        uploadGlobalX0CapturedAt = 0;
+        uploadGlobalX0DiscoveryAttempts = 0;
+        setImmediate(discoverUploadGlobalX0);
+        return "need_probe";
     } finally {
         manualUploadInProgress = false;
     }
@@ -1298,9 +1325,11 @@ function triggerUploadVideo(receiver, md5, videoPath, payloadHex) {
 }
 
 function triggerUploadVoice(receiver, voicePath, payloadHex, audioDataHex, durationMs) {
-    if (uploadGlobalX0.equals(ptr(0))) {
+    if (!isUsableUploadGlobalX0(uploadGlobalX0)) {
+        uploadGlobalX0 = ptr(0);
         console.error("[!] uploadGlobalX0 尚未初始化，语音上传需要先恢复通道");
-        return "fail";
+        setImmediate(discoverUploadGlobalX0);
+        return "need_probe";
     }
 
     voiceDurationGlobal = durationMs;
@@ -1333,6 +1362,13 @@ function triggerUploadVoice(receiver, voicePath, payloadHex, audioDataHex, durat
     manualUploadInProgress = true;
     try {
         return startUploadMedia(uploadGlobalX0, uploadVoiceX1);
+    } catch (e) {
+        console.error("[!] UploadMedia X0 已失效（语音），清空并重新解析: " + e);
+        uploadGlobalX0 = ptr(0);
+        uploadGlobalX0CapturedAt = 0;
+        uploadGlobalX0DiscoveryAttempts = 0;
+        setImmediate(discoverUploadGlobalX0);
+        return "need_probe";
     } finally {
         manualUploadInProgress = false;
     }
@@ -1360,7 +1396,7 @@ function captureRealUploadX0(ctx, where) {
 }
 
 function discoverUploadGlobalX0() {
-    if (!uploadGlobalX0.equals(ptr(0)) && isReadablePointer(uploadGlobalX0.add(0x18))) {
+    if (!uploadGlobalX0.equals(ptr(0)) && isUsableUploadGlobalX0(uploadGlobalX0)) {
         return uploadGlobalX0.toString();
     }
     uploadGlobalX0 = ptr(0);
@@ -1378,11 +1414,18 @@ function discoverUploadGlobalX0() {
             throw new Error("upload service registry unavailable");
         }
         const service = resolveUploadService(registry);
-        if (!service || service.isNull() || !isReadablePointer(service.add(uploadServiceObjectOffset))) {
+        if (!service || service.isNull() || !isReadablePointer(service)) {
             throw new Error("upload service unavailable");
         }
+        // resolveUploadService() 返回 CDN service 包装器；真正传给
+        // startUploadMedia() 的上传上下文位于当前版本包装器的 +0x40。
+        // 校验 startUploadMedia 实际会访问的 x0+0x8 -> +0x168 链，避免
+        // 仅凭非零/可读就把已重建的旧子对象继续当作就绪。
+        if (!isReadablePointer(service.add(uploadServiceObjectOffset))) {
+            throw new Error("upload service object slot unavailable");
+        }
         const resolved = service.add(uploadServiceObjectOffset).readPointer();
-        if (!resolved || resolved.isNull() || !isReadablePointer(resolved.add(0x18))) {
+        if (!isUsableUploadGlobalX0(resolved)) {
             throw new Error("upload service context unavailable");
         }
         uploadGlobalX0 = resolved;
@@ -1593,14 +1636,15 @@ function triggerSendVoiceMessage(taskId, sender, receiver, protoHex, payloadHex)
 
 // -------------------------上传通道自愈分区-------------------------
 function getUploadStatus() {
-    if (uploadGlobalX0.equals(ptr(0))) {
+    if (!isUsableUploadGlobalX0(uploadGlobalX0)) {
+        uploadGlobalX0 = ptr(0);
         discoverUploadGlobalX0();
     }
     // send_ready: 总是 true，让 runMediaProbe 能走到发占位图的逻辑
     // 即使 X0=0，也允许通过发送占位图来触发 hook 捕获
     return JSON.stringify({
         upload_x0: uploadGlobalX0.toString(),
-        upload_x0_ready: !uploadGlobalX0.equals(ptr(0)),
+        upload_x0_ready: isUsableUploadGlobalX0(uploadGlobalX0),
         send_ready: true,
         captured_at: uploadGlobalX0CapturedAt,
         base_addr: baseAddr ? baseAddr.toString() : "unknown",

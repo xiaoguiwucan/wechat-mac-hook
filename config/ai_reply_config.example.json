@@ -92,6 +92,7 @@
     "global_workers": 8,
     "per_group_workers": 3,
     "model_concurrency": 6,
+    "mute_duration_seconds": 180,
     "factor_weights": {
       "involvement": 18,
       "continuity": 14,
@@ -189,5 +190,15 @@
     "language": "zh",
     "prompt": "",
     "auto_transcribe": true
+  },
+  "image_generation": {
+    "enabled": false,
+    "base_url": "https://api.openai.com/v1",
+    "api_key_env": "AI_REPLY_IMAGE_GENERATION_API_KEY",
+    "model": "gpt-image-1",
+    "size": "1024x1024",
+    "quality": "standard",
+    "timeout_seconds": 180,
+    "response_format": "b64_json"
   }
 }

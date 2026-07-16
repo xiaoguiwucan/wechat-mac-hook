@@ -276,6 +276,41 @@ html[data-theme="light"] .memory-flow>div{background:rgba(7,19,36,.94)!important
   .embedding-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important}
 }
 
+/* Voice/face settings must never disappear below a fixed-height panel.  The
+   workbench follows the available content width (not only the window width),
+   because the navigation drawer can reduce the real canvas considerably. */
+.content{container-type:inline-size;container-name:main-content}
+#page-voices .voice-control-panel,#page-faces .voice-control-panel{
+  position:relative!important;
+  top:auto!important;
+  display:block;
+  height:auto;
+  max-height:none;
+  overflow:hidden!important;
+}
+#page-voices .voice-control-panel>.panel-body,#page-faces .voice-control-panel>.panel-body{
+  min-height:0;
+  max-height:none;
+  overflow:visible;
+  padding-bottom:24px!important;
+}
+.media-trigger-diagnostics{display:grid;gap:9px;padding:11px;border:1px solid rgba(54,185,255,.28);border-radius:7px;background:linear-gradient(145deg,var(--orb-panel-2),rgba(54,185,255,.055))}
+.media-trigger-head{display:flex;align-items:center;justify-content:space-between;gap:8px}.media-trigger-head strong{font-size:10px}.media-trigger-head span{color:var(--orb-cyan);font:700 8px var(--font-mono,ui-monospace,SFMono-Regular,Menlo,monospace)}
+.media-trigger-funnel{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;overflow:hidden;border:1px solid var(--orb-line);border-radius:6px;background:var(--orb-line)}
+.media-trigger-funnel>div{display:grid;gap:3px;min-width:0;padding:8px 5px;background:var(--orb-base-2);text-align:center}.media-trigger-funnel b{overflow:hidden;color:var(--orb-cyan);font:750 13px var(--font-mono,ui-monospace,SFMono-Regular,Menlo,monospace);text-overflow:ellipsis}.media-trigger-funnel small{overflow:hidden;color:var(--orb-dim);font-size:7px;text-overflow:ellipsis;white-space:nowrap}.media-trigger-diagnostics p{color:var(--orb-muted);font-size:8px;line-height:1.55}
+
+@container main-content (max-width:900px){
+  #page-voices .voice-layout,#page-faces .voice-layout{display:flex!important;flex-direction:column!important}
+  #page-voices .voice-control-panel,#page-faces .voice-control-panel{order:1;width:100%}
+  #page-voices .voice-gallery-panel,#page-faces .voice-gallery-panel{order:2;width:100%}
+  #page-voices .voice-results,#page-faces .voice-results{height:auto!important;min-height:460px!important;max-height:72dvh;overflow:auto!important}
+}
+
+@container main-content (max-width:460px){
+  .media-trigger-funnel{grid-template-columns:1fr 1fr}.media-trigger-funnel>div{min-height:54px}
+  #page-voices .voice-search-actions,#page-faces .voice-search-actions{grid-template-columns:1fr!important}
+}
+
 @media(max-width:640px){
   body:before{display:none}.app-shell{display:block!important}.workspace-rail{inset:auto 0 0!important;width:100%!important;height:64px!important}.context-sidebar{inset:0 auto 64px 0!important;width:min(286px,86vw)!important}.main{display:block!important}.topbar{height:58px!important}.topbar-title p{display:none!important}.topbar-title h1{font-size:13px!important}.sync-time{display:none!important}.content{padding:10px 8px 80px!important}
   .page-bar,.section-bar{display:grid!important;grid-template-columns:1fr!important;gap:9px!important}.page-bar>.bar-actions,.page-bar>button,.page-bar>.health-chip{justify-self:start}
@@ -465,6 +500,18 @@ html[data-theme="light"] .panel,html[data-theme="light"] .status-card,html[data-
 #page-brain[data-brain-view="orbit"] [data-brain-pane="config"],#page-brain[data-brain-view="config"] [data-brain-pane="orbit"]{display:none!important}
 #page-brain[data-brain-view="config"] .brain-config-panel{animation:orbital-pane-in .22s ease-out}
 .brain-config-panel{margin-bottom:22px}
+
+/* High-priority mute control stays visible in both brain views. */
+.brain-mute-spotlight{position:relative;display:grid;grid-template-columns:auto minmax(260px,1fr) auto auto;align-items:center;gap:14px;min-height:92px;margin:0 0 10px;padding:14px 16px;overflow:hidden;border:1px solid rgba(71,224,173,.58);border-radius:10px;background:linear-gradient(108deg,rgba(8,57,51,.92),rgba(7,31,39,.92) 48%,var(--orb-panel) 100%);box-shadow:inset 3px 0 0 var(--orb-mint),0 0 0 1px rgba(71,224,173,.06),0 14px 34px rgba(0,0,0,.18)}
+.brain-mute-spotlight:after{content:"";position:absolute;inset:-80% 45% -80% -15%;pointer-events:none;background:linear-gradient(100deg,transparent,rgba(71,224,173,.11),transparent);transform:translateX(-45%);animation:brain-mute-scan 5.6s ease-in-out infinite}
+.brain-mute-signal{position:relative;z-index:1;display:grid;place-items:center;width:48px;height:48px;border:1px solid rgba(71,224,173,.58);border-radius:10px;background:rgba(71,224,173,.12);color:var(--orb-mint);font-size:24px;box-shadow:0 0 26px rgba(71,224,173,.16)}
+.brain-mute-copy,.brain-mute-status,.brain-mute-open{position:relative;z-index:1}.brain-mute-copy{min-width:0}.brain-mute-kicker{display:flex;align-items:center;gap:6px;margin-bottom:4px;color:var(--orb-mint);font:760 8px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.12em;text-transform:uppercase}.brain-mute-kicker i{width:6px;height:6px;border-radius:50%;background:var(--orb-mint);box-shadow:0 0 10px var(--orb-mint);animation:orbit-live-breathe 2s ease-in-out infinite}.brain-mute-copy h3{margin:0;color:#e9fff7;font-size:15px}.brain-mute-copy p{max-width:760px;margin:4px 0 0;color:#a9d9ca;font-size:10px;line-height:1.55}.brain-mute-status{min-width:154px;padding-left:16px;border-left:1px solid rgba(71,224,173,.24)}.brain-mute-status span,.brain-mute-status small{display:block;color:#80b9a8;font-size:8px}.brain-mute-status strong{display:block;margin:2px 0;color:var(--orb-mint);font:780 19px ui-monospace,SFMono-Regular,Menlo,monospace}.brain-mute-open{min-height:38px!important;border:1px solid rgba(71,224,173,.7)!important;background:var(--orb-mint)!important;color:#04251c!important;font-weight:800!important;box-shadow:0 8px 20px rgba(71,224,173,.14)}.brain-mute-open:hover{filter:brightness(1.08);box-shadow:0 10px 26px rgba(71,224,173,.22)}
+.brain-mute-field{padding:11px!important;border:1px solid rgba(71,224,173,.48)!important;border-radius:8px!important;background:linear-gradient(135deg,rgba(71,224,173,.10),var(--orb-panel-2) 72%)!important;box-shadow:inset 3px 0 0 var(--orb-mint)}.brain-mute-field-title{display:flex;align-items:center;justify-content:space-between;gap:8px}.brain-mute-field-title label{margin:0 0 6px!important;color:var(--orb-mint)!important}.brain-mute-field-title b{padding:3px 6px;border:1px solid rgba(71,224,173,.35);border-radius:999px;background:rgba(71,224,173,.10);color:var(--orb-mint);font-size:7px;letter-spacing:.05em}.brain-mute-field small{display:block;margin-top:6px;color:#8fc8b7!important;font-size:8px}.brain-mute-field.is-located{animation:brain-mute-located 1.8s ease-out}
+@keyframes brain-mute-scan{0%,70%,100%{transform:translateX(-45%);opacity:0}82%{opacity:1}96%{transform:translateX(180%);opacity:0}}
+@keyframes brain-mute-located{0%{box-shadow:inset 3px 0 0 var(--orb-mint),0 0 0 0 rgba(71,224,173,.42)}35%{box-shadow:inset 3px 0 0 var(--orb-mint),0 0 0 7px rgba(71,224,173,.14),0 0 30px rgba(71,224,173,.24)}100%{box-shadow:inset 3px 0 0 var(--orb-mint),0 0 0 0 transparent}}
+html[data-theme="light"] .brain-mute-spotlight{border-color:#32a77f;background:linear-gradient(108deg,#e3f7ef,#edf8f4 58%,#f7fbfd);box-shadow:inset 3px 0 0 #16976d,0 12px 28px rgba(22,117,87,.10)}html[data-theme="light"] .brain-mute-copy h3{color:#075b43}html[data-theme="light"] .brain-mute-copy p,html[data-theme="light"] .brain-mute-status span,html[data-theme="light"] .brain-mute-status small{color:#3a7563}html[data-theme="light"] .brain-mute-kicker,html[data-theme="light"] .brain-mute-status strong{color:#087a59}html[data-theme="light"] .brain-mute-signal{border-color:#5bb897;background:#d4f1e6;color:#087a59}html[data-theme="light"] .brain-mute-field{border-color:#48ac8a!important;background:linear-gradient(135deg,#e3f7ef,#f5fafc 76%)!important}html[data-theme="light"] .brain-mute-field small{color:#3a7563!important}
+@media(max-width:900px){.brain-mute-spotlight{grid-template-columns:auto minmax(0,1fr) auto}.brain-mute-status{grid-column:2;padding-left:0;border-left:0}.brain-mute-open{grid-column:3;grid-row:1/3}}
+@media(max-width:640px){.brain-mute-spotlight{grid-template-columns:auto minmax(0,1fr);gap:10px;padding:12px}.brain-mute-signal{width:40px;height:40px;font-size:20px}.brain-mute-status{grid-column:1/3;display:grid;grid-template-columns:auto auto 1fr;align-items:baseline;gap:8px;padding-top:8px;border-top:1px solid rgba(71,224,173,.2)}.brain-mute-status strong{font-size:16px}.brain-mute-open{grid-column:1/3;grid-row:auto;width:100%}.brain-mute-copy p{font-size:9px}}
 
 .orbit-route,.orbit-core{appearance:none;color:inherit;font-family:inherit;cursor:pointer;outline:0;transition:border-color .18s ease,box-shadow .18s ease,transform .18s ease,background .18s ease,opacity .18s ease}
 .orbit-route:hover,.orbit-route:focus-visible{border-color:rgba(84,169,255,.72);background:rgba(9,32,66,.92);box-shadow:0 0 24px rgba(59,130,246,.28),0 12px 30px rgba(0,0,0,.24)}
@@ -1003,47 +1050,31 @@ html[data-theme="light"] #page-personas .persona-list-main strong{color:#17324e}
   body #page-reply-tasks .reply-summary>div{min-height:72px!important}
 }
 
-/* Face workbench: keep the panel heading visible while long controls scroll.
-   The generic `.panel{overflow:hidden!important}` used to clip this column. */
-#page-faces .voice-control-panel{
-  display:grid;
-  grid-template-rows:auto minmax(0,1fr);
-  height:calc(100vh - 92px);
-  height:calc(100dvh - 92px);
-  max-height:calc(100vh - 92px);
-  max-height:calc(100dvh - 92px);
+/* Media settings use the document scroll.  The previous viewport-height plus
+   nested-scroll implementation made the lower controls look missing in narrow
+   Chrome windows and when the sidebar reduced the usable content width. */
+#page-voices .voice-control-panel,#page-faces .voice-control-panel{
+  display:block!important;
+  position:relative!important;
+  top:auto!important;
+  height:auto!important;
+  max-height:none!important;
   overflow:hidden!important;
 }
 #page-faces .voice-control-panel>.panel-head{
   position:relative;
   z-index:2;
-  box-shadow:0 1px 0 var(--orb-line),0 8px 18px rgba(2,8,18,.16);
+  box-shadow:0 1px 0 var(--orb-line);
 }
-#page-faces .voice-control-panel>.panel-body{
-  min-height:0;
-  overflow-x:hidden;
-  overflow-y:scroll;
-  overscroll-behavior:contain;
-  scrollbar-gutter:stable;
-  scroll-padding-block:12px 32px;
+#page-voices .voice-control-panel>.panel-body,#page-faces .voice-control-panel>.panel-body{
+  min-height:0!important;
+  max-height:none!important;
+  overflow:visible!important;
   padding-bottom:34px!important;
 }
-#page-faces .voice-control-panel>.panel-body::-webkit-scrollbar{width:8px}
-#page-faces .voice-control-panel>.panel-body::-webkit-scrollbar-track{background:var(--orb-base-2)}
-#page-faces .voice-control-panel>.panel-body::-webkit-scrollbar-thumb{border:2px solid var(--orb-base-2);border-radius:8px;background:var(--orb-line-strong)}
-#page-faces .voice-control-panel>.panel-body::-webkit-scrollbar-thumb:hover{background:var(--orb-blue)}
-
-@media(max-width:900px){
-  #page-faces .voice-control-panel{
-    display:block;
-    height:auto;
-    max-height:none;
-    overflow:visible!important;
-  }
-  #page-faces .voice-control-panel>.panel-head{box-shadow:none}
-  #page-faces .voice-control-panel>.panel-body{
-    overflow:visible;
-    scrollbar-gutter:auto;
-    padding-bottom:22px!important;
-  }
+@container main-content (max-width:900px){
+  body #page-voices .voice-layout,body #page-faces .voice-layout{display:flex!important;flex-direction:column!important}
+  body #page-voices .voice-control-panel,body #page-faces .voice-control-panel{order:1!important;width:100%}
+  body #page-voices .voice-gallery-panel,body #page-faces .voice-gallery-panel{order:2!important;width:100%}
+  body #page-voices .voice-results,body #page-faces .voice-results{height:auto!important;min-height:420px!important;max-height:72dvh;overflow:auto!important}
 }

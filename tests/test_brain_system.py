@@ -1,17 +1,20 @@
 from __future__ import annotations
 
+import base64
 import json
 import concurrent.futures
 import tempfile
 import threading
 import time
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from brain_engine import BrainConfig, OpportunityScorer, ReplyScheduler, TaskRegistry
 from embedding_service import EmbeddingConfig, EmbeddingService
-from ai_reply.ai_reply_server import AIReplyService, MediaReplyConfig
+from ai_reply.ai_reply_server import AIReplyService, AppConfig, ImageGenerationConfig, MediaReplyConfig
 from memory_store import MemoryStore
 
 
@@ -157,6 +160,142 @@ class BrainSystemTest(unittest.TestCase):
         self.assertEqual(decision.media_query, "走开啊别拍我")
         self.assertEqual(decision.text, "")
 
+    def test_image_generation_requests_are_mandatory_and_prompt_is_extracted(self) -> None:
+        scorer = OpportunityScorer(BrainConfig())
+        evt = event("group-a", "user-a", "image-1", "帮我画一张穿宇航服的橘猫")
+        result = scorer.local_score(evt, [], {"items": [], "culture": {}}, None)
+        self.assertTrue(result["mandatory"])
+        self.assertTrue(result["explicit_media"])
+        self.assertEqual(AIReplyService.extract_image_generation_prompt(evt.text), "穿宇航服的橘猫")
+        self.assertEqual(AIReplyService.extract_image_generation_prompt("/生图 复古未来城市"), "复古未来城市")
+        self.assertEqual(AIReplyService.extract_image_generation_prompt("画个哈士奇"), "哈士奇")
+        self.assertEqual(AIReplyService.extract_image_generation_prompt("画个猫"), "猫")
+        self.assertEqual(AIReplyService.extract_image_generation_prompt("画一只猫"), "猫")
+        self.assertEqual(AIReplyService.extract_image_generation_prompt("这张图挺好看"), "")
+        self.assertEqual(AIReplyService.extract_image_generation_prompt("来个笑话"), "")
+        self.assertEqual(AIReplyService.extract_image_generation_prompt("画蛇添足是什么意思"), "")
+
+    def test_image_generation_config_is_loaded_separately_from_chat_channel(self) -> None:
+        path = Path(self.tmp.name) / "config.json"
+        path.write_text(json.dumps({
+            "target_groups": [{"id": "group-a@chatroom", "name": "A"}],
+            "ai": {"base_url": "https://chat.example/v1", "model": "chat-model"},
+            "image_generation": {"enabled": True, "base_url": "https://image.example/v1",
+                                 "model": "image-model", "size": "1536x1024", "quality": "high",
+                                 "timeout_seconds": 240, "response_format": "url"},
+        }, ensure_ascii=False), encoding="utf-8")
+        cfg = AppConfig.from_file(path)
+        self.assertEqual(cfg.ai.model, "chat-model")
+        self.assertTrue(cfg.image_generation.enabled)
+        self.assertEqual(cfg.image_generation.model, "image-model")
+        self.assertEqual(cfg.image_generation.base_url, "https://image.example/v1")
+        self.assertEqual(cfg.image_generation.size, "1536x1024")
+
+    def test_image_generation_accepts_b64_json_and_saves_result(self) -> None:
+        png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+
+        class ImageHandler(BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                return
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", "0"))
+                request = json.loads(self.rfile.read(length))
+                self.server.request_payload = request
+                body = json.dumps({"data": [{"b64_json": base64.b64encode(png).decode(),
+                                               "revised_prompt": "一只橘猫"}]}).encode()
+                self.send_response(200); self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), ImageHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        try:
+            service = object.__new__(AIReplyService)
+            service.cfg = SimpleNamespace(image_generation=ImageGenerationConfig(
+                enabled=True, base_url=f"http://127.0.0.1:{server.server_port}/v1",
+                model="mock-image", size="1024x1024", quality="standard", timeout_seconds=10,
+                response_format="b64_json",
+            ))
+            with patch("ai_reply.ai_reply_server.DEFAULT_HOME", Path(self.tmp.name)):
+                result = service.generate_image("一只橘猫")
+            self.assertEqual(Path(result["file"]).read_bytes(), png)
+            self.assertEqual(server.request_payload["model"], "mock-image")
+            self.assertEqual(server.request_payload["prompt"], "一只橘猫")
+            self.assertEqual(result["revised_prompt"], "一只橘猫")
+        finally:
+            server.shutdown(); server.server_close(); thread.join(timeout=2)
+
+    def test_image_generation_retries_one_temporary_upstream_cooldown(self) -> None:
+        png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+
+        class ImageHandler(BaseHTTPRequestHandler):
+            attempts = 0
+
+            def log_message(self, *_args):
+                return
+
+            def do_POST(self):
+                type(self).attempts += 1
+                length = int(self.headers.get("Content-Length", "0"))
+                self.rfile.read(length)
+                if type(self).attempts == 1:
+                    body = json.dumps({"error": {"code": "upstream_cooling",
+                                                  "message": "上游账号正在冷却"}}).encode()
+                    self.send_response(429); self.send_header("Retry-After", "1")
+                else:
+                    body = json.dumps({"data": [{"b64_json": base64.b64encode(png).decode()}]}).encode()
+                    self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), ImageHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        try:
+            service = object.__new__(AIReplyService)
+            service.cfg = SimpleNamespace(image_generation=ImageGenerationConfig(
+                enabled=True, base_url=f"http://127.0.0.1:{server.server_port}/v1",
+                model="mock-image", response_format="b64_json",
+            ))
+            with patch("ai_reply.ai_reply_server.DEFAULT_HOME", Path(self.tmp.name)), \
+                    patch("ai_reply.ai_reply_server.time.sleep") as sleep_mock:
+                result = service.generate_image("猫")
+            self.assertEqual(ImageHandler.attempts, 2)
+            sleep_mock.assert_called_once_with(1.0)
+            self.assertEqual(result["request_attempts"], 2)
+            self.assertEqual(Path(result["file"]).read_bytes(), png)
+        finally:
+            server.shutdown(); server.server_close(); thread.join(timeout=2)
+
+    def test_image_generation_uses_actual_jpeg_extension(self) -> None:
+        jpeg = b"\xff\xd8\xff\xe0" + b"jpeg-test"
+
+        class ImageHandler(BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                return
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", "0"))
+                self.rfile.read(length)
+                body = json.dumps({"data": [{"b64_json": base64.b64encode(jpeg).decode()}]}).encode()
+                self.send_response(200); self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), ImageHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        try:
+            service = object.__new__(AIReplyService)
+            service.cfg = SimpleNamespace(image_generation=ImageGenerationConfig(
+                enabled=True, base_url=f"http://127.0.0.1:{server.server_port}/v1",
+                model="mock-image", response_format="b64_json",
+            ))
+            with patch("ai_reply.ai_reply_server.DEFAULT_HOME", Path(self.tmp.name)):
+                result = service.generate_image("测试 JPEG")
+            self.assertTrue(result["file"].endswith(".jpg"))
+            self.assertEqual(result["mime_type"], "image/jpeg")
+            self.assertEqual(Path(result["file"]).read_bytes(), jpeg)
+        finally:
+            server.shutdown(); server.server_close(); thread.join(timeout=2)
+
     def test_member_name_resolution_never_exposes_wxid(self) -> None:
         user_id = "wxid_member_123"
         self.store.upsert_member("group-large", user_id, user_id, user_id)
@@ -283,13 +422,51 @@ class BrainSystemTest(unittest.TestCase):
         }
         evt = event("group-a", "user-a", "media-gates", "哈哈哈")
         decision = SimpleNamespace(
-            voice_fit=54, face_fit=46, media_query="搞笑", intent="调侃",
+            medium="text", voice_fit=54, face_fit=46, media_query="搞笑", intent="调侃",
         )
         medium, item, details = service.choose_auto_medium(evt, decision)
         self.assertEqual(medium, "face")
         self.assertEqual(item["id"], 2)
         self.assertEqual(details["voice_gate"], "fit_below_threshold")
         self.assertEqual(details["selected_medium"], "face")
+
+    def test_model_medium_preference_is_not_discarded(self) -> None:
+        service = object.__new__(AIReplyService)
+        service.cfg = SimpleNamespace(media_reply=MediaReplyConfig(
+            voice_probability=1, face_probability=1, voice_min_fit=55,
+            face_min_fit=45, min_candidate_confidence=.65,
+        ))
+        service._task_for_event = lambda _evt: None
+        service.select_voice_pack_item = lambda *_args, **_kwargs: {}
+        service.voice_candidate_confidence = lambda _item: 0
+        service.select_face_pack_item = lambda *_args, **_kwargs: {
+            "id": 9, "image_summary": "大笑表情", "match_score": .86,
+        }
+        evt = event("group-a", "user-a", "media-preferred", "太好笑了")
+        decision = SimpleNamespace(
+            medium="face", voice_fit=8, face_fit=42, media_query="大笑 搞笑", intent="搞笑",
+        )
+        medium, item, details = service.choose_auto_medium(evt, decision)
+        self.assertEqual(medium, "face")
+        self.assertEqual(item["id"], 9)
+        self.assertEqual(details["face_fit"], 42)
+        self.assertEqual(details["face_effective_fit"], 45)
+        self.assertEqual(details["requested_medium"], "face")
+
+    def test_face_vector_candidate_can_beat_weak_lexical_match(self) -> None:
+        service = object.__new__(AIReplyService)
+        service.cfg = SimpleNamespace(media_reply=MediaReplyConfig(global_face_assets=True))
+        service.store = SimpleNamespace(search_face_assets=lambda *_args, **_kwargs: [
+            {"id": 1, "file": "/tmp/weak.gif", "match_score": .41, "image_summary": "弱关键词"},
+        ])
+        evt = event("group-a", "user-a", "vector-face", "太好笑了")
+        evt.raw["_brain_memory"] = {"asset_candidates": [
+            {"object_type": "face_asset", "id": 2, "file": "/tmp/good.gif", "enabled": 1,
+             "vector_score": .88, "image_summary": "捧腹大笑"},
+        ]}
+        selected = service.select_face_pack_item(evt, "大笑 搞笑")
+        self.assertEqual(selected["id"], 2)
+        self.assertEqual(selected["match_reason"], "向量语义匹配")
 
     def test_fast_pipeline_does_not_call_remote_opportunity_scorer(self) -> None:
         cfg = BrainConfig(threshold=0, scoring_mode="local_fast", rerank_candidates=12)
@@ -346,6 +523,34 @@ class BrainSystemTest(unittest.TestCase):
         self.assertTrue(task.details["trigger_was_mandatory"])
         self.assertEqual(task.details["mandatory_reason"], "bot_alias")
 
+    def test_cdata_wrapped_at_self_must_bypass_final_threshold(self) -> None:
+        cfg = BrainConfig(threshold=100, scoring_mode="local_fast", bot_aliases=[])
+        registry = TaskRegistry(self.store)
+        service = object.__new__(AIReplyService)
+        service.cfg = SimpleNamespace(brain=cfg)
+        service.store = self.store
+        service.task_registry = registry
+        service.scorer = OpportunityScorer(cfg)
+        service.embedding_service = SimpleNamespace(search=lambda *_args, **_kwargs: {
+            "items": [], "culture": {}, "error": "", "timings_ms": {"total": 1.0},
+            "recalled_count": 0, "reranked_count": 0,
+        })
+        evt = event("group-a", "user-a", "m-cdata-at", "@AI小助手 直接把架构代码给我")
+        evt.raw["message"].append({"type": "at", "data": {"qq": "<![CDATA[bot]]>"}})
+        task = registry.create(evt, "thread-cdata-at")
+        service.handle_event = lambda _evt: registry.update(task, "completed", medium="text", result="已回复")
+        service.handle_brain_task(task, evt)
+        self.assertEqual(task.state, "completed")
+        self.assertEqual(task.result, "已回复")
+        self.assertTrue(task.details["trigger_was_mandatory"])
+        self.assertEqual(task.details["mandatory_reason"], "at_self")
+
+        evt_other = event("group-a", "user-a", "m-cdata-at-other", "@其他人 你看看")
+        evt_other.raw["message"].append({"type": "at", "data": {"qq": "<![CDATA[someone-else]]>"}})
+        local = service.scorer.local_score(evt_other, [], {"items": [], "culture": {}}, None)
+        self.assertFalse(local["at_self"])
+        self.assertFalse(local["mandatory"])
+
     def test_ordinary_message_still_obeys_final_threshold(self) -> None:
         cfg = BrainConfig(threshold=80, scoring_mode="local_fast", rerank_candidates=12)
         registry = TaskRegistry(self.store)
@@ -386,6 +591,26 @@ class BrainSystemTest(unittest.TestCase):
         service.handle_brain_task(task, evt)
         self.assertEqual(task.state, "completed")
         self.assertEqual(task.medium, "face")
+
+        image_evt = event("group-a", "user-a", "m-explicit-image", "@小风 /生图 一只坐在月球上的橘猫")
+        image_task = registry.create(image_evt, "thread-explicit-image")
+        service.handle_event = lambda _evt: registry.update(
+            image_task, "completed", medium="image", result="generated.jpg"
+        )
+        service.handle_brain_task(image_task, image_evt)
+        self.assertEqual(image_task.state, "completed")
+        self.assertEqual(image_task.medium, "image")
+        self.assertEqual(image_task.result, "generated.jpg")
+
+        natural_evt = event("group-a", "user-a", "m-natural-image", "画个哈士奇")
+        natural_task = registry.create(natural_evt, "thread-natural-image")
+        service.handle_event = lambda _evt: registry.update(
+            natural_task, "completed", medium="image", result="husky.jpg"
+        )
+        service.handle_brain_task(natural_task, natural_evt)
+        self.assertEqual(natural_task.state, "completed")
+        self.assertEqual(natural_task.medium, "image")
+        self.assertEqual(natural_task.result, "husky.jpg")
 
     def test_group_blacklist_is_checked_after_message_persistence(self) -> None:
         service = object.__new__(AIReplyService)

@@ -91,6 +91,40 @@ class PersonaSystemTests(unittest.TestCase):
         self.assertNotIn("无证据的虚构事实", values)
         self.assertEqual(136, detail["metrics"]["message_count"])
 
+    def test_new_member_is_auto_queued_and_real_name_survives_raw_wxid(self):
+        self.store.add_message({
+            "event_id": "auto-1", "group_id": "group-auto", "user_id": "wxid_real_1",
+            "sender_name": "真实群昵称", "direction": "incoming", "text": "今天值班",
+            "raw_message": "今天值班", "event_time": 1_700_000_001,
+        })
+        self.store.add_message({
+            "event_id": "auto-2", "group_id": "group-auto", "user_id": "wxid_real_1",
+            "sender_name": "wxid_real_1", "nickname": "wxid_real_1", "direction": "incoming",
+            "text": "还在", "raw_message": "还在", "event_time": 1_700_000_002,
+        })
+        listed = self.store.persona_list("group-auto")
+        self.assertEqual(1, listed["total"])
+        self.assertEqual("真实群昵称", listed["items"][0]["display_name"])
+        due = self.store.queue_due_persona_analysis("2000-01-01 00:00:00")
+        self.assertEqual(1, due["queued"])
+        job = next(x for x in self.store.persona_jobs("group-auto") if x["id"] == due["jobs"][0])
+        self.assertEqual("full", job["mode"])
+
+    def test_xml_payload_does_not_pollute_profile_topics(self):
+        xml = '<?xml version="1.0"?><msg><appmsg><title>魔法</title><type>57</type><appattach><totallen>10</totallen></appattach></appmsg></msg>'
+        self.store.add_message({
+            "event_id": "xml-1", "group_id": "group-xml", "user_id": "member-xml",
+            "sender_name": "分享者", "direction": "incoming", "text": xml, "raw_message": xml,
+            "event_time": 1_700_000_003,
+        })
+        queued = self.store.queue_persona_analysis("group-xml", "member-xml", "full")
+        payload = self.store.persona_job_batch_payload(queued["jobs"][0])
+        self.assertEqual("魔法", payload["messages"][0]["text"])
+        self.run_job(queued["jobs"][0])
+        detail = self.store.persona_detail("group-xml", "member-xml")
+        values = {x["value"] for x in detail["claims"]}
+        self.assertFalse(values.intersection({"gt", "lt", "msgsource", "type", "version"}))
+
 
 if __name__ == "__main__":
     unittest.main()

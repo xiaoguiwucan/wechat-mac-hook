@@ -152,6 +152,20 @@ def persona_worker_loop() -> None:
                         emit_persona_event(due, "auto_queued")
                 PERSONA_WORKER_STOP.wait(1.0)
                 continue
+            if job.get("status") == "queued":
+                stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+                with MEMORY.connect() as db:
+                    db.execute(
+                        """UPDATE persona_analysis_jobs SET status='running',
+                           started_at=CASE WHEN started_at='' THEN ? ELSE started_at END,updated_at=? WHERE id=?""",
+                        (stamp, stamp, int(job["id"])),
+                    )
+                    db.execute(
+                        "UPDATE personas SET analysis_status='running',analysis_error='',updated_at=? WHERE group_id=? AND user_id=?",
+                        (stamp, job["group_id"], job["user_id"]),
+                    )
+                job["status"] = "running"
+                emit_persona_event(job, "started")
             batch = MEMORY.persona_job_batch_payload(int(job["id"]), 100)
             model_claims = 0
             model_name = ""
@@ -215,6 +229,7 @@ def save_brain_config(data: Dict[str, Any]) -> Dict[str, Any]:
         incoming["global_workers"] = max(1, min(16, int(incoming.get("global_workers", 8))))
         incoming["per_group_workers"] = max(1, min(6, int(incoming.get("per_group_workers", 3))))
         incoming["model_concurrency"] = max(1, min(16, int(incoming.get("model_concurrency", 6))))
+        incoming["mute_duration_seconds"] = max(10, min(86400, int(incoming.get("mute_duration_seconds", 180))))
         current["reply_strategy"] = incoming
     if isinstance(data.get("embedding"), dict):
         incoming_embedding = dict(data["embedding"])
@@ -279,6 +294,48 @@ def brain_tasks(data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         "completed_recent": sum(row.get("state") == "completed" and now - float(row.get("completed_at") or 0) <= 60 for row in rows),
         "runtime": runtime,
     }
+
+
+def media_reply_stats(hours: float = 24.0) -> Dict[str, Any]:
+    """Summarize the real automatic-media funnel from persisted reply tasks."""
+    hours = max(1.0, min(168.0, float(hours or 24)))
+    cutoff = time.time() - hours * 3600
+    rows = [row for row in MEMORY.reply_tasks(limit=500) if float(row.get("updated_at") or 0) >= cutoff]
+    result: Dict[str, Any] = {
+        "hours": hours, "tasks": len(rows),
+        "reply_candidates": 0,
+        "voice": {"fit_passed": 0, "candidate_passed": 0, "probability_passed": 0, "selected": 0, "sent": 0, "gates": {}},
+        "face": {"fit_passed": 0, "candidate_passed": 0, "probability_passed": 0, "selected": 0, "sent": 0, "gates": {}},
+    }
+    for row in rows:
+        details = row.get("details") or {}
+        decision = details.get("media_decision") if isinstance(details, dict) else None
+        if not isinstance(decision, dict):
+            continue
+        result["reply_candidates"] += 1
+        min_confidence = float(decision.get("min_candidate_confidence") or 0.65)
+        for medium in ("voice", "face"):
+            bucket = result[medium]
+            fit = float(decision.get(f"{medium}_effective_fit", decision.get(f"{medium}_fit") or 0))
+            fit_min = float(decision.get(f"{medium}_min_fit") or (55 if medium == "voice" else 45))
+            fit_passed = fit >= fit_min
+            if fit_passed:
+                bucket["fit_passed"] += 1
+            candidate = decision.get(f"{medium}_candidate") or {}
+            candidate_passed = fit_passed and float(candidate.get("confidence") or 0) >= min_confidence
+            if candidate_passed:
+                bucket["candidate_passed"] += 1
+            sample = decision.get(f"{medium}_sample") or {}
+            if candidate_passed and sample.get("passed"):
+                bucket["probability_passed"] += 1
+            gate = str(decision.get(f"{medium}_gate") or ("selected" if decision.get("selected_medium") == medium else ""))
+            if gate:
+                bucket["gates"][gate] = int(bucket["gates"].get(gate, 0)) + 1
+            if decision.get("selected_medium") == medium:
+                bucket["selected"] += 1
+            if row.get("state") == "completed" and row.get("medium") == medium:
+                bucket["sent"] += 1
+    return result
 
 
 def brain_preview(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -453,6 +510,8 @@ def read_config() -> Dict[str, Any]:
     vision_key_env = str(vision_raw.get("api_key_env") or "AI_REPLY_VISION_OCR_API_KEY")
     asr_raw = cfg.get("asr", {}) if isinstance(cfg.get("asr"), dict) else {}
     asr_key_env = str(asr_raw.get("api_key_env") or "AI_REPLY_ASR_API_KEY")
+    image_gen_raw = cfg.get("image_generation", {}) if isinstance(cfg.get("image_generation"), dict) else {}
+    image_gen_key_env = str(image_gen_raw.get("api_key_env") or "AI_REPLY_IMAGE_GENERATION_API_KEY")
     return {
         "revision": config_revision(),
         "provider": active["provider"],
@@ -517,6 +576,17 @@ def read_config() -> Dict[str, Any]:
             "language": str(asr_raw.get("language") or "zh"),
             "prompt": str(asr_raw.get("prompt") or ""),
             "auto_transcribe": bool(asr_raw.get("auto_transcribe", True)),
+        },
+        "image_generation": {
+            "enabled": bool(image_gen_raw.get("enabled", False)),
+            "base_url": str(image_gen_raw.get("base_url") or active["base_url"]),
+            "api_key": env.get(image_gen_key_env, ""),
+            "api_key_env": image_gen_key_env,
+            "model": str(image_gen_raw.get("model") or ""),
+            "size": str(image_gen_raw.get("size") or "1024x1024"),
+            "quality": str(image_gen_raw.get("quality") or "standard"),
+            "timeout_seconds": max(10, min(600, int(image_gen_raw.get("timeout_seconds", 180)))),
+            "response_format": str(image_gen_raw.get("response_format") or "b64_json"),
         },
         "presets": PROVIDER_PRESETS,
     }
@@ -651,6 +721,25 @@ def save_config(data: Dict[str, Any]) -> Dict[str, Any]:
         "prompt": str(asr_in.get("prompt") or "").strip(),
         "auto_transcribe": bool(asr_in.get("auto_transcribe", True)),
     }
+    image_gen_in = data.get("image_generation") if isinstance(data.get("image_generation"), dict) else current.get("image_generation", {})
+    image_gen_base = str(image_gen_in.get("base_url") or active["base_url"]).strip().rstrip("/")
+    if image_gen_base and not image_gen_base.startswith(("http://", "https://")):
+        raise ValueError("生图模型 API 地址无效")
+    image_size = str(image_gen_in.get("size") or "1024x1024").strip()
+    if not re.fullmatch(r"\d{2,5}x\d{2,5}|auto", image_size):
+        raise ValueError("生图尺寸必须是 1024x1024 或 auto 这类格式")
+    current["image_generation"] = {
+        "enabled": bool(image_gen_in.get("enabled", False)),
+        "base_url": image_gen_base or active["base_url"],
+        "api_key_env": "AI_REPLY_IMAGE_GENERATION_API_KEY",
+        "model": str(image_gen_in.get("model") or "").strip(),
+        "size": image_size,
+        "quality": str(image_gen_in.get("quality") or "standard").strip(),
+        "timeout_seconds": max(10, min(600, int(image_gen_in.get("timeout_seconds", 180)))),
+        "response_format": str(image_gen_in.get("response_format") or "b64_json") if str(image_gen_in.get("response_format") or "b64_json") in {"url", "b64_json"} else "b64_json",
+    }
+    if current["image_generation"]["enabled"] and not current["image_generation"]["model"]:
+        raise ValueError("启用生图后必须填写生图模型 ID")
     atomic_write(CONFIG_PATH, json.dumps(current, ensure_ascii=False, indent=2) + "\n")
     env_values = {
         "AI_REPLY_PROVIDER": ai["provider"],
@@ -668,6 +757,7 @@ def save_config(data: Dict[str, Any]) -> Dict[str, Any]:
     env_values.update(channel_keys)
     env_values["AI_REPLY_VISION_OCR_API_KEY"] = str(vision_in.get("api_key", ""))
     env_values["AI_REPLY_ASR_API_KEY"] = str(asr_in.get("api_key", ""))
+    env_values["AI_REPLY_IMAGE_GENERATION_API_KEY"] = str(image_gen_in.get("api_key", ""))
     lines = ["# 由第二微信 Web 管理后台生成。"] + [f"export {k}={shell_value(v)}" for k, v in env_values.items()]
     atomic_write(ENV_PATH, "\n".join(lines) + "\n")
     return read_config()
@@ -1346,6 +1436,25 @@ def parse_vision_json(text: str) -> Dict[str, Any]:
         "keywords": keywords,
         "raw": raw[:2000],
     }
+
+
+def test_image_generation(data: Dict[str, Any]) -> Dict[str, Any]:
+    prompt = str(data.get("prompt") or "").strip()
+    if not prompt:
+        raise ValueError("请输入生图描述")
+    try:
+        response = ai_json("/image/generate", "POST", {"prompt": prompt}, timeout=620)
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", "replace")
+        try:
+            detail = json.loads(raw).get("error") or raw
+        except Exception:
+            detail = raw
+        raise RuntimeError(str(detail or f"生图服务 HTTP {exc.code}")) from exc
+    result = response.get("data") or {}
+    file_value = str(result.get("file") or "")
+    result["data_url"] = image_data_url(file_value) if file_value else ""
+    return result
 
 
 def media_value_to_path(value: str) -> Optional[Path]:
@@ -3649,6 +3758,9 @@ class Handler(BaseHTTPRequestHandler):
                 "limit": int((qs.get("limit") or ["200"])[0]),
                 "active_only": (qs.get("active_only") or ["0"])[0] in {"1", "true"},
             })})
+        if path == "/api/media-reply/stats":
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            return self.json_response(200, {"ok": True, "data": media_reply_stats(float((qs.get("hours") or ["24"])[0]))})
         if path == "/api/brain/culture":
             qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             group_id = str((qs.get("group_id") or [""])[0])
@@ -3729,6 +3841,8 @@ class Handler(BaseHTTPRequestHandler):
                 result = test_vision_ocr(data)
             elif path == "/api/test/asr":
                 result = test_asr(data)
+            elif path == "/api/test/image-generation":
+                result = test_image_generation(data)
             elif path == "/api/channels/test":
                 result = test_channel(str(data.get("channel_id", "")))
             elif path == "/api/channels/test-all":

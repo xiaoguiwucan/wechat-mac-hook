@@ -13,6 +13,7 @@ import base64
 import collections
 import hashlib
 import hmac
+import html
 import json
 import mimetypes
 import os
@@ -46,7 +47,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from memory_store import MemoryStore, is_readable_member_name  # noqa: E402
-from brain_engine import BrainConfig, FINAL_STATES, OpportunityScorer, ReplyScheduler, ReplyTask, TaskRegistry  # noqa: E402
+from brain_engine import (BrainConfig, FINAL_STATES, OpportunityScorer, ReplyScheduler, ReplyTask,
+                          TaskRegistry, extract_image_generation_prompt)  # noqa: E402
 from embedding_service import EmbeddingConfig, EmbeddingService  # noqa: E402
 
 
@@ -208,6 +210,18 @@ class ASRConfig:
 
 
 @dataclass
+class ImageGenerationConfig:
+    enabled: bool = False
+    base_url: str = ""
+    api_key_env: str = "AI_REPLY_IMAGE_GENERATION_API_KEY"
+    model: str = ""
+    size: str = "1024x1024"
+    quality: str = "standard"
+    timeout_seconds: int = 180
+    response_format: str = "b64_json"
+
+
+@dataclass
 class MediaReplyConfig:
     automatic_enabled: bool = True
     voice_probability: float = 0.15
@@ -323,6 +337,7 @@ class AppConfig:
     ai: AIConfig = field(default_factory=AIConfig)
     vision_ocr: VisionOCRConfig = field(default_factory=VisionOCRConfig)
     asr: ASRConfig = field(default_factory=ASRConfig)
+    image_generation: ImageGenerationConfig = field(default_factory=ImageGenerationConfig)
     media_reply: MediaReplyConfig = field(default_factory=MediaReplyConfig)
     poke_reply: PokeReplyConfig = field(default_factory=PokeReplyConfig)
     brain: BrainConfig = field(default_factory=BrainConfig)
@@ -402,6 +417,7 @@ class AppConfig:
         tools_raw = raw.get("tools", {}) or {}
         vision_raw = raw.get("vision_ocr", {}) or {}
         asr_raw = raw.get("asr", {}) or {}
+        image_gen_raw = raw.get("image_generation", {}) or {}
         # Allow direct AI_REPLY_API_KEY too; api_key_env remains the configured env name.
         return cls(
             enabled=env_bool("AI_REPLY_ENABLED", bool(raw.get("enabled", True))),
@@ -460,6 +476,16 @@ class AppConfig:
                 language=str(asr_raw.get("language") or "zh"),
                 prompt=str(asr_raw.get("prompt") or ""),
             ),
+            image_generation=ImageGenerationConfig(
+                enabled=bool(image_gen_raw.get("enabled", False)),
+                base_url=str(image_gen_raw.get("base_url") or ai.base_url).rstrip("/"),
+                api_key_env=str(image_gen_raw.get("api_key_env") or "AI_REPLY_IMAGE_GENERATION_API_KEY"),
+                model=str(image_gen_raw.get("model") or ""),
+                size=str(image_gen_raw.get("size") or "1024x1024"),
+                quality=str(image_gen_raw.get("quality") or "standard"),
+                timeout_seconds=max(10, min(600, int(image_gen_raw.get("timeout_seconds", 180)))),
+                response_format=str(image_gen_raw.get("response_format") or "b64_json"),
+            ),
             media_reply=MediaReplyConfig.from_raw(raw),
             poke_reply=PokeReplyConfig.from_raw(raw),
             brain=BrainConfig.from_raw(raw),
@@ -502,6 +528,8 @@ class AIReplyService:
         self.culture_message_counts: Dict[str, int] = collections.defaultdict(int)
         self.culture_last_run: Dict[str, float] = collections.defaultdict(float)
         self.poke_last_reply_at: Dict[str, float] = collections.defaultdict(float)
+        self.media_analysis_events: Dict[int, threading.Event] = {}
+        self.media_analysis_events_lock = threading.RLock()
         self.history_locks: Dict[str, threading.RLock] = collections.defaultdict(threading.RLock)
         self.send_locks: Dict[str, threading.RLock] = collections.defaultdict(threading.RLock)
         self.model_semaphore = threading.BoundedSemaphore(cfg.brain.model_concurrency)
@@ -553,6 +581,7 @@ class AIReplyService:
         self.embedding_service.start()
         self.media_worker.start()
         self.culture_worker.start()
+        self.recover_pending_media_analysis()
 
     def stop(self) -> None:
         self.stop_event.set()
@@ -590,9 +619,11 @@ class AIReplyService:
                 "threshold": self.cfg.brain.threshold,
                 "scoring_mode": self.cfg.brain.scoring_mode,
                 "rerank_candidates": self.cfg.brain.rerank_candidates,
+                "mute_duration_seconds": self.cfg.brain.mute_duration_seconds,
                 "factor_weights": self.cfg.brain.factor_weights,
                 "modifiers": self.cfg.brain.modifiers,
             },
+            "active_group_mutes": self.store.active_group_reply_mutes(),
             "retrieval": {
                 "vector_limit": self.cfg.embedding.vector_limit, "fts_limit": self.cfg.embedding.fts_limit,
                 "fusion_limit": self.cfg.embedding.fusion_limit, "adaptive_rerank": self.cfg.embedding.adaptive_rerank,
@@ -603,6 +634,8 @@ class AIReplyService:
     def enqueue_raw(self, raw: Dict[str, Any], signature: str = "") -> Tuple[bool, str]:
         poke = self.parse_poke_event(raw)
         if poke:
+            if self.group_is_muted(poke.group_id, poke.trace_id, "poke"):
+                return False, "group_muted"
             if not self.cfg.poke_reply.enabled:
                 return False, "poke_reply_disabled"
             # Poke replies are a dedicated global feature.  The ordinary AI
@@ -632,6 +665,11 @@ class AIReplyService:
             evt.has_text = True
             self.persist_incoming(evt)
             self.apply_voice_transcript(evt)
+            if self.is_mute_command(evt.text):
+                self.activate_group_mute(evt)
+                return False, "group_muted"
+            if self.group_is_muted(evt.group_id, evt.trace_id, "voice_transcript"):
+                return False, "group_muted"
             if not self.should_reply(evt):
                 return False, "voice_transcript_indexed"
             task = self.scheduler.submit(evt, self.handle_brain_task)
@@ -641,17 +679,53 @@ class AIReplyService:
         self.persist_incoming(evt)
         if self.should_queue_media_analysis(evt):
             try:
+                for item in self.store.media_by_event(evt.event_id):
+                    media_type = str(item.get("media_type") or "")
+                    queued_status = "ocr_queued" if media_type == "image" else "asr_queued"
+                    self.store.claim_media_status(int(item["id"]), ["indexed", "ocr_failed", "asr_failed"], queued_status)
                 self.media_events.put_nowait(evt)
                 log("info", "media_analysis_queued", group_id=evt.group_id, media_types=evt.media_types,
                     message_id=evt.message_id, trace_id=evt.trace_id)
             except queue.Full:
                 log("error", "media_analysis_queue_full", group_id=evt.group_id, message_id=evt.message_id, trace_id=evt.trace_id)
+        if self.is_mute_command(evt.text):
+            self.activate_group_mute(evt)
+            return False, "group_muted"
+        if self.group_is_muted(evt.group_id, evt.trace_id, "message"):
+            return False, "group_muted"
         if not evt.has_text:
             return False, "media_only_indexed"
         if not self.should_reply(evt):
             return False, "ignored"
         task = self.scheduler.submit(evt, self.handle_brain_task)
         return True, "queued:" + task.task_id
+
+    @staticmethod
+    def is_mute_command(text: str) -> bool:
+        normalized = re.sub(r"[\s\u2005\u00a0，。！？!?、~～]+", "", str(text or ""))
+        return normalized == "闭嘴"
+
+    def activate_group_mute(self, evt: OneBotEvent) -> Dict[str, Any]:
+        result = self.store.set_group_reply_mute(
+            evt.group_id, self.cfg.brain.mute_duration_seconds, evt.user_id, evt.message_id
+        )
+        log("info", "group_reply_muted", group_id=evt.group_id, group_name=evt.group_name,
+            duration_seconds=self.cfg.brain.mute_duration_seconds, muted_until=result.get("muted_until"),
+            user_id=evt.user_id, message_id=evt.message_id, trace_id=evt.trace_id)
+        emit_brain_event({"type": "service_status", "event": "group_reply_muted", "group_id": evt.group_id,
+                          "duration_seconds": self.cfg.brain.mute_duration_seconds,
+                          "muted_until": result.get("muted_until"), "time": time.time()})
+        return result
+
+    def group_is_muted(self, group_id: str, trace_id: str = "", source: str = "") -> bool:
+        if not getattr(self, "store", None) or not hasattr(self.store, "group_reply_mute"):
+            return False
+        mute = self.store.group_reply_mute(group_id)
+        if not mute.get("active"):
+            return False
+        log("info", "group_reply_mute_skip", group_id=group_id, source=source,
+            remaining_seconds=mute.get("remaining_seconds"), trace_id=trace_id)
+        return True
 
     def parse_poke_event(self, raw: Dict[str, Any]) -> Optional[OneBotEvent]:
         post_type = str(raw.get("post_type") or "")
@@ -713,6 +787,8 @@ class AIReplyService:
 
     def handle_poke_reply(self, evt: OneBotEvent) -> None:
         started = time.monotonic()
+        if self.group_is_muted(evt.group_id, evt.trace_id, "poke_worker"):
+            return
         config = self.cfg.poke_reply
         media_options = ["text"] if config.text_enabled and config.texts else []
         if config.image_enabled and config.face_ids:
@@ -804,6 +880,44 @@ class AIReplyService:
         except Exception as exc:
             log("error", "message_persist_error", group_id=evt.group_id, trace_id=evt.trace_id, error=str(exc))
 
+    @staticmethod
+    def quoted_message_metadata(raw: Dict[str, Any]) -> Dict[str, str]:
+        """Extract WeChat's embedded refermsg metadata from a quote message."""
+        sources = [str(raw.get("raw_message") or "")]
+        for segment in raw.get("message") or []:
+            if isinstance(segment, dict) and str(segment.get("type") or "") == "text":
+                data = segment.get("data") if isinstance(segment.get("data"), dict) else {}
+                sources.append(str(data.get("text") or ""))
+        source = next((value for value in sources if "<refermsg" in value), "")
+        if not source:
+            return {}
+        block_match = re.search(r"<refermsg\b[^>]*>(.*?)</refermsg>", source, re.I | re.S)
+        if not block_match:
+            return {}
+        block = block_match.group(1)
+
+        def tag(name: str, value: str = block) -> str:
+            match = re.search(rf"<{name}\b[^>]*>(.*?)</{name}>", value, re.I | re.S)
+            return html.unescape(match.group(1)).strip() if match else ""
+
+        content = tag("content")
+        image_md5 = ""
+        md5_match = re.search(r"\bmd5=[\"']([0-9a-fA-F]{16,64})[\"']", content)
+        if md5_match:
+            image_md5 = md5_match.group(1).lower()
+        title_match = re.search(r"<appmsg\b[^>]*>.*?<title\b[^>]*>(.*?)</title>", source, re.I | re.S)
+        return {
+            "type": tag("type"),
+            "message_id": tag("svrid"),
+            "group_id": tag("fromusr"),
+            "user_id": tag("chatusr"),
+            "sender_name": tag("displayname"),
+            "created_at": tag("createtime"),
+            "content": content,
+            "md5": image_md5,
+            "title": html.unescape(title_match.group(1)).strip() if title_match else "",
+        }
+
     def apply_voice_transcript(self, evt: OneBotEvent) -> None:
         """Persist WeChat built-in voice-to-text result into the matching record item.
 
@@ -857,6 +971,16 @@ class AIReplyService:
         if not group_id:
             return None, "no_group_id"
 
+        quoted = self.quoted_message_metadata(raw)
+        if quoted:
+            raw["_quoted_message"] = quoted
+            segments = raw.get("message") if isinstance(raw.get("message"), list) else []
+            if quoted.get("message_id") and not any(
+                isinstance(segment, dict) and segment.get("type") == "reply" for segment in segments
+            ):
+                segments.append({"type": "reply", "data": {"id": quoted["message_id"], "source": "wechat_refermsg"}})
+                raw["message"] = segments
+
         text_parts: List[str] = []
         media_types: List[str] = []
         for m in raw.get("message") or []:
@@ -868,7 +992,7 @@ class AIReplyService:
                 text_parts.append(str(data.get("text") or ""))
             elif msg_type in {"image", "file", "video", "record", "face"}:
                 media_types.append("image" if msg_type == "face" else msg_type)
-        text = "".join(text_parts).strip()
+        text = (quoted.get("title") or "".join(text_parts)).strip()
         has_text = bool(text)
         if not text and media_types:
             text = " ".join(f"[{x}]" for x in media_types)
@@ -929,6 +1053,8 @@ class AIReplyService:
 
         if not self.cfg.enabled:
             log("info", "disabled_skip", group_id=evt.group_id, trace_id=evt.trace_id)
+            return False
+        if self.group_is_muted(evt.group_id, evt.trace_id, "should_reply"):
             return False
         if evt.group_id not in self.cfg.target_groups:
             log("info", "group_not_target_skip", group_id=evt.group_id,
@@ -1047,11 +1173,21 @@ class AIReplyService:
 
     def handle_brain_task(self, task: ReplyTask, evt: OneBotEvent) -> None:
         registry = self.task_registry
+        if self.group_is_muted(evt.group_id, evt.trace_id, "task_start"):
+            registry.update(task, "skipped", result="group_muted", details={"mute_gate": True})
+            return
         pipeline_started = time.monotonic()
-        explicit_command = re.search(r"(?:^|\s)/(?:发语音|发表情)\b", str(evt.text or ""))
+        command_text = re.sub(r"^@\S+\s*", "", str(evt.text or "").strip()).strip()
+        explicit_command = next((name for name in ("/发语音", "/发表情", "/生图")
+                                 if command_text.startswith(name)), "")
+        if not explicit_command and extract_image_generation_prompt(command_text):
+            explicit_command = "/生图"
         if explicit_command:
             evt.raw["_brain_task_id"] = task.task_id
-            registry.update(task, "selecting_voice" if "发语音" in explicit_command.group(0) else "selecting_face")
+            state = "generating_image" if explicit_command == "/生图" else (
+                "selecting_voice" if explicit_command == "/发语音" else "selecting_face"
+            )
+            registry.update(task, state, medium="image" if state == "generating_image" else "")
             self.handle_event(evt)
             if task.state not in FINAL_STATES:
                 registry.update(task, "completed", result=task.result or "media_sent")
@@ -1204,6 +1340,47 @@ class AIReplyService:
                     error=str(exc), traceback=traceback.format_exc())
             finally:
                 self.media_events.task_done()
+
+    def media_analysis_event(self, media_id: int) -> threading.Event:
+        with self.media_analysis_events_lock:
+            event = self.media_analysis_events.get(int(media_id))
+            if event is None:
+                event = threading.Event()
+                self.media_analysis_events[int(media_id)] = event
+            return event
+
+    def recover_pending_media_analysis(self) -> int:
+        """Requeue media left unfinished by a process restart or log reconciliation."""
+        recovered = 0
+        kinds: List[str] = []
+        if self.cfg.vision_ocr.enabled and self.cfg.vision_ocr.auto_analyze:
+            kinds.append("image")
+        if self.cfg.asr.enabled and self.cfg.asr.auto_transcribe:
+            kinds.append("record")
+        for media_type in kinds:
+            for item in self.store.pending_media_analysis(media_type, 100):
+                try:
+                    raw = json.loads(str(item.get("raw_json") or "{}"))
+                    evt, _ = self.parse_event(raw)
+                    if not evt:
+                        continue
+                    # Log recovery can normalize timestamps or message text after
+                    # the callback row was first stored. Recomputing the hash then
+                    # points at a different event and the worker sees no media.
+                    # The database event_id is the canonical join key.
+                    evt.event_id = str(item.get("event_id") or evt.event_id)
+                    evt.group_id = str(item.get("group_id") or evt.group_id)
+                    evt.message_id = str(item.get("message_id") or evt.message_id)
+                    evt.trace_id = str(item.get("trace_id") or evt.trace_id)
+                    desired = "ocr_queued" if media_type == "image" else "asr_queued"
+                    self.store.mark_media_status(int(item["id"]), desired)
+                    self.media_events.put_nowait(evt)
+                    recovered += 1
+                except (ValueError, TypeError, queue.Full):
+                    break
+        if recovered:
+            log("info", "media_analysis_recovered", recovered=recovered)
+        return recovered
 
     def local_image_data_url(self, value: str) -> str:
         value = str(value or "").strip()
@@ -1430,8 +1607,13 @@ class AIReplyService:
         if self.cfg.vision_ocr.enabled:
             for item in image_items:
                 media_id = int(item["id"])
+                signal = self.media_analysis_event(media_id)
+                if not self.store.claim_media_status(
+                    media_id, ["indexed", "ocr_queued", "ocr_failed"], "ocr_running"
+                ):
+                    continue
+                signal.clear()
                 try:
-                    self.store.mark_media_status(media_id, "ocr_running")
                     image_value = str(item.get("file") or item.get("url") or "")
                     result = self.analyze_image_with_vision(image_value, evt.group_name, evt.sender_name or evt.user_id)
                     self.store.save_media_annotation(
@@ -1448,6 +1630,8 @@ class AIReplyService:
                     self.store.mark_media_status(media_id, "ocr_failed", str(exc)[:1000])
                     log("error", "media_ocr_failed", group_id=evt.group_id, media_id=media_id,
                         error=str(exc), trace_id=evt.trace_id)
+                finally:
+                    signal.set()
 
         record_items = [x for x in self.store.media_by_event(evt.event_id) if x.get("media_type") == "record"]
         if record_items and not self.cfg.asr.enabled:
@@ -1457,8 +1641,11 @@ class AIReplyService:
                 media_id = int(item["id"])
                 if str(item.get("ocr_text") or "").strip() and str(item.get("status") or "") == "transcribed":
                     continue
+                if not self.store.claim_media_status(
+                    media_id, ["indexed", "asr_queued", "asr_failed", "waiting_transcript"], "asr_running"
+                ):
+                    continue
                 try:
-                    self.store.mark_media_status(media_id, "asr_running")
                     audio_value = str(item.get("file") or item.get("url") or "")
                     result = self.transcribe_audio_with_asr(audio_value)
                     transcript = result["text"]
@@ -1588,30 +1775,41 @@ class AIReplyService:
             ]
             if exact_rows:
                 exact_rows.sort(key=lambda r: (int(r.get("usage_count") or 0), -int(r.get("id") or 0)))
-                return exact_rows[0]
+                return {**exact_rows[0], "match_score": 1200, "match_reason": "语音标题完整命中"}
         if self.generic_voice_pack_request(query):
             for exact in ("你好", "你好你好你好", "Hello", "可以"):
                 rows = self.store.voice_items(query=exact, limit=20)
                 exact_rows = [r for r in rows if str(r.get("title") or r.get("text") or "").lower() == exact.lower()]
                 if exact_rows:
                     exact_rows.sort(key=lambda r: (int(r.get("usage_count") or 0), -int(r.get("id") or 0)))
-                    return exact_rows[0]
+                    return {**exact_rows[0], "match_score": 1200, "match_reason": "通用语音完整命中"}
                 if rows:
                     rows.sort(key=lambda r: (int(r.get("usage_count") or 0), -int(r.get("id") or 0)))
-                    return rows[0]
-        candidates = self.voice_pack_candidates(query, limit=1)
-        if candidates:
-            return candidates[0]
+                    return {**rows[0], "match_score": max(75, float(rows[0].get("match_score") or 0)),
+                            "match_reason": rows[0].get("match_reason") or "通用语音匹配"}
+        candidates = self.voice_pack_candidates(query, limit=8)
         memory = evt.raw.get("_brain_memory") if evt and isinstance(evt.raw, dict) else {}
         vector_candidates = [
             row for row in (memory.get("asset_candidates") or []) if isinstance(memory, dict)
             if row.get("object_type") == "voice_pack"
-            and float(row.get("vector_score") or 0) >= self.cfg.media_reply.min_candidate_confidence
         ]
-        vector_candidates.sort(key=lambda row: float(row.get("vector_score") or 0), reverse=True)
-        if vector_candidates:
-            return {**vector_candidates[0], "match_score": 0, "match_reason": "向量语义匹配"}
-        return {}
+        merged: Dict[int, Dict[str, Any]] = {}
+        for row in candidates:
+            item_id = int(row.get("id") or 0)
+            if item_id:
+                merged[item_id] = row
+        for row in vector_candidates:
+            item_id = int(row.get("id") or 0)
+            if not item_id:
+                continue
+            vector_item = {**row, "match_reason": "向量语义匹配"}
+            current = merged.get(item_id)
+            if not current or self.voice_candidate_confidence(vector_item) > self.voice_candidate_confidence(current):
+                merged[item_id] = vector_item
+            elif current:
+                current["vector_score"] = max(float(current.get("vector_score") or 0), float(row.get("vector_score") or 0))
+        ranked = sorted(merged.values(), key=self.voice_candidate_confidence, reverse=True)
+        return ranked[0] if ranked else {}
 
     @staticmethod
     def voice_candidate_confidence(item: Dict[str, Any]) -> float:
@@ -1691,18 +1889,34 @@ class AIReplyService:
         rows = self.store.search_face_assets(
             q, evt.group_id, limit=8, global_shared=self.cfg.media_reply.global_face_assets
         )
-        if rows:
-            return rows[0]
         memory = evt.raw.get("_brain_memory") if isinstance(evt.raw, dict) else {}
-        candidates = []
+        candidates: Dict[int, Dict[str, Any]] = {
+            int(row.get("id") or 0): row for row in rows if int(row.get("id") or 0)
+        }
         for row in (memory.get("asset_candidates") or []) if isinstance(memory, dict) else []:
             if row.get("object_type") != "face_asset":
                 continue
+            if not bool(row.get("enabled", 1)):
+                continue
             score = float(row.get("vector_score") or 0)
-            if score >= self.cfg.media_reply.min_candidate_confidence:
-                candidates.append({**row, "match_score": score, "match_reason": "向量语义匹配"})
-        candidates.sort(key=lambda row: float(row.get("match_score") or 0), reverse=True)
-        return candidates[0] if candidates else {}
+            item_id = int(row.get("id") or 0)
+            if not item_id:
+                continue
+            available = getattr(self.store, "face_asset_available", None)
+            if available and not available(item_id, evt.group_id, self.cfg.media_reply.global_face_assets):
+                continue
+            vector_item = {**row, "match_score": score, "match_reason": "向量语义匹配"}
+            current = candidates.get(item_id)
+            if not current or score > float(current.get("match_score") or current.get("vector_score") or 0):
+                candidates[item_id] = vector_item
+            elif current:
+                current["vector_score"] = max(float(current.get("vector_score") or 0), score)
+        ranked = sorted(
+            candidates.values(),
+            key=lambda row: float(row.get("match_score") or row.get("vector_score") or 0),
+            reverse=True,
+        )
+        return ranked[0] if ranked else {}
 
     def send_face_pack_tool(self, evt: OneBotEvent, query: str, quiet: bool = False,
                             selected_item: Optional[Dict[str, Any]] = None) -> str:
@@ -1783,7 +1997,85 @@ class AIReplyService:
             return self.send_voice_pack_tool(evt, text.removeprefix("/发语音").strip(), quiet=True)
         if text.startswith("/发表情"):
             return self.send_face_pack_tool(evt, text.removeprefix("/发表情").strip(), quiet=True)
+        if text.startswith("/生图"):
+            return self.send_generated_image_tool(evt, text.removeprefix("/生图").strip(), quiet=True)
         return None
+
+    @staticmethod
+    def is_latest_image_query(text: str) -> bool:
+        value = re.sub(r"\s+", "", str(text or ""))
+        latest = any(word in value for word in ("刚发", "刚才发", "上一张", "那张", "这张", "最新"))
+        image = any(word in value for word in ("图", "图片", "照片", "截图", "画面", "表情"))
+        question = any(word in value for word in ("什么", "啥", "内容", "识别", "看到", "看看", "说说"))
+        return image and (latest or question) and (latest or "这" in value)
+
+    def prepare_latest_image_context(self, evt: OneBotEvent) -> Dict[str, Any]:
+        if not self.is_latest_image_query(evt.text):
+            return {}
+        quoted = evt.raw.get("_quoted_message") if isinstance(evt.raw, dict) else {}
+        quoted = quoted if isinstance(quoted, dict) else {}
+        is_quoted_image = str(quoted.get("type") or "") == "3"
+        if is_quoted_image:
+            latest = self.store.referenced_image(
+                evt.group_id,
+                str(quoted.get("message_id") or ""),
+                str(quoted.get("md5") or ""),
+            )
+            if latest:
+                latest["_context_source"] = "quoted_image"
+                latest["_quoted_message_id"] = str(quoted.get("message_id") or "")
+                log("info", "quoted_image_exact_match", group_id=evt.group_id,
+                    quoted_message_id=quoted.get("message_id"), quoted_md5=quoted.get("md5"),
+                    media_id=latest.get("id"), image_summary=str(latest.get("image_summary") or "")[:160],
+                    trace_id=evt.trace_id)
+            else:
+                missing = {
+                    "id": 0,
+                    "group_id": evt.group_id,
+                    "media_type": "image",
+                    "status": "referenced_image_not_indexed",
+                    "image_summary": "",
+                    "ocr_text": "",
+                    "tags_json": "[]",
+                    "keywords_json": "[]",
+                    "_context_source": "quoted_image_missing",
+                    "_quoted_message_id": str(quoted.get("message_id") or ""),
+                }
+                evt.raw["_latest_image_context"] = missing
+                log("warning", "quoted_image_not_found", group_id=evt.group_id,
+                    quoted_message_id=quoted.get("message_id"), quoted_md5=quoted.get("md5"),
+                    trace_id=evt.trace_id)
+                return missing
+        else:
+            latest = self.store.latest_image_before(evt.group_id, evt.timestamp, evt.user_id)
+        if not latest:
+            return {}
+        media_id = int(latest["id"])
+        status = str(latest.get("status") or "")
+        if status in {"indexed", "ocr_queued", "ocr_running", "ocr_failed"} and self.cfg.vision_ocr.enabled:
+            signal = self.media_analysis_event(media_id)
+            if status != "ocr_running":
+                try:
+                    raw = json.loads(str(latest.get("raw_json") or "{}"))
+                    image_evt, _ = self.parse_event(raw)
+                    if image_evt:
+                        image_evt.event_id = str(latest.get("event_id") or image_evt.event_id)
+                        image_evt.group_id = str(latest.get("group_id") or image_evt.group_id)
+                        image_evt.message_id = str(latest.get("message_id") or image_evt.message_id)
+                        log("info", "latest_image_priority_analysis", group_id=evt.group_id,
+                            media_id=media_id, status=status, trace_id=evt.trace_id)
+                        self.analyze_event_media(image_evt)
+                except Exception as exc:
+                    log("warning", "latest_image_priority_failed", group_id=evt.group_id,
+                        media_id=media_id, error=str(exc), trace_id=evt.trace_id)
+            else:
+                wait_seconds = max(3, min(25, int(self.cfg.vision_ocr.timeout_seconds)))
+                log("info", "latest_image_waiting", group_id=evt.group_id, media_id=media_id,
+                    wait_seconds=wait_seconds, trace_id=evt.trace_id)
+                signal.wait(wait_seconds)
+            latest = self.store.media_detail(media_id) or latest
+        evt.raw["_latest_image_context"] = latest
+        return latest
 
     def build_messages(self, evt: OneBotEvent) -> List[Dict[str, str]]:
         with self.history_locks[evt.group_id]:
@@ -1837,11 +2129,15 @@ class AIReplyService:
                         "有原话证据的画像结论：\n" + ("\n".join(claim_lines) if claim_lines else "无")
                     )[:5000],
                 })
+            latest_image = self.prepare_latest_image_context(evt)
             image_words = ("图", "图片", "照片", "截图", "表情", "画面", "看见", "刚才", "之前", "那张", "这张", "哈士奇", "狗", "猫", "识别", "内容")
             need_images = any(w in evt.text for w in image_words)
-            image_rows = self.store.media(evt.group_id, "image", limit=12, query=evt.text if need_images else "")
-            if not image_rows and need_images:
-                image_rows = self.store.media(evt.group_id, "image", limit=12)
+            if latest_image:
+                image_rows = [latest_image]
+            else:
+                image_rows = self.store.media(evt.group_id, "image", limit=12, query=evt.text if need_images else "")
+                if not image_rows and need_images:
+                    image_rows = self.store.media(evt.group_id, "image", limit=12)
             if image_rows:
                 lines = []
                 for x in image_rows[:12]:
@@ -1862,7 +2158,23 @@ class AIReplyService:
                     if summary or ocr or label:
                         lines.append(f"- #{x.get('id')} {x.get('created_at')} {who}: 摘要={summary or '无'} OCR={ocr or '无'} 标签={label or '无'}")
                 if lines:
-                    messages.append({"role": "system", "content": "当前群已解析图片记忆（回答图片相关问题时优先参考，可提到图片编号）：\n" + "\n".join(lines)})
+                    quoted_exact = str(latest_image.get("_context_source") or "") == "quoted_image" if latest_image else False
+                    heading = (
+                        "用户当前明确引用的历史图片（这是唯一可信的目标图，禁止改用最近图片或其他语义相似图片）：\n"
+                        if quoted_exact else
+                        "当前群已解析图片记忆（回答图片相关问题时优先参考，可提到图片编号）：\n"
+                    )
+                    messages.append({"role": "system", "content": heading + "\n".join(lines)})
+                elif latest_image:
+                    target_label = "明确引用的历史图片" if str(latest_image.get("_context_source") or "").startswith("quoted_image") else "刚刚发送的最新图片"
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            f"用户问的是{target_label} #{latest_image.get('id')}，"
+                            f"当前状态为 {latest_image.get('status')}。禁止把更早的其他图片当成这张图来回答；"
+                            "若仍无解析结果，只能明确说这张被引用图片尚未入库或仍在解析。"
+                        ),
+                    })
             voice_words = ("语音", "语音泡", "刚才说", "说了什么", "讲了什么", "听到", "转文字", "声音", "音频")
             need_voice = any(w in evt.text for w in voice_words)
             record_rows = self.store.media(evt.group_id, "record", limit=10, query=evt.text if need_voice else "")
@@ -1924,6 +2236,9 @@ class AIReplyService:
         except Exception as exc:
             log("warning", "memory_context_error", group_id=evt.group_id, trace_id=evt.trace_id, error=str(exc))
         sender = evt.sender_name or evt.user_id or "群成员"
+        media_settings = self.cfg.media_reply.for_group(evt.group_id)
+        voice_threshold = int(float(media_settings.get("voice_min_fit", 55)))
+        face_threshold = int(float(media_settings.get("face_min_fit", 45)))
         messages.append({
             "role": "system",
             "content": (
@@ -1931,8 +2246,12 @@ class AIReplyService:
                 '{"text":"适合直接发到群里的文字回复","medium":"text|voice|face",'
                 '"voice_fit":0,"face_fit":0,"media_query":"用于匹配素材的简短语义描述",'
                 '"intent":"当前情绪或接话意图","reason":"一句话理由"}。'
-                "voice_fit 和 face_fit 均为 0-100，只有相应媒介明显比文字更像群友接话时才给 70 以上。"
-                "text 始终提供可用的文字备选，系统会在后台决定最终媒介。"
+                "voice_fit 和 face_fit 均为 0-100，评估的是对当前群聊语境的自然程度，"
+                "不要因为文字也能回复就压低媒介分。搞笑、惊讶、夸赞、安慰、短确认、熟人调侃等"
+                "反应型场景可给 60-90；需要长步骤、代码或精确事实的回答应较低。"
+                f"当前后台门槛为语音 {voice_threshold}、表情 {face_threshold}。"
+                "medium 必须表示你真正首选的最终媒介；若选 voice 或 face，请让对应 fit 与这个选择一致。"
+                "text 始终提供可用的文字备选，系统会在后台继续检查素材置信度和概率。"
             ),
         })
         user_content = f"群：{evt.group_name}({evt.group_id})\n发言人：{sender}\n最新消息：{evt.text}"
@@ -1954,6 +2273,11 @@ class AIReplyService:
     def handle_event(self, evt: OneBotEvent) -> None:
         log("info", "reply_job_start", group_id=evt.group_id, group_name=evt.group_name,
             message_id=evt.message_id, text=evt.text[:300], trace_id=evt.trace_id)
+        if self.group_is_muted(evt.group_id, evt.trace_id, "handle_event"):
+            task = self._task_for_event(evt)
+            if task:
+                self.task_registry.update(task, "skipped", result="group_muted", details={**task.details, "mute_gate": True})
+            return
         command = self.command_reply(evt)
         if command == "__NO_TEXT_REPLY__":
             self._record_history(evt, "[已发送媒体，无文字回复]")
@@ -1965,6 +2289,18 @@ class AIReplyService:
             self._record_history(evt, "[媒介命令发送失败，未发送文字]")
             return
         is_asr_transcript = bool(isinstance(evt.raw, dict) and evt.raw.get("asr_voice_transcript"))
+        if not is_asr_transcript and command is None:
+            image_prompt = self.extract_image_generation_prompt(evt.text)
+            if image_prompt:
+                result = self.send_generated_image_tool(evt, image_prompt, quiet=True)
+                if result == "__NO_TEXT_REPLY__":
+                    self._record_history(evt, f"[已生成并发送图片：{image_prompt[:120]}]")
+                    return
+                task = self._task_for_event(evt)
+                if task:
+                    self.task_registry.update(task, "failed", error="生图或图片发送失败")
+                self._record_history(evt, "[生图失败，未发送图片]")
+                return
         if not is_asr_transcript and command is None and re.search(r"(发|来|整|搞).{0,8}(语音|语音包|声音|音频)", evt.text):
             result = self.send_voice_pack_tool(evt, evt.text, quiet=True)
             if result == "__NO_TEXT_REPLY__":
@@ -1992,6 +2328,11 @@ class AIReplyService:
             task = self._task_for_event(evt)
             if task:
                 self.task_registry.update(task, "failed", error="模型没有生成回复")
+            return
+        if self.group_is_muted(evt.group_id, evt.trace_id, "after_generation"):
+            task = self._task_for_event(evt)
+            if task:
+                self.task_registry.update(task, "skipped", result="group_muted", details={**task.details, "mute_gate": True})
             return
         decision = ReplyDecision(text=str(raw_reply), medium="text") if command is not None else self.parse_reply_decision(raw_reply)
         task = self._task_for_event(evt)
@@ -2063,6 +2404,134 @@ class AIReplyService:
         if channel.id == self.cfg.ai.active_channel_id:
             return key or os.getenv("AI_REPLY_API_KEY", "")
         return key
+
+    @staticmethod
+    def extract_image_generation_prompt(text: str) -> str:
+        return extract_image_generation_prompt(text)
+
+    def image_generation_api_key(self) -> str:
+        cfg = self.cfg.image_generation
+        return os.getenv(cfg.api_key_env, "") or os.getenv("AI_REPLY_API_KEY", "")
+
+    def generate_image(self, prompt: str) -> Dict[str, Any]:
+        cfg = self.cfg.image_generation
+        prompt = str(prompt or "").strip()
+        if not cfg.enabled:
+            raise RuntimeError("生图功能未启用")
+        if not prompt:
+            raise ValueError("生图描述不能为空")
+        if not cfg.base_url or not cfg.model:
+            raise RuntimeError("生图渠道配置不完整")
+        key = self.image_generation_api_key()
+        if not key and not cfg.base_url.startswith(("http://127.0.0.1", "http://localhost")):
+            raise RuntimeError("生图 API Key 未配置")
+        payload: Dict[str, Any] = {
+            "model": cfg.model, "prompt": prompt, "n": 1, "size": cfg.size,
+        }
+        if cfg.quality:
+            payload["quality"] = cfg.quality
+        if cfg.response_format in {"url", "b64_json"}:
+            payload["response_format"] = cfg.response_format
+        started = time.monotonic()
+        raw_body = ""
+        request_attempts = 0
+        for attempt in range(2):
+            request_attempts = attempt + 1
+            req = urllib.request.Request(
+                cfg.base_url.rstrip("/") + "/images/generations",
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"), method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            if key:
+                req.add_header("Authorization", "Bearer " + key)
+            try:
+                with urllib.request.urlopen(req, timeout=cfg.timeout_seconds) as resp:
+                    raw_body = resp.read().decode("utf-8", "replace")
+                break
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", "replace") if exc.fp else ""
+                cooling = exc.code == 429 and any(
+                    marker in detail for marker in ("upstream_cooling", "upstream_model_cooling")
+                )
+                if cooling and attempt == 0:
+                    retry_raw = str(exc.headers.get("Retry-After") or "1").strip()
+                    try:
+                        retry_after = float(retry_raw)
+                    except ValueError:
+                        retry_after = 1.0
+                    retry_after = max(1.0, min(60.0, retry_after))
+                    log("warning", "image_generation_cooling_retry", model=cfg.model,
+                        retry_after_seconds=retry_after, attempt=request_attempts)
+                    time.sleep(retry_after)
+                    continue
+                raise RuntimeError(f"生图 HTTP {exc.code}: {detail[:800]}") from exc
+        parsed = json.loads(raw_body)
+        items = parsed.get("data") if isinstance(parsed, dict) else None
+        item = items[0] if isinstance(items, list) and items and isinstance(items[0], dict) else {}
+        image_bytes = b""
+        source = ""
+        if item.get("b64_json"):
+            image_bytes = base64.b64decode(str(item["b64_json"]), validate=True)
+            source = "b64_json"
+        elif item.get("url"):
+            source = str(item["url"])
+            with urllib.request.urlopen(urllib.request.Request(source, headers={"User-Agent": "WeChatSecond/0.0.4"}), timeout=min(60, cfg.timeout_seconds)) as resp:
+                image_bytes = resp.read(25 * 1024 * 1024 + 1)
+        if not image_bytes or len(image_bytes) > 25 * 1024 * 1024:
+            raise RuntimeError("生图响应未包含可用图片，或图片超过 25MB")
+        output_dir = DEFAULT_HOME / "generated_images"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256(image_bytes).hexdigest()
+        suffix = ".jpg"
+        mime_type = "image/jpeg"
+        if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+            suffix, mime_type = ".png", "image/png"
+        elif image_bytes.startswith((b"GIF87a", b"GIF89a")):
+            suffix, mime_type = ".gif", "image/gif"
+        elif image_bytes.startswith(b"RIFF") and image_bytes[8:12] == b"WEBP":
+            suffix, mime_type = ".webp", "image/webp"
+        elif not image_bytes.startswith(b"\xff\xd8\xff"):
+            raise RuntimeError("生图响应不是受支持的 JPEG、PNG、GIF 或 WebP 图片")
+        path = output_dir / f"{time.strftime('%Y%m%d-%H%M%S')}-{digest[:12]}{suffix}"
+        path.write_bytes(image_bytes)
+        return {
+            "file": str(path), "size_bytes": len(image_bytes), "sha256": digest,
+            "mime_type": mime_type,
+            "model": cfg.model, "prompt": prompt, "revised_prompt": str(item.get("revised_prompt") or ""),
+            "source": source, "latency_ms": round((time.monotonic() - started) * 1000),
+            "request_attempts": request_attempts,
+        }
+
+    def send_generated_image_tool(self, evt: OneBotEvent, prompt: str, quiet: bool = False) -> str:
+        task = self._task_for_event(evt)
+        try:
+            if task:
+                self.task_registry.update(task, "generating_image", medium="image")
+            with self.model_semaphore:
+                generated = self.generate_image(prompt)
+            if task:
+                self.task_registry.update(task, "waiting_media_channel", medium="image", model=generated["model"])
+            with self.media_send_semaphore:
+                if task:
+                    self.task_registry.update(task, "sending", medium="image")
+                sent = self.post_web_admin("/api/messages/send", {
+                    "group_id": evt.group_id, "type": "image", "file": generated["file"],
+                    "_send_timeout": 120, "trace_id": evt.trace_id,
+                }, timeout=130)
+            log("info", "generated_image_sent", group_id=evt.group_id, model=generated["model"],
+                file=generated["file"], latency_ms=generated["latency_ms"],
+                send_latency_ms=sent.get("latency_ms"), trace_id=evt.trace_id)
+            if task:
+                details = {**(task.details or {}), "image_generation": generated}
+                self.task_registry.update(task, "completed", medium="image", model=generated["model"],
+                                          result=generated["file"], details=details)
+            return "__NO_TEXT_REPLY__" if quiet else f"已生成图片：{generated['file']}"
+        except Exception as exc:
+            log("error", "generated_image_failed", group_id=evt.group_id, prompt=prompt[:200],
+                error=str(exc), trace_id=evt.trace_id)
+            if task:
+                self.task_registry.update(task, "failed", medium="image", error=str(exc)[:500])
+            return "__MEDIA_FAILED__" if quiet else "生图失败，请在后台检查生图渠道。"
 
     def channel_order(self) -> List[AIChannel]:
         enabled = [x for x in self.cfg.ai.channels if x.enabled]
@@ -2283,9 +2752,13 @@ class AIReplyService:
         task = self._task_for_event(evt)
         if task:
             self.task_registry.update(task, "media_deciding")
+        requested_medium = str(getattr(decision, "medium", "text") or "text").lower()
+        if requested_medium not in {"text", "voice", "face"}:
+            requested_medium = "text"
         details: Dict[str, Any] = {
             "voice_fit": decision.voice_fit, "face_fit": decision.face_fit,
             "media_query": decision.media_query, "intent": decision.intent,
+            "requested_medium": requested_medium,
             "automatic_enabled": bool(settings.get("automatic_enabled", True)),
         }
         if not settings.get("automatic_enabled", True):
@@ -2296,13 +2769,21 @@ class AIReplyService:
         min_confidence = float(settings.get("min_candidate_confidence", 0.65))
         voice_probability = float(settings.get("voice_probability", 0.15))
         face_probability = float(settings.get("face_probability", 0.20))
+        # `medium` is the model's explicit final-medium preference.  Previously
+        # it was parsed and then discarded, so even a deliberate `face` answer
+        # could be blocked by a slightly under-calibrated fit score.  Preserve
+        # the raw score for diagnostics and lift only the selected medium to its
+        # configured gate; candidate confidence and probability still apply.
+        voice_effective_fit = max(float(decision.voice_fit), voice_min_fit) if requested_medium == "voice" else float(decision.voice_fit)
+        face_effective_fit = max(float(decision.face_fit), face_min_fit) if requested_medium == "face" else float(decision.face_fit)
         details.update({
             "voice_min_fit": voice_min_fit, "face_min_fit": face_min_fit,
+            "voice_effective_fit": voice_effective_fit, "face_effective_fit": face_effective_fit,
             "min_candidate_confidence": min_confidence,
             "voice_probability": voice_probability, "face_probability": face_probability,
         })
         options: List[Tuple[float, str, Dict[str, Any], float]] = []
-        if decision.voice_fit >= voice_min_fit:
+        if voice_effective_fit >= voice_min_fit:
             voice = self.select_voice_pack_item(query, evt)
             voice_confidence = self.voice_candidate_confidence(voice)
             details["voice_candidate"] = {"id": voice.get("id"), "confidence": voice_confidence,
@@ -2315,10 +2796,10 @@ class AIReplyService:
             elif voice_draw >= voice_probability:
                 details["voice_gate"] = "probability_miss"
             else:
-                options.append((decision.voice_fit / 100.0 * voice_confidence, "voice", voice, voice_confidence))
+                options.append((voice_effective_fit / 100.0 * voice_confidence, "voice", voice, voice_confidence))
         else:
             details["voice_gate"] = "fit_below_threshold"
-        if decision.face_fit >= face_min_fit:
+        if face_effective_fit >= face_min_fit:
             face = self.select_face_pack_item(evt, query)
             face_confidence = float(face.get("match_score") or face.get("vector_score") or 0)
             details["face_candidate"] = {"id": face.get("id"), "confidence": face_confidence,
@@ -2331,7 +2812,7 @@ class AIReplyService:
             elif face_draw >= face_probability:
                 details["face_gate"] = "probability_miss"
             else:
-                options.append((decision.face_fit / 100.0 * face_confidence, "face", face, face_confidence))
+                options.append((face_effective_fit / 100.0 * face_confidence, "face", face, face_confidence))
         else:
             details["face_gate"] = "fit_below_threshold"
         if not options:
@@ -2354,6 +2835,8 @@ class AIReplyService:
 
     def send_group_msg(self, group_id: str, text: str, trace_id: str = "",
                        evt: Optional[OneBotEvent] = None) -> None:
+        if self.group_is_muted(group_id, trace_id, "text_send"):
+            raise RuntimeError("当前群处于“闭嘴”静默期")
         with self.send_locks[group_id]:
             self._send_group_msg_locked(group_id, text, trace_id, evt)
 
@@ -2504,6 +2987,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200, {"status": "ok", "data": SERVICE.extract_persona_claims(raw)})
             except Exception as exc:
                 self._send_json(409, {"status": "busy", "error": str(exc)})
+            return
+        if self.path == "/image/generate":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                raw = json.loads(self.rfile.read(length).decode("utf-8", "replace")) if length else {}
+                assert SERVICE is not None
+                self._send_json(200, {"status": "ok", "data": SERVICE.generate_image(str(raw.get("prompt") or ""))})
+            except Exception as exc:
+                self._send_json(400, {"status": "failed", "error": str(exc)})
             return
         if self.path == "/config/reload":
             try:

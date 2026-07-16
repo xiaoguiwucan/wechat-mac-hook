@@ -86,6 +86,37 @@ def is_readable_member_name(value: Any, user_id: str = "") -> bool:
     )
 
 
+def effective_member_name(row: Any, user_id: str = "") -> str:
+    """Return the first human-readable group identity without leaking wxids."""
+    uid = str(user_id or (row["user_id"] if row else "") or "").strip()
+    for key in ("card", "display_name", "nickname"):
+        try:
+            value = row[key]
+        except (KeyError, IndexError, TypeError):
+            value = ""
+        if is_readable_member_name(value, uid):
+            return str(value).strip()
+    suffix = uid[-6:] if uid else "------"
+    return f"未识别成员 · {suffix}"
+
+
+def persona_message_text(value: Any) -> str:
+    """Reduce XML/system payloads to human text before profile extraction."""
+    body = html.unescape(str(value or "")).strip()
+    if not body:
+        return ""
+    if re.search(r"<(?:\?xml|msg|appmsg|sysmsg)\b", body, re.I):
+        useful: List[str] = []
+        for tag in ("title", "des", "content", "displayname"):
+            for match in re.findall(rf"<{tag}[^>]*>(.*?)</{tag}>", body, re.I | re.S):
+                clean = re.sub(r"<[^>]+>", " ", html.unescape(match))
+                clean = re.sub(r"\s+", " ", clean).strip()
+                if clean and clean not in useful:
+                    useful.append(clean)
+        return " ".join(useful)[:1200]
+    return re.sub(r"\s+", " ", body).strip()[:1200]
+
+
 def voice_search_terms(value: str) -> List[str]:
     compact = voice_search_text(value)
     terms = re.findall(r"[a-z0-9]{2,}|[\u4e00-\u9fff]{2,}", compact)
@@ -319,6 +350,13 @@ class MemoryStore:
                   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
                 CREATE INDEX IF NOT EXISTS idx_media_group ON media_items(group_id, created_at DESC);
+                CREATE TABLE IF NOT EXISTS group_reply_mutes (
+                  group_id TEXT PRIMARY KEY,
+                  muted_until REAL NOT NULL,
+                  triggered_by TEXT NOT NULL DEFAULT '',
+                  trigger_message_id TEXT NOT NULL DEFAULT '',
+                  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
                 CREATE TABLE IF NOT EXISTS voice_packs (
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
                   name TEXT NOT NULL,
@@ -616,6 +654,12 @@ class MemoryStore:
         if not group_id or not user_id:
             return
         ts = now_ts()
+        # OneBot occasionally emits the wxid itself as nickname. It is identity
+        # metadata, not a display name, and must never overwrite a name learned
+        # from a real group message.
+        display_name = display_name if is_readable_member_name(display_name, user_id) else ""
+        nickname = nickname if is_readable_member_name(nickname, user_id) else ""
+        card = card if is_readable_member_name(card, user_id) else ""
         with self.connect() as db:
             db.execute(
                 """
@@ -686,8 +730,11 @@ class MemoryStore:
             if inserted:
                 if row[2] == "incoming" and row[5]:
                     db.execute(
-                        "UPDATE personas SET new_messages_since_analysis=new_messages_since_analysis+1,updated_at=? WHERE group_id=? AND user_id=?",
-                        (now_ts(), group_id, row[5]),
+                        """INSERT INTO personas(user_id,group_id,analysis_status,new_messages_since_analysis,updated_at)
+                           VALUES(?,?,'not_analyzed',1,?) ON CONFLICT(user_id,group_id) DO UPDATE SET
+                           new_messages_since_analysis=personas.new_messages_since_analysis+1,
+                           updated_at=excluded.updated_at""",
+                        (row[5], group_id, now_ts()),
                     )
                 try:
                     db.execute(
@@ -1360,6 +1407,130 @@ class MemoryStore:
         with self.connect() as db:
             return [dict(r) for r in db.execute(sql, params).fetchall()]
 
+    def set_group_reply_mute(self, group_id: str, duration_seconds: int, triggered_by: str = "",
+                             trigger_message_id: str = "") -> Dict[str, Any]:
+        muted_until = time.time() + max(1, int(duration_seconds))
+        with self.connect() as db:
+            db.execute(
+                """INSERT INTO group_reply_mutes(group_id,muted_until,triggered_by,trigger_message_id,updated_at)
+                   VALUES(?,?,?,?,?) ON CONFLICT(group_id) DO UPDATE SET
+                   muted_until=excluded.muted_until,triggered_by=excluded.triggered_by,
+                   trigger_message_id=excluded.trigger_message_id,updated_at=excluded.updated_at""",
+                (str(group_id), muted_until, str(triggered_by), str(trigger_message_id), now_ts()),
+            )
+        return self.group_reply_mute(group_id)
+
+    def group_reply_mute(self, group_id: str) -> Dict[str, Any]:
+        now = time.time()
+        with self.connect() as db:
+            row = db.execute("SELECT * FROM group_reply_mutes WHERE group_id=?", (str(group_id),)).fetchone()
+            if not row:
+                return {"group_id": str(group_id), "active": False, "muted_until": 0.0, "remaining_seconds": 0}
+            result = dict(row)
+            remaining = max(0, int(float(result.get("muted_until") or 0) - now + 0.999))
+            if remaining <= 0:
+                db.execute("DELETE FROM group_reply_mutes WHERE group_id=?", (str(group_id),))
+                return {"group_id": str(group_id), "active": False, "muted_until": 0.0, "remaining_seconds": 0}
+            result.update({"active": True, "remaining_seconds": remaining})
+            return result
+
+    def active_group_reply_mutes(self) -> List[Dict[str, Any]]:
+        now = time.time()
+        with self.connect() as db:
+            db.execute("DELETE FROM group_reply_mutes WHERE muted_until<=?", (now,))
+            rows = [dict(row) for row in db.execute(
+                "SELECT * FROM group_reply_mutes WHERE muted_until>? ORDER BY muted_until DESC", (now,)
+            ).fetchall()]
+        for row in rows:
+            row["active"] = True
+            row["remaining_seconds"] = max(1, int(float(row["muted_until"]) - now + 0.999))
+        return rows
+
+    def claim_media_status(self, media_id: int, expected: Iterable[str], status: str) -> bool:
+        values = [str(value) for value in expected if str(value)]
+        if not values:
+            return False
+        placeholders = ",".join("?" for _ in values)
+        with self.connect() as db:
+            cur = db.execute(
+                f"UPDATE media_items SET status=?,error='',updated_at=? WHERE id=? AND status IN ({placeholders})",
+                [str(status), now_ts(), int(media_id), *values],
+            )
+            return cur.rowcount > 0
+
+    def pending_media_analysis(self, media_type: str = "image", limit: int = 100) -> List[Dict[str, Any]]:
+        statuses = ("indexed", "ocr_queued", "ocr_running", "ocr_failed") if media_type == "image" else (
+            "indexed", "asr_queued", "asr_running", "asr_failed", "waiting_transcript"
+        )
+        placeholders = ",".join("?" for _ in statuses)
+        with self.connect() as db:
+            rows = db.execute(
+                f"""SELECT mi.*,m.raw_json,m.message_id,m.event_time,m.trace_id
+                    FROM media_items mi JOIN messages m ON m.event_id=mi.event_id
+                    WHERE mi.media_type=? AND mi.status IN ({placeholders})
+                    ORDER BY mi.id DESC LIMIT ?""",
+                [str(media_type), *statuses, max(1, min(300, int(limit)))],
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def latest_image_before(self, group_id: str, event_time: int = 0, user_id: str = "") -> Dict[str, Any]:
+        # Prefer the current member's immediately preceding image, then fall back
+        # to the newest image in the group. This is what phrases such as
+        # "我刚发了什么图" naturally refer to.
+        def fetch(member_only: bool) -> Dict[str, Any]:
+            where = ["mi.group_id=?", "mi.media_type='image'"]
+            params: List[Any] = [str(group_id)]
+            if event_time:
+                where.append("m.event_time<=?")
+                params.append(int(event_time))
+            if member_only and user_id:
+                where.append("m.user_id=?")
+                params.append(str(user_id))
+            sql = f"""SELECT mi.*,m.sender_name,m.user_id,m.message_id,m.event_time,m.raw_message,m.raw_json
+                      FROM media_items mi JOIN messages m ON m.event_id=mi.event_id
+                      WHERE {' AND '.join(where)} ORDER BY m.event_time DESC,mi.id DESC LIMIT 1"""
+            with self.connect() as db:
+                row = db.execute(sql, params).fetchone()
+                return dict(row) if row else {}
+        return fetch(True) or fetch(False)
+
+    def referenced_image(self, group_id: str, message_id: str = "", md5: str = "") -> Dict[str, Any]:
+        """Resolve a quoted image inside the current group without using recency.
+
+        WeChat quote XML preserves the original ``svrid`` and usually the image
+        MD5.  The message id is authoritative; MD5 is a fallback for duplicate
+        callback/log rows whose event id differs.  Both routes remain strictly
+        group-scoped so an identical asset in another group cannot leak in.
+        """
+        group_id = str(group_id or "").strip()
+        message_id = str(message_id or "").strip()
+        md5 = re.sub(r"[^0-9a-f]", "", str(md5 or "").lower())
+        if not group_id or (not message_id and len(md5) < 16):
+            return {}
+        conditions: List[str] = []
+        params: List[Any] = [group_id]
+        if message_id:
+            conditions.append("m.message_id=?")
+            params.append(message_id)
+        if len(md5) >= 16:
+            conditions.append("(mi.meta_json LIKE ? OR m.raw_message LIKE ? OR m.raw_json LIKE ?)")
+            like = f"%{md5}%"
+            params.extend([like, like, like])
+        with self.connect() as db:
+            row = db.execute(
+                f"""
+                SELECT mi.*,m.sender_name,m.user_id,m.message_id,m.event_time,m.raw_message,m.raw_json
+                FROM media_items mi
+                JOIN messages m ON m.event_id=mi.event_id
+                WHERE mi.group_id=? AND mi.media_type='image' AND ({' OR '.join(conditions)})
+                ORDER BY CASE WHEN m.message_id=? THEN 0 ELSE 1 END,
+                         CASE WHEN mi.image_summary<>'' OR mi.ocr_text<>'' THEN 0 ELSE 1 END,
+                         mi.id DESC LIMIT 1
+                """,
+                [*params, message_id],
+            ).fetchone()
+            return dict(row) if row else {}
+
     def normalize_voice_placeholders(self, group_id: str = "") -> int:
         """Keep missing Silk payload diagnostics out of the user-facing error state.
 
@@ -1490,17 +1661,27 @@ class MemoryStore:
                 if len(rows) < 2:
                     continue
                 rows.sort(key=lambda row: (
-                    0 if str(row.get("ocr_text") or "").strip() else 1,
-                    0 if str(row.get("status") or "") == "transcribed" else 1,
+                    0 if (str(row.get("ocr_text") or "").strip() or str(row.get("image_summary") or "").strip()) else 1,
+                    0 if str(row.get("status") or "") in {"transcribed", "ocr_done", "annotated"} else 1,
                     -int(row.get("id") or 0),
                 ))
                 keep = rows[0]
                 # Merge a useful annotation before removing the stale copies.
                 for candidate in rows[1:]:
-                    if not str(keep.get("ocr_text") or "").strip() and str(candidate.get("ocr_text") or "").strip():
-                        keep = candidate
-                if str(keep.get("ocr_text") or "").strip() and str(keep.get("status") or "") != "transcribed":
-                    db.execute("UPDATE media_items SET status='transcribed', error='', updated_at=? WHERE id=?", (now_ts(), int(keep["id"])))
+                    if not (str(keep.get("ocr_text") or "").strip() or str(keep.get("image_summary") or "").strip()) and (
+                        str(candidate.get("ocr_text") or "").strip() or str(candidate.get("image_summary") or "").strip()
+                    ):
+                        for field in ("ocr_text", "image_summary", "tags_json", "keywords_json", "status", "error"):
+                            keep[field] = candidate.get(field)
+                if str(keep.get("ocr_text") or "").strip() or str(keep.get("image_summary") or "").strip():
+                    desired = "transcribed" if str(keep.get("media_type") or "") == "record" else "ocr_done"
+                    db.execute(
+                        """UPDATE media_items SET ocr_text=?,image_summary=?,tags_json=?,keywords_json=?,status=?,error=?,updated_at=?
+                           WHERE id=?""",
+                        (str(keep.get("ocr_text") or ""), str(keep.get("image_summary") or ""),
+                         str(keep.get("tags_json") or "[]"), str(keep.get("keywords_json") or "[]"),
+                         desired, str(keep.get("error") or ""), now_ts(), int(keep["id"])),
+                    )
                 stale_ids = [int(row["id"]) for row in rows if int(row["id"]) != int(keep["id"])]
                 if stale_ids:
                     placeholders = ",".join("?" for _ in stale_ids)
@@ -1678,6 +1859,21 @@ class MemoryStore:
                 (int(face_id),),
             ).fetchone()
             return dict(row) if row else {}
+
+    def face_asset_available(self, face_id: int, group_id: str = "", global_shared: bool = True) -> bool:
+        """Check global and per-group switches before a vector result can be sent."""
+        with self.connect() as db:
+            row = db.execute(
+                """SELECT fa.enabled,mi.group_id AS source_group_id,
+                          fag.face_id AS group_row,COALESCE(fag.enabled,1) AS group_enabled
+                   FROM face_assets fa LEFT JOIN media_items mi ON mi.id=fa.canonical_media_id
+                   LEFT JOIN face_asset_groups fag ON fag.face_id=fa.id AND fag.group_id=?
+                   WHERE fa.id=?""",
+                (str(group_id or ""), int(face_id)),
+            ).fetchone()
+        if not row or not bool(row["enabled"]) or not bool(row["group_enabled"]):
+            return False
+        return bool(global_shared or row["group_row"] is not None)
 
     def search_face_assets(self, query: str = "", group_id: str = "", limit: int = 50,
                            global_shared: bool = True, include_disabled: bool = False) -> List[Dict[str, Any]]:
@@ -1890,6 +2086,58 @@ class MemoryStore:
             return [dict(r) for r in db.execute(sql, params).fetchall()]
 
     @staticmethod
+    def _persona_member_is_real(user_id: Any, group_id: str = "") -> bool:
+        uid = str(user_id or "").strip()
+        return bool(uid and uid != group_id and not uid.endswith("@chatroom") and uid.lower() not in {
+            "ai", "onebot-log", "web-admin-test-user", "voice-test-user", "voice-fix-test-user",
+            "wxid_tester", "wxid_test_codex"
+        })
+
+    def sync_persona_directory(self, group_id: str = "") -> Dict[str, int]:
+        """Recover every observed member and best real name from permanent history."""
+        where = "WHERE direction='incoming' AND user_id!=''"
+        params: List[Any] = []
+        if group_id:
+            where += " AND group_id=?"
+            params.append(group_id)
+        created = renamed = 0
+        with self.connect() as db:
+            rows = [dict(r) for r in db.execute(
+                f"""SELECT group_id,user_id,COUNT(*) message_count,MAX(event_time) last_event
+                    FROM messages {where} GROUP BY group_id,user_id""", params
+            ).fetchall()]
+            for row in rows:
+                gid, uid = str(row["group_id"]), str(row["user_id"])
+                if not self._persona_member_is_real(uid, gid):
+                    continue
+                names = db.execute(
+                    """SELECT sender_name,MAX(event_time) latest,COUNT(*) frequency FROM messages
+                       WHERE group_id=? AND user_id=? AND direction='incoming'
+                       GROUP BY sender_name ORDER BY latest DESC,frequency DESC""", (gid, uid)
+                ).fetchall()
+                best = next((str(x["sender_name"]).strip() for x in names
+                             if is_readable_member_name(x["sender_name"], uid)), "")
+                old = db.execute("SELECT * FROM members WHERE group_id=? AND user_id=?", (gid, uid)).fetchone()
+                if old is None:
+                    db.execute(
+                        """INSERT INTO members(user_id,group_id,display_name,nickname,message_count,last_seen,updated_at)
+                           VALUES(?,?,?,?,?,?,?)""",
+                        (uid, gid, best or uid, best, int(row["message_count"] or 0),
+                         datetime.fromtimestamp(int(row["last_event"] or time.time())).strftime("%Y-%m-%d %H:%M:%S"), now_ts()),
+                    )
+                    created += 1
+                elif best and effective_member_name(old, uid) != best:
+                    db.execute("UPDATE members SET display_name=?,nickname=?,updated_at=? WHERE group_id=? AND user_id=?",
+                               (best, best, now_ts(), gid, uid))
+                    renamed += 1
+                db.execute(
+                    """INSERT INTO personas(user_id,group_id,analysis_status,new_messages_since_analysis,updated_at)
+                       VALUES(?,?,'not_analyzed',?,?) ON CONFLICT(user_id,group_id) DO NOTHING""",
+                    (uid, gid, int(row["message_count"] or 0), now_ts()),
+                )
+        return {"created": created, "renamed": renamed}
+
+    @staticmethod
     def _json_value(value: Any, fallback: Any) -> Any:
         if isinstance(value, (list, dict)):
             return value
@@ -1901,9 +2149,10 @@ class MemoryStore:
 
     def persona_list(self, group_id: str, query: str = "", status: str = "", page: int = 1,
                      page_size: int = 100) -> Dict[str, Any]:
+        self.sync_persona_directory(group_id)
         page = max(1, int(page or 1))
         page_size = max(1, min(500, int(page_size or 100)))
-        where = ["m.group_id=?"]
+        where = ["m.group_id=?", "m.user_id!=m.group_id", "m.user_id NOT IN ('AI','onebot-log','web-admin-test-user','voice-test-user','voice-fix-test-user','wxid_tester','wxid_test_codex')"]
         params: List[Any] = [group_id]
         if query:
             like = f"%{query.strip()}%"
@@ -1929,7 +2178,7 @@ class MemoryStore:
             items = []
             for raw in rows:
                 item = dict(raw)
-                item["display_name"] = item.get("card") or item.get("display_name") or item.get("nickname") or item["user_id"]
+                item["display_name"] = effective_member_name(item, item["user_id"])
                 item["aliases"] = [r[0] for r in db.execute(
                     "SELECT alias FROM member_aliases WHERE group_id=? AND user_id=? ORDER BY confidence DESC,id LIMIT 8",
                     (group_id, item["user_id"]),
@@ -1962,7 +2211,7 @@ class MemoryStore:
                 "SELECT event_id,user_id,sender_name,event_time,created_at,text,raw_message FROM messages WHERE group_id=? AND direction='incoming' ORDER BY event_time,created_at,event_id",
                 (group_id,),
             ).fetchall()]
-            names = {str(r["user_id"]): (r["card"] or r["display_name"] or r["nickname"] or r["user_id"]) for r in db.execute(
+            names = {str(r["user_id"]): effective_member_name(r, str(r["user_id"])) for r in db.execute(
                 "SELECT * FROM members WHERE group_id=?", (group_id,)
             ).fetchall()}
             learned = [dict(r) for r in db.execute(
@@ -2049,7 +2298,7 @@ class MemoryStore:
         manual_tags = self._json_value(p.get("manual_tags_json"), [])
         effective_summary = p.get("manual_summary") or p.get("auto_summary") or p.get("summary") or ""
         profile = {
-            **dict(member), **p, "display_name": member["card"] or member["display_name"] or member["nickname"] or user_id,
+            **dict(member), **p, "display_name": effective_member_name(member, user_id),
             "message_count": metrics.get("message_count", 0),
             "summary": effective_summary, "tags": list(dict.fromkeys([*manual_tags, *tags])),
             "facts": [*manual_facts, *[x for x in facts if x not in manual_facts]],
@@ -2406,19 +2655,24 @@ class MemoryStore:
 
     def queue_due_persona_analysis(self, six_hours_ago: str) -> Dict[str, Any]:
         """Queue low-priority incremental jobs after 30 messages or six hours."""
+        # This also seeds legacy databases and newly observed members. Initial
+        # profiles therefore require no manual visit or button click.
+        self.sync_persona_directory()
         with self.connect() as db:
             due = [dict(r) for r in db.execute(
-                """SELECT p.group_id,p.user_id FROM personas p
-                   WHERE p.analysis_status IN ('completed','manual','legacy_auto')
-                     AND (p.new_messages_since_analysis>=30 OR (p.last_analyzed_at!='' AND p.last_analyzed_at<=? AND p.new_messages_since_analysis>0))
+                """SELECT p.group_id,p.user_id,p.analysis_status FROM personas p
+                   WHERE ((p.analysis_status='not_analyzed' AND p.new_messages_since_analysis>0)
+                          OR (p.analysis_status IN ('completed','manual','legacy_auto')
+                              AND (p.new_messages_since_analysis>=30 OR (p.last_analyzed_at!='' AND p.last_analyzed_at<=? AND p.new_messages_since_analysis>0))))
                      AND NOT EXISTS(SELECT 1 FROM persona_analysis_jobs j WHERE j.group_id=p.group_id AND j.user_id=p.user_id AND j.status IN ('queued','running','paused'))
-                   ORDER BY p.new_messages_since_analysis DESC LIMIT 8""",
+                   ORDER BY CASE p.analysis_status WHEN 'not_analyzed' THEN 0 ELSE 1 END,p.new_messages_since_analysis DESC LIMIT 8""",
                 (six_hours_ago,),
             ).fetchall()]
         queued = 0
         jobs: List[int] = []
         for row in due:
-            result = self.queue_persona_analysis(row["group_id"], row["user_id"], "incremental")
+            mode = "full" if row.get("analysis_status") == "not_analyzed" else "incremental"
+            result = self.queue_persona_analysis(row["group_id"], row["user_id"], mode)
             queued += int(result.get("queued") or 0)
             jobs.extend(result.get("jobs") or [])
         return {"queued": queued, "jobs": jobs}
@@ -2452,7 +2706,8 @@ class MemoryStore:
             ).fetchall()]
         return {"job_id": int(job_id), "group_id": job["group_id"], "user_id": job["user_id"], "messages": [
             {"event_id": row["event_id"], "message_id": row["message_id"], "time": self._message_datetime(row).strftime("%Y-%m-%d %H:%M:%S"),
-             "text": str(row["text"] or row["raw_message"] or "")[:1200]} for row in rows if str(row["text"] or row["raw_message"] or "").strip()
+             "text": persona_message_text(row["text"] or row["raw_message"])} for row in rows
+            if persona_message_text(row["text"] or row["raw_message"])
         ]}
 
     def add_persona_model_claims(self, group_id: str, user_id: str, claims: List[Dict[str, Any]],
@@ -2540,7 +2795,7 @@ class MemoryStore:
             topic_evidence: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
             topic_count: Counter[str] = Counter()
             for row in rows:
-                body = str(row.get("text") or row.get("raw_message") or "").strip()
+                body = persona_message_text(row.get("text") or row.get("raw_message"))
                 if not body:
                     continue
                 dt = self._message_datetime(row).strftime("%Y-%m-%d %H:%M:%S")
@@ -2589,7 +2844,7 @@ class MemoryStore:
         with self.connect() as db:
             member = db.execute("SELECT * FROM members WHERE group_id=? AND user_id=?", (group_id, user_id)).fetchone()
             claims = [dict(r) for r in db.execute("SELECT * FROM persona_claims WHERE group_id=? AND user_id=? AND source='auto' ORDER BY confidence DESC,id DESC", (group_id, user_id)).fetchall()]
-            name = (member["card"] or member["display_name"] or member["nickname"] or user_id) if member else user_id
+            name = effective_member_name(member, user_id) if member else effective_member_name({}, user_id)
             topics = [x["value"] for x in claims if x["category"] in {"topic", "interest"}][:8]
             summary = f"{name} 在本群共有 {metrics['message_count']} 条历史消息"
             if topics:
@@ -2644,7 +2899,7 @@ class MemoryStore:
         manual_facts = self._json_value(p.get("manual_facts_json"), [])
         auto_facts = self._json_value(p.get("facts_json"), [])
         return {
-            "name": p.get("card") or p.get("display_name") or p.get("nickname") or user_id,
+            "name": effective_member_name(p, user_id),
             "summary": p.get("manual_summary") or p.get("auto_summary") or p.get("summary") or "",
             "aliases": aliases,
             "tags": list(dict.fromkeys([*manual_tags, *auto_tags]))[:12],

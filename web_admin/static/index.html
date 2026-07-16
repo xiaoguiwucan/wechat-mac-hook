@@ -148,7 +148,7 @@
 
       <section class="page" id="page-ai">
         <form id="aiForm">
-          <div class="page-bar"><div><h2>模型配置</h2><p>配置对话、图片 OCR 与语音 ASR 模型；保存后自动重载 AI 服务</p></div><div class="bar-actions"><span id="saveState" class="save-state">配置同步中</span><button class="btn primary" type="submit">保存并应用</button></div></div>
+          <div class="page-bar"><div><h2>模型配置</h2><p>配置对话、AI 生图、图片 OCR 与语音 ASR 模型；保存后自动重载 AI 服务</p></div><div class="bar-actions"><span id="saveState" class="save-state">配置同步中</span><button class="btn primary" type="submit">保存并应用</button></div></div>
           <div class="model-layout">
             <aside class="provider-panel panel">
               <div class="panel-head"><div><h2>模型渠道</h2><p>选择首选服务源</p></div><button type="button" class="icon-btn add-channel" id="addChannelBtn" title="添加模型渠道">＋</button></div>
@@ -205,6 +205,22 @@
                 </div>
               </div>
 
+              <div class="panel form-panel image-generation-panel" id="modelSectionImageGeneration" data-model-section="AI 生图">
+                <div class="panel-head"><div><h2>AI 生图模型</h2><p>群友可通过“/生图”或“帮我画一张…”生成图片并直接发到当前群</p></div><span class="route-status">IMAGE GEN</span></div>
+                <div class="form-grid panel-body compact">
+                  <label class="toggle-row span-2"><span><strong>启用对话生图</strong><small>显式生图请求绕过普通接话评分，图片生成后走 OneBot 媒体通道</small></span><span class="switch"><input id="imageGenEnabled" type="checkbox"><i></i></span></label>
+                  <div class="field span-2"><label for="imageGenBaseUrl">生图 API Base URL</label><input id="imageGenBaseUrl" type="url" placeholder="https://api.openai.com/v1"></div>
+                  <div class="field span-2"><label for="imageGenApiKey">生图 API Key</label><div class="input-action"><input id="imageGenApiKey" type="password" autocomplete="new-password"><button type="button" id="toggleImageGenKey" title="显示或隐藏密钥">◉</button></div></div>
+                  <div class="field"><label for="imageGenModel">生图 Model ID</label><input id="imageGenModel" placeholder="例如 gpt-image-1 / dall-e-3"></div>
+                  <div class="field"><label for="imageGenSize">默认尺寸</label><select id="imageGenSize"><option value="1024x1024">1024 × 1024</option><option value="1536x1024">1536 × 1024</option><option value="1024x1536">1024 × 1536</option><option value="auto">自动</option></select></div>
+                  <div class="field"><label for="imageGenQuality">生成质量</label><select id="imageGenQuality"><option value="standard">标准 standard</option><option value="high">高质量 high</option><option value="hd">高清 hd</option><option value="auto">自动 auto</option></select></div>
+                  <div class="field"><label for="imageGenTimeout">生图超时</label><div class="unit-input"><input id="imageGenTimeout" type="number" min="10" max="600"><span>SEC</span></div></div>
+                  <div class="field span-2"><label for="imageGenTestPrompt">真实生图测试</label><textarea id="imageGenTestPrompt" rows="3" placeholder="例如：一只穿宇航服的橘猫，电影感灯光">一只穿宇航服的橘猫，简洁插画风格</textarea></div>
+                  <div class="field"><label>渠道测试</label><button type="button" class="btn subtle wide" id="imageGenTestBtn">保存并真实生图</button></div>
+                  <div class="field span-2"><div id="imageGenResult" class="test-result idle"><strong>READY</strong><span>等待生图测试</span></div></div>
+                </div>
+              </div>
+
               <div class="panel form-panel asr-panel" id="modelSectionAsr" data-model-section="语音 ASR">
                 <div class="panel-head"><div><h2>语音 ASR 模型</h2><p>直接读取 OneBot 抓到的语音原始文件，调用 ASR 转文字，不再依赖微信 UI 识别</p></div><span class="route-status">VOICE ASR</span></div>
                 <div class="form-grid panel-body compact">
@@ -255,6 +271,20 @@
 
       <section class="page" id="page-brain" data-brain-view="orbit">
         <div class="page-bar"><div><h2>群聊大脑 · 永久记忆检索</h2><p>理解当前群聊，并从人物、群梗、全文与向量记忆中召回最相关的证据</p></div><div class="bar-actions"><div class="view-segment" role="group" aria-label="群聊大脑视图"><button class="active" type="button" data-brain-view-value="orbit"><i class="ph ph-orbit"></i>轨道视图</button><button type="button" data-brain-view-value="config"><i class="ph ph-sliders-horizontal"></i>配置视图</button></div><button class="btn ghost" id="brainPreviewBtn">预览 24 小时</button></div></div>
+        <section class="brain-mute-spotlight" aria-labelledby="brainMuteSpotlightTitle">
+          <span class="brain-mute-signal" aria-hidden="true"><i class="ph ph-speaker-slash"></i></span>
+          <div class="brain-mute-copy">
+            <span class="brain-mute-kicker"><i></i>最高优先级硬暂停</span>
+            <h3 id="brainMuteSpotlightTitle">闭嘴控制</h3>
+            <p>群内发送“闭嘴”后，当前群完全静默，@、喊“小风”、引用和媒介命令也不会触发回复。</p>
+          </div>
+          <div class="brain-mute-status">
+            <span>当前时长</span>
+            <strong id="brainMuteSummary">3 分钟</strong>
+            <small id="brainMuteSummarySeconds">180 秒 · 按群独立 · 重启保留</small>
+          </div>
+          <button class="btn brain-mute-open" id="brainMuteOpenBtn" type="button"><i class="ph ph-sliders-horizontal"></i>设置闭嘴时长</button>
+        </section>
         <section class="brain-orbit-shell" aria-label="永久记忆检索路线" data-brain-pane="orbit">
           <div class="orbit-metric-strip">
             <article><span>接话槽位</span><strong>老油条 · <b id="orbitThreshold">52</b></strong><small>接话门槛</small></article>
@@ -305,8 +335,9 @@
                 <div class="field"><label for="brainMode">接话档位</label><select id="brainMode"><option value="reserved">克制 · 78</option><option value="natural">自然 · 65</option><option value="veteran">老油条 · 52</option><option value="custom">自定义</option></select></div>
                 <div class="field brain-threshold-field"><label for="brainThreshold">接话门槛 <output id="brainThresholdValue">52</output></label><input id="brainThreshold" type="range" min="0" max="100" value="52"><div class="range-scale"><span>旁听 0</span><span>积极 100</span></div></div>
                 <div class="field"><label for="brainScoringMode">评分方式</label><select id="brainScoringMode"><option value="local_fast">本地快速（推荐）</option><option value="model_deep">远程模型深度评分</option></select></div>
+                <div class="field brain-mute-field" id="brainMuteField"><div class="brain-mute-field-title"><label for="brainMuteDuration">“闭嘴”暂停时长（秒）</label><b>最高优先级</b></div><input id="brainMuteDuration" type="number" min="10" max="86400" step="10" value="180"><small>群友发送“闭嘴”后，当前群完全静默；保存后立即生效。</small></div>
                 <label class="toggle-row"><span><strong>自适应二次重排</strong><small>含糊历史问题且首批置信不足时扩到 24 条</small></span><span class="switch"><input id="brainAdaptiveRerank" type="checkbox" checked><i></i></span></label>
-                <div class="brain-note"><i class="ph ph-info"></i><p>明确 @、引用机器人、喊“小风”以及语音或表情命令会直接进入回复流程，不受普通接话门槛限制。</p></div>
+                <div class="brain-note"><i class="ph ph-info"></i><p>明确 @、引用机器人、喊“小风”以及语音或表情命令会直接进入回复流程。“闭嘴”是最高优先级硬暂停，静默期内上述规则也不会触发回复。</p></div>
               </section>
               <section class="brain-column brain-score-column">
                 <div class="brain-section-head"><span>02</span><div><h3>七维评分</h3><p>总权重为 100，按群聊语境综合判断</p></div></div>
@@ -502,6 +533,11 @@
               <div class="field"><label for="voiceReplyProbability">语音概率 <output id="voiceReplyProbabilityValue">15%</output></label><input id="voiceReplyProbability" type="range" min="0" max="100" value="15"></div>
               <div class="field"><label for="voiceMinFit">语音适配门槛</label><input id="voiceMinFit" type="number" min="0" max="100" value="55"></div>
               <div class="voice-search-actions"><button class="btn primary wide" id="voiceMediaSaveBtn">实时应用</button><button class="btn ghost wide" id="voiceContextTestBtn">测试当前语境</button></div>
+              <div class="media-trigger-diagnostics" id="voiceMediaDiagnostics" aria-live="polite">
+                <div class="media-trigger-head"><strong>近 24 小时触发漏斗</strong><span>读取中</span></div>
+                <div class="media-trigger-funnel"><div><b>--</b><small>进入回复</small></div><div><b>--</b><small>语音适配</small></div><div><b>--</b><small>素材达标</small></div><div><b>--</b><small>已发送</small></div></div>
+                <p>概率只在“回复门槛、媒介适配、素材置信度”都通过后抽样。</p>
+              </div>
               <div class="voice-stats" id="voiceStats"><div><strong>--</strong><small>语音包</small></div><div><strong>--</strong><small>语音条</small></div><div><strong>--</strong><small>文件夹</small></div></div>
               <div class="media-help-card">
                 <strong>导入规则</strong>
@@ -555,6 +591,11 @@
               <div class="field"><label for="faceMinConfidence">最低素材置信度</label><input id="faceMinConfidence" type="number" min="0" max="1" step="0.05" value="0.65"></div>
               <label class="toggle-row"><span><strong>跨群共享表情库</strong><small>仅共享素材，不共享群历史和人物记忆</small></span><span class="switch"><input id="faceGlobalShared" type="checkbox" checked><i></i></span></label>
               <div class="voice-search-actions"><button class="btn primary wide" id="faceMediaSaveBtn">实时应用</button><button class="btn ghost wide" id="faceContextTestBtn">测试当前语境</button></div>
+              <div class="media-trigger-diagnostics" id="faceMediaDiagnostics" aria-live="polite">
+                <div class="media-trigger-head"><strong>近 24 小时触发漏斗</strong><span>读取中</span></div>
+                <div class="media-trigger-funnel"><div><b>--</b><small>进入回复</small></div><div><b>--</b><small>表情适配</small></div><div><b>--</b><small>素材达标</small></div><div><b>--</b><small>已发送</small></div></div>
+                <p>概率只在“回复门槛、媒介适配、素材置信度”都通过后抽样。</p>
+              </div>
               <button class="btn subtle wide" id="faceReindexBtn">重建表情检索索引</button>
               <div class="media-help-card">
                 <strong>当前逻辑</strong>

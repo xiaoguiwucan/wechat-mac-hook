@@ -23,6 +23,7 @@ TASK_LABELS = {
     "reading_culture": "正在读取人物关系和群梗",
     "reranking": "正在重排相关历史",
     "generating": "正在生成回复",
+    "generating_image": "正在生成图片",
     "media_deciding": "正在选择回复媒介",
     "selecting_voice": "正在匹配语音",
     "selecting_face": "正在匹配表情",
@@ -34,6 +35,36 @@ TASK_LABELS = {
     "cancelled": "任务已取消",
 }
 FINAL_STATES = {"completed", "skipped", "failed", "cancelled"}
+
+
+def extract_image_generation_prompt(text: str) -> str:
+    """Extract an explicit image request without treating ordinary image talk as a command."""
+    raw = re.sub(r"^@\S+\s*", "", str(text or "").strip()).strip()
+    patterns = (
+        r"^/生图\s+(.+)$",
+        # “画个哈士奇”“画一只猫”“帮我画月球”：画/绘制本身就是强绘图动词。
+        r"^(?:(?:帮我|给我|请|麻烦)\s*)?(?:画|绘制)\s*"
+        r"(?:(?:一张|张|一幅|幅|一个|个|一只|只|一下)\s*)?"
+        r"(?:(?:图片|图|画|插画|海报)\s*)?[：:]?\s*(.+)$",
+        # “生成一张哈士奇”或“生成图片：哈士奇”。不接受“生成一个报告”。
+        r"^(?:(?:帮我|给我|请|麻烦)\s*)?(?:生成|制作)\s*"
+        r"(?:(?:一张|张|一幅|幅)\s*(?:(?:图片|图|画|插画|海报)\s*)?|"
+        r"(?:图片|图|画|插画|海报)\s*)[：:]?\s*(.{2,})$",
+        # “来张哈士奇的图”“整一张月球猫图片”，必须明确带图像名词。
+        r"^(?:(?:帮我|给我|请|麻烦)\s*)?(?:来|整|搞|做)\s*"
+        r"(?:(?:一张|张|一幅|幅|一个|个)\s*)?(.{2,}?)\s*(?:的)?(?:图片|图|画|插画|海报)$",
+    )
+    for pattern in patterns:
+        match = re.match(pattern, raw, re.I | re.S)
+        if not match:
+            continue
+        prompt = match.group(1).strip(" ，。！？:：")
+        if not prompt or re.fullmatch(r"(?:图|图片|画|一张|一幅|一个|个)", prompt):
+            continue
+        if re.search(r"(?:是什么意思|什么意思|怎么用|为什么|为何)[?？]?$", prompt):
+            continue
+        return prompt[:2000]
+    return ""
 
 
 @dataclass
@@ -48,6 +79,7 @@ class BrainConfig:
     global_workers: int = 8
     per_group_workers: int = 3
     model_concurrency: int = 6
+    mute_duration_seconds: int = 180
     factor_weights: Dict[str, float] = field(default_factory=lambda: {
         "involvement": 18, "continuity": 14, "memory": 16, "value": 14,
         "humor": 14, "emotion": 10, "timing": 14,
@@ -81,6 +113,7 @@ class BrainConfig:
             global_workers=max(1, min(16, int(value.get("global_workers", 8)))),
             per_group_workers=max(1, min(6, int(value.get("per_group_workers", 3)))),
             model_concurrency=max(1, min(16, int(value.get("model_concurrency", 6)))),
+            mute_duration_seconds=max(10, min(86400, int(value.get("mute_duration_seconds", 180)))),
             factor_weights=cleaned_weights,
             modifiers={key: float(modifiers.get(key, val)) for key, val in default_modifiers.items()},
         )
@@ -175,19 +208,37 @@ class OpportunityScorer:
     def __init__(self, cfg: BrainConfig):
         self.cfg = cfg
 
+    @staticmethod
+    def _mention_target(value: Any) -> str:
+        """Normalize OneBot mention ids, including WeChat CDATA-wrapped values."""
+        target = str(value or "").strip()
+        match = re.fullmatch(r"<!\[CDATA\[(.*?)\]\]>", target, re.S)
+        if match:
+            target = match.group(1).strip()
+        return target.strip("\"'").strip()
+
     def local_score(self, evt: Any, recent: List[Dict[str, Any]], memory: Dict[str, Any],
                     last_bot_reply: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         text = str(evt.text or "").strip()
         raw_segments = evt.raw.get("message") if isinstance(evt.raw, dict) else []
         at_self = any(
             isinstance(seg, dict) and seg.get("type") == "at" and
-            str((seg.get("data") or {}).get("qq") or (seg.get("data") or {}).get("user_id") or "") == str(evt.self_id)
+            self._mention_target(
+                (seg.get("data") or {}).get("qq") or (seg.get("data") or {}).get("user_id") or ""
+            ) == self._mention_target(evt.self_id)
             for seg in (raw_segments or [])
         )
         reply_id = next((str((seg.get("data") or {}).get("id") or "") for seg in (raw_segments or [])
                          if isinstance(seg, dict) and seg.get("type") == "reply"), "")
         alias_hit = next((x for x in self.cfg.bot_aliases if x and x in text), "")
-        explicit_media = bool(re.search(r"(?:/发语音|/发表情|(?:发|来|整|搞).{0,8}(?:语音|语音包|声音|音频|表情|梗图|动图))", text))
+        explicit_media = bool(
+            extract_image_generation_prompt(text)
+            or re.search(
+                r"(?:/发语音|/发表情|(?:发|来|整|搞).{0,8}"
+                r"(?:语音|语音包|声音|音频|表情|梗图|动图))",
+                text,
+            )
+        )
         mandatory = bool(at_self or reply_id or alias_hit or explicit_media)
         score = 24.0 if len(text) >= 3 else 10.0
         reasons: List[Dict[str, Any]] = []

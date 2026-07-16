@@ -2,7 +2,7 @@ const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
 const state = { config: null, status: null, brainConfig: null, replyTasks: [], faceItems: [], pokeFaceIds: new Set(), channels: [], selectedChannelId: '', channelHealth: {}, groupCatalog: [], groupMemberCatalog: {}, groupMemberCatalogMeta: {}, ignoredGroupMembers: {}, persona: { members: [], selectedUserId: '', detail: null, tab: 'overview', refreshTimer: null }, dirty: false, logs: [], source: 'all', miniSource: 'all', paused: false, eventSource: null, traceDiagnostic: null };
 const pageMeta = {
-  overview: ['运行总览', '第二微信、OneBot 与 AI 服务'], ai: ['模型配置', '对话、OCR 与 ASR 模型配置'],
+  overview: ['运行总览', '第二微信、OneBot 与 AI 服务'], ai: ['模型配置', '对话、生图、OCR 与 ASR 模型配置'],
   groups: ['群聊策略', '目标群与自动回复规则'], brain: ['群聊大脑', '接话门槛、七维评分与并发策略'],
   personas: ['USR 用户画像', '永久档案、行为统计、关系与原话证据'],
   'reply-tasks': ['实时对话', '回复线程、任务阶段与耗时'], vector: ['本地向量', 'oMLX 模型、检索与永久记忆回填'],
@@ -33,7 +33,7 @@ const orbitNodeDetails = {
 };
 const orbitalPageDesigns = {
   overview: { tone: 'cyan', icon: 'ph-gauge', code: 'RUNTIME ORBIT', title: '运行轨道总控', description: '把微信、OneBot、AI 与消息链路放在同一条实时运行轨道中。', state: '核心服务同步中', nodes: [['ph-wechat-logo', '第二微信', 'INSTANCE 2', '隔离运行'], ['ph-plugs-connected', 'OneBot', '58080', '消息与媒体'], ['ph-brain', 'AI 网关', '36060', '生成与调度']] },
-  ai: { tone: 'violet', icon: 'ph-cpu', code: 'MODEL ORBIT', title: '多模型神经中枢', description: '统一编排对话、OCR 与 ASR 渠道，保存后实时切换运行链路。', state: '配置热加载', nodes: [['ph-arrows-clockwise', '故障切换', 'AUTO', '渠道健康'], ['ph-eye', '视觉理解', 'OCR', '图片解析'], ['ph-waveform', '语音理解', 'ASR', '实时转写']] },
+  ai: { tone: 'violet', icon: 'ph-cpu', code: 'MODEL ORBIT', title: '多模型神经中枢', description: '统一编排对话、生图、OCR 与 ASR 渠道，保存后实时切换运行链路。', state: '配置热加载', nodes: [['ph-arrows-clockwise', '故障切换', 'AUTO', '渠道健康'], ['ph-image-square', 'AI 生图', 'IMAGE', '图片生成'], ['ph-eye', '视觉理解', 'OCR', '图片解析'], ['ph-waveform', '语音理解', 'ASR', '实时转写']] },
   vector: { tone: 'cyan', icon: 'ph-vector-three', code: 'VECTOR ORBIT', title: '本地向量引擎', description: 'Embedding 召回与 Reranker 精排共同驱动永久记忆检索。', state: 'oMLX 本地推理', nodes: [['ph-cube', '向量维度', '4096D', '完整精度'], ['ph-magnifying-glass', '初始召回', 'TOP 60', '多路融合'], ['ph-arrows-down-up', '精排注入', '12–24', '自适应扩批']] },
   'reply-tasks': { tone: 'mint', icon: 'ph-chats-circle', code: 'THREAD ORBIT', title: '多线程回复调度', description: '跨群并行、同线程串行，每个问题都绑定原消息和完整阶段。', state: '实时任务流', nodes: [['ph-stack', '全局工作池', '8', '并行任务'], ['ph-users-three', '单群并发', '3', '线程隔离'], ['ph-broadcast', '状态刷新', '<1s', '统一事件流']] },
   groups: { tone: 'violet', icon: 'ph-users-three', code: 'SOCIAL ORBIT', title: '群聊策略矩阵', description: '按群控制权限、回复边界与成员屏蔽，保存即刻生效。', state: '群级热更新', nodes: [['ph-shield-check', '群聊授权', 'ACL', '目标群隔离'], ['ph-user-minus', '成员屏蔽', 'LIVE', '历史目录'], ['ph-sliders-horizontal', '回复规则', 'HOT', '实时应用']] },
@@ -212,6 +212,19 @@ function setBrainView(view, persist = true) {
   if (next === 'orbit') requestAnimationFrame(runOrbitSequence);
 }
 
+function formatMuteDuration(value) {
+  const seconds = Math.max(10, Math.min(86400, Number(value) || 180));
+  if (seconds % 3600 === 0) return `${seconds / 3600} 小时`;
+  if (seconds % 60 === 0) return `${seconds / 60} 分钟`;
+  return `${seconds} 秒`;
+}
+
+function updateMuteSummary(value) {
+  const seconds = Math.max(10, Math.min(86400, Number(value) || 180));
+  if ($('#brainMuteSummary')) $('#brainMuteSummary').textContent = formatMuteDuration(seconds);
+  if ($('#brainMuteSummarySeconds')) $('#brainMuteSummarySeconds').textContent = `${seconds} 秒 · 按群独立 · 重启保留`;
+}
+
 function selectOrbitNode(key, pulse = true) {
   const detail = orbitNodeDetails[key]; if (!detail) return;
   $$('[data-orbit-node]').forEach(node => node.classList.toggle('is-selected', node.dataset.orbitNode === key));
@@ -263,14 +276,35 @@ function showPage(name) {
   if (name === 'logs') requestAnimationFrame(() => { const out = $('#logOutput'); out.scrollTop = out.scrollHeight; });
   if (name === 'media') requestAnimationFrame(() => loadMediaCenter(null, true));
   if (name === 'voice-records') requestAnimationFrame(() => loadVoiceRecords(null, true));
-  if (name === 'voices') requestAnimationFrame(() => loadVoicepacks(null, true));
-  if (name === 'faces') requestAnimationFrame(() => loadFaces(null, true));
+  if (name === 'voices') requestAnimationFrame(() => { loadVoicepacks(null, true); loadMediaReplyStats(true); });
+  if (name === 'faces') requestAnimationFrame(() => { loadFaces(null, true); loadMediaReplyStats(true); });
   if (name === 'groups') requestAnimationFrame(() => loadGroupMembers(null, true));
   if (name === 'personas') { $('#page-personas').dataset.mobilePane = 'directory'; requestAnimationFrame(() => loadPersonaMembers(true)); }
   if (name === 'brain') requestAnimationFrame(runOrbitSequence);
   else requestAnimationFrame(() => animatePageSignal(name));
   if (name === 'memory' && $('#memoryResults')?.textContent?.includes('选择左侧操作')) requestAnimationFrame(() => loadMedia($('#loadMediaBtn'), true));
   if (name === 'reply-tasks' || name === 'vector') requestAnimationFrame(() => refreshReplyTasks(true));
+}
+
+function renderMediaTriggerDiagnostics(kind, data) {
+  const root = $(`#${kind}MediaDiagnostics`); if (!root) return;
+  const stats = data?.[kind] || {}; const funnel = $$('.media-trigger-funnel b', root);
+  const values = [data?.reply_candidates || 0, stats.fit_passed || 0, stats.candidate_passed || 0, stats.sent || 0];
+  funnel.forEach((node, index) => { node.textContent = values[index] ?? 0; });
+  const head = $('.media-trigger-head span', root); if (head) head.textContent = `${data?.hours || 24}h · ${stats.selected || 0} 次选中`;
+  const mainGate = Object.entries(stats.gates || {}).sort((a, b) => b[1] - a[1])[0];
+  const labels = { fit_below_threshold: '媒介适配分不足', candidate_below_threshold: '没有高置信素材', probability_miss: '概率未抽中', selected: '已选中' };
+  const note = $('p', root);
+  if (note) note.textContent = mainGate ? `当前主要损耗：${labels[mainGate[0]] || mainGate[0]} ${mainGate[1]} 次。概率只在前置门槛全部通过后抽样。` : '概率只在回复门槛、媒介适配和素材置信度都通过后抽样。';
+}
+
+async function loadMediaReplyStats(silent = false) {
+  try {
+    const data = await api('/api/media-reply/stats?hours=24');
+    renderMediaTriggerDiagnostics('voice', data); renderMediaTriggerDiagnostics('face', data);
+  } catch (error) {
+    if (!silent) toast(`触发统计读取失败：${error.message}`, 'error');
+  }
 }
 
 function fillBrainConfig(data) {
@@ -284,6 +318,8 @@ function fillBrainConfig(data) {
   if ($('#orbitWorkers')) $('#orbitWorkers').textContent = c.global_workers ?? 8;
   $('#brainGroupWorkers').value = c.per_group_workers ?? 3;
   $('#brainModelWorkers').value = c.model_concurrency ?? 6;
+  $('#brainMuteDuration').value = c.mute_duration_seconds ?? 180;
+  updateMuteSummary(c.mute_duration_seconds ?? 180);
   $('#brainScoringMode').value = c.scoring_mode || 'local_fast';
   $('#brainRerankCandidates').value = c.rerank_candidates ?? 12;
   const retrieval = data.retrieval || {};
@@ -324,7 +360,7 @@ async function saveBrainConfig(button) {
     const modifiers = {}; $$('[data-modifier]').forEach(x => { modifiers[x.dataset.modifier] = Number(x.value); });
     const old = state.brainConfig || {};
     const result = await api('/api/brain/config', { method: 'POST', body: JSON.stringify({
-      reply_strategy: { ...(old.reply_strategy || {}), mode: $('#brainMode').value, threshold: Number($('#brainThreshold').value), scoring_mode: $('#brainScoringMode').value, rerank_candidates: Number($('#brainRerankCandidates').value), global_workers: Number($('#brainGlobalWorkers').value), per_group_workers: Number($('#brainGroupWorkers').value), model_concurrency: Number($('#brainModelWorkers').value), factor_weights: weights, modifiers },
+      reply_strategy: { ...(old.reply_strategy || {}), mode: $('#brainMode').value, threshold: Number($('#brainThreshold').value), scoring_mode: $('#brainScoringMode').value, rerank_candidates: Number($('#brainRerankCandidates').value), global_workers: Number($('#brainGlobalWorkers').value), per_group_workers: Number($('#brainGroupWorkers').value), model_concurrency: Number($('#brainModelWorkers').value), mute_duration_seconds: Number($('#brainMuteDuration').value), factor_weights: weights, modifiers },
       embedding: { ...(old.embedding || {}), enabled: true, base_url: $('#embeddingBaseUrl').value.trim(), model: $('#embeddingModel').value.trim(), reranker_model: $('#rerankerModel').value.trim(), dimensions: 4096 },
       retrieval: { ...(old.retrieval || {}), vector_limit: Number($('#brainVectorLimit').value), fts_limit: Number($('#brainFtsLimit').value), adaptive_rerank: $('#brainAdaptiveRerank').checked }
     }) });
@@ -551,6 +587,11 @@ function fillConfig(c) {
   $('#asrEnabled').checked = !!a.enabled; $('#asrBaseUrl').value = a.base_url || 'https://api.20250424.xyz/v1'; $('#asrApiKey').value = a.api_key || '';
   $('#asrModel').value = a.model || 'TeleAI/TeleSpeechASR'; $('#asrTimeout').value = a.timeout_seconds || 90; $('#asrLanguage').value = a.language || 'zh';
   $('#asrPrompt').value = a.prompt || ''; $('#asrAutoTranscribe').checked = a.auto_transcribe !== false;
+  const g = c.image_generation || {};
+  $('#imageGenEnabled').checked = !!g.enabled; $('#imageGenBaseUrl').value = g.base_url || c.base_url || '';
+  $('#imageGenApiKey').value = g.api_key || ''; $('#imageGenModel').value = g.model || '';
+  $('#imageGenSize').value = g.size || '1024x1024'; $('#imageGenQuality').value = g.quality || 'standard';
+  $('#imageGenTimeout').value = g.timeout_seconds || 180;
   renderChannelSelect(); fillChannelForm(); renderGroups(c.target_groups); updateRouteSummary(); state.dirty = false; $('#aiForm').classList.remove('is-dirty'); $('#saveState').textContent = `SYNCED · ${c.revision}`;
   refreshChannelHealth(true);
 }
@@ -772,6 +813,11 @@ function collectConfig() {
       enabled: $('#asrEnabled').checked, base_url: $('#asrBaseUrl').value.trim(), api_key: $('#asrApiKey').value.trim(),
       model: $('#asrModel').value.trim(), timeout_seconds: Number($('#asrTimeout').value || 90),
       language: $('#asrLanguage').value.trim() || 'zh', prompt: $('#asrPrompt').value.trim(), auto_transcribe: $('#asrAutoTranscribe').checked
+    },
+    image_generation: {
+      enabled: $('#imageGenEnabled').checked, base_url: $('#imageGenBaseUrl').value.trim(), api_key: $('#imageGenApiKey').value.trim(),
+      model: $('#imageGenModel').value.trim(), size: $('#imageGenSize').value, quality: $('#imageGenQuality').value,
+      timeout_seconds: Number($('#imageGenTimeout').value || 180), response_format: 'b64_json'
     }
   };
 }
@@ -852,6 +898,24 @@ async function asrTest(button) {
   } catch (e) {
     box.className = 'test-result error'; box.innerHTML = `<strong>ASR 失败</strong><span>${escapeHtml(e.message)}</span>`;
     toast(`ASR 测试失败：${e.message}`, 'error', 9000);
+  } finally { setBusy(button, false); }
+}
+
+async function imageGenerationTest(button) {
+  const box = $('#imageGenResult');
+  if (!$('#imageGenEnabled').checked) { toast('请先启用对话生图', 'error'); return; }
+  if (!$('#imageGenModel').value.trim()) { toast('请填写生图 Model ID', 'error'); return; }
+  if (state.dirty && !await saveConfig(button)) return;
+  setBusy(button, true, '生成中'); box.className = 'test-result idle';
+  box.innerHTML = '<strong>正在真实生图</strong><span>生成完成后会保存到本地，本测试不发送到群。</span>';
+  try {
+    const r = await api('/api/test/image-generation', { method: 'POST', body: JSON.stringify({ prompt: $('#imageGenTestPrompt').value.trim() }) });
+    const preview = r.data_url ? `<img src="${r.data_url}" alt="生图测试结果" style="display:block;max-width:220px;max-height:220px;margin-top:10px;border-radius:10px">` : '';
+    box.className = 'test-result success'; box.innerHTML = `<strong>生图成功 · ${Number(r.latency_ms || 0)} ms</strong><span>${escapeHtml(r.model || '')} · ${escapeHtml(r.file || '')}</span>${preview}`;
+    toast('生图渠道测试成功');
+  } catch (e) {
+    box.className = 'test-result error'; box.innerHTML = `<strong>生图失败</strong><span>${escapeHtml(e.message)}</span>`;
+    toast(`生图测试失败：${e.message}`, 'error', 10000);
   } finally { setBusy(button, false); }
 }
 
@@ -1922,6 +1986,19 @@ function bind() {
   $$('.workspace-item').forEach(x => x.onclick = () => applyWorkspace(x.dataset.workspace, true));
   $$('[data-theme-value]').forEach(x => x.onclick = () => applyTheme(x.dataset.themeValue, true));
   $$('[data-brain-view-value]').forEach(x => x.onclick = () => setBrainView(x.dataset.brainViewValue));
+  $('#brainMuteOpenBtn').onclick = () => {
+    setBrainView('config');
+    requestAnimationFrame(() => {
+      const field = $('#brainMuteField');
+      field?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      field?.classList.remove('is-located');
+      void field?.offsetWidth;
+      field?.classList.add('is-located');
+      setTimeout(() => field?.classList.remove('is-located'), 1800);
+      setTimeout(() => $('#brainMuteDuration')?.focus({ preventScroll: true }), 260);
+    });
+  };
+  $('#brainMuteDuration').oninput = e => updateMuteSummary(e.currentTarget.value);
   $$('[data-orbit-node]').forEach(x => x.onclick = () => selectOrbitNode(x.dataset.orbitNode));
   $('#mobileNavBtn').onclick = () => document.body.classList.toggle('nav-open');
   $('#contextCloseBtn').onclick = () => document.body.classList.remove('nav-open');
@@ -1952,6 +2029,7 @@ function bind() {
   $('#toggleKey').onclick = () => { $('#apiKey').type = $('#apiKey').type === 'password' ? 'text' : 'password'; };
   $('#modelsBtn').onclick = e => getModels(e.currentTarget); $('#quickTestBtn').onclick = e => quickTest(e.currentTarget);
   $('#ocrTestBtn').onclick = e => ocrTest(e.currentTarget); $('#toggleOcrKey').onclick = () => { $('#ocrApiKey').type = $('#ocrApiKey').type === 'password' ? 'text' : 'password'; };
+  $('#imageGenTestBtn').onclick = e => imageGenerationTest(e.currentTarget); $('#toggleImageGenKey').onclick = () => { $('#imageGenApiKey').type = $('#imageGenApiKey').type === 'password' ? 'text' : 'password'; };
   $('#asrTestBtn').onclick = e => asrTest(e.currentTarget); $('#toggleAsrKey').onclick = () => { $('#asrApiKey').type = $('#asrApiKey').type === 'password' ? 'text' : 'password'; };
   $('#temperature').oninput = e => { $('#temperatureValue').value = e.target.value; markDirty(); }; $('#systemPrompt').oninput = e => { $('#promptCount').textContent = e.target.value.length; markDirty(); }; $('#personality').oninput = e => { $('#personalityCount').textContent = e.target.value.length; markDirty(); };
   $('#aiForm').onsubmit = e => { e.preventDefault(); saveConfig(e.submitter); }; $('#groupForm').onsubmit = e => { e.preventDefault(); saveConfig(e.submitter); };
