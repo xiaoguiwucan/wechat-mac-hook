@@ -93,6 +93,7 @@
     "per_group_workers": 3,
     "model_concurrency": 6,
     "mute_duration_seconds": 180,
+    "mention_user_on_reply": true,
     "factor_weights": {
       "involvement": 18,
       "continuity": 14,

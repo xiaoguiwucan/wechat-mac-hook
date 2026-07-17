@@ -13,6 +13,7 @@ import json
 import mimetypes
 import os
 import re
+import secrets
 import shutil
 import shlex
 import signal
@@ -29,6 +30,7 @@ import uuid
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, Iterable, Optional, Tuple
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -36,6 +38,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from memory_store import MemoryStore  # noqa: E402
 from brain_engine import BrainConfig, OpportunityScorer  # noqa: E402
+from group_admin import (ALL_PERMISSIONS, ROLE_PERMISSIONS, GroupAdminService,
+                         effective_permissions, menu_card)  # noqa: E402
 
 STATIC = Path(__file__).resolve().parent / "static"
 CONFIG_PATH = ROOT / "config" / "ai_reply_config.json"
@@ -88,6 +92,7 @@ FACE_SEND_LOCK = threading.Lock()
 MEDIA_PAYLOAD_CACHE_LOCK = threading.Lock()
 MEDIA_PAYLOAD_CACHE: "collections.OrderedDict[str, Tuple[str, Dict[str, Any]]]" = collections.OrderedDict()
 CONFIG_WRITE_LOCK = threading.Lock()
+ADMIN_TOKEN_PATH = SECOND_HOME / "state" / "group-admin.token"
 PERSONA_EVENT_LOCK = threading.Lock()
 PERSONA_WORKER_STOP = threading.Event()
 WECHAT2_AUTO_LOGIN_STOP = threading.Event()
@@ -117,6 +122,14 @@ def config_revision() -> str:
     return digest.hexdigest()[:16]
 
 
+def ensure_admin_internal_token() -> str:
+    ADMIN_TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if not ADMIN_TOKEN_PATH.exists() or not ADMIN_TOKEN_PATH.read_text(encoding="utf-8").strip():
+        ADMIN_TOKEN_PATH.write_text(secrets.token_urlsafe(32), encoding="utf-8")
+    os.chmod(ADMIN_TOKEN_PATH, 0o600)
+    return ADMIN_TOKEN_PATH.read_text(encoding="utf-8").strip()
+
+
 def ai_json(path: str, method: str = "GET", data: Optional[Dict[str, Any]] = None,
             timeout: int = 5) -> Dict[str, Any]:
     payload = None if data is None else json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -133,6 +146,14 @@ def emit_persona_event(job: Dict[str, Any], event: str = "progress") -> None:
     with PERSONA_EVENT_LOCK:
         with BRAIN_EVENTS_FILE.open("a", encoding="utf-8") as file:
             file.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+
+def emit_admin_event(event: str, payload: Dict[str, Any]) -> None:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    record = {"type": "admin_command", "event": event, "time": time.time(), **payload}
+    with PERSONA_EVENT_LOCK:
+        with BRAIN_EVENTS_FILE.open("a", encoding="utf-8") as file:
+            file.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
 def persona_worker_loop() -> None:
@@ -217,6 +238,12 @@ def save_brain_config(data: Dict[str, Any]) -> Dict[str, Any]:
     current = json_read(CONFIG_PATH, {})
     if isinstance(data.get("reply_strategy"), dict):
         incoming = dict(data["reply_strategy"])
+        existing_strategy = current.get("reply_strategy") if isinstance(current.get("reply_strategy"), dict) else {}
+        incoming["group_overrides"] = (
+            incoming.get("group_overrides")
+            if isinstance(incoming.get("group_overrides"), dict)
+            else existing_strategy.get("group_overrides", {})
+        )
         mode = str(incoming.get("mode") or "veteran")
         presets = {"reserved": 78.0, "natural": 65.0, "veteran": 52.0}
         threshold = float(incoming.get("threshold", presets.get(mode, 52.0)))
@@ -230,6 +257,13 @@ def save_brain_config(data: Dict[str, Any]) -> Dict[str, Any]:
         incoming["per_group_workers"] = max(1, min(6, int(incoming.get("per_group_workers", 3))))
         incoming["model_concurrency"] = max(1, min(16, int(incoming.get("model_concurrency", 6))))
         incoming["mute_duration_seconds"] = max(10, min(86400, int(incoming.get("mute_duration_seconds", 180))))
+        incoming["mention_user_on_reply"] = bool(incoming.get("mention_user_on_reply", True))
+        for group_id, override in list(incoming["group_overrides"].items()):
+            if not isinstance(override, dict):
+                incoming["group_overrides"].pop(group_id, None)
+                continue
+            if "mention_user_on_reply" in override:
+                override["mention_user_on_reply"] = bool(override["mention_user_on_reply"])
         current["reply_strategy"] = incoming
     if isinstance(data.get("embedding"), dict):
         incoming_embedding = dict(data["embedding"])
@@ -1876,6 +1910,63 @@ def group_members_catalog(group_id: str) -> Dict[str, Any]:
         "catalog_mode": "complete" if onebot_complete else "observed",
         "declared_member_count": latest_member_count, "observed_member_count": observed_count,
         "named_member_count": named_count, "coverage_percent": coverage,
+    }
+
+
+def group_admins_payload(group_id: str) -> Dict[str, Any]:
+    group_id = str(group_id or "").strip()
+    if not group_id.endswith("@chatroom"):
+        raise ValueError("请选择有效的微信群")
+    admins = MEMORY.group_admins(group_id, include_disabled=True)
+    for item in admins:
+        item["effective_permissions"] = effective_permissions(item)
+    return {
+        "group_id": group_id,
+        "items": admins,
+        "roles": ROLE_PERMISSIONS,
+        "permissions": ALL_PERMISSIONS,
+    }
+
+
+def save_group_admins_api(data: Dict[str, Any]) -> Dict[str, Any]:
+    group_id = str(data.get("group_id") or "").strip()
+    if not group_id.endswith("@chatroom"):
+        raise ValueError("请选择有效的微信群")
+    raw = data.get("admins")
+    if not isinstance(raw, list):
+        raise ValueError("admins 必须是数组")
+    clean: List[Dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "custom")
+        if role not in ROLE_PERMISSIONS:
+            raise ValueError("管理员角色无效")
+        permissions = [str(value) for value in item.get("permissions") or []]
+        if any(value not in ALL_PERMISSIONS for value in permissions):
+            raise ValueError("包含未知权限")
+        clean.append({
+            "user_id": str(item.get("user_id") or "").strip(),
+            "display_name": str(item.get("display_name") or ""),
+            "role": role,
+            "permissions": permissions,
+            "source": str(item.get("source") or "directory"),
+            "enabled": bool(item.get("enabled", True)),
+        })
+    saved = MEMORY.save_group_admins(group_id, clean)
+    emit_admin_event("permissions_saved", {"group_id": group_id, "count": len(saved)})
+    return group_admins_payload(group_id)
+
+
+def group_admin_menu_preview(group_id: str, user_id: str = "") -> Dict[str, Any]:
+    group_id = str(group_id or "").strip()
+    group = next((item for item in discover_groups()["groups"] if str(item.get("id")) == group_id), {})
+    admin = MEMORY.group_admin(group_id, user_id) if user_id else {}
+    return {
+        "group_id": group_id,
+        "user_id": user_id,
+        "text": menu_card(str(group.get("name") or group_id), admin),
+        "is_admin": bool(admin),
     }
 
 
@@ -3736,6 +3827,21 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json_response(200, {"ok": True, "data": group_members_catalog(group_id)})
             except Exception as exc:
                 return self.json_response(400, {"ok": False, "error": str(exc)})
+        if path in {"/api/group-admins", "/api/group-admins/audit", "/api/group-admins/menu-preview"}:
+            try:
+                qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                group_id = str((qs.get("group_id") or [""])[0])
+                if path == "/api/group-admins":
+                    result = group_admins_payload(group_id)
+                elif path == "/api/group-admins/audit":
+                    result = {"group_id": group_id, "items": MEMORY.group_admin_audit(
+                        group_id, int((qs.get("limit") or ["50"])[0])
+                    )}
+                else:
+                    result = group_admin_menu_preview(group_id, str((qs.get("user_id") or [""])[0]))
+                return self.json_response(200, {"ok": True, "data": result})
+            except Exception as exc:
+                return self.json_response(400, {"ok": False, "error": str(exc)})
         if path == "/api/traces/recent":
             return self.json_response(200, {"ok": True, "data": recent_traces()})
         if path == "/api/memory/stats":
@@ -3818,6 +3924,26 @@ class Handler(BaseHTTPRequestHandler):
                 result = memory_persona_save(data)
             elif path == "/api/groups/ignored-members":
                 result = save_group_member_blacklist(data)
+            elif path == "/api/group-admins/save":
+                result = save_group_admins_api(data)
+            elif path == "/api/group-admins/execute":
+                supplied = str(self.headers.get("X-Group-Admin-Token") or "")
+                if not secrets.compare_digest(supplied, ensure_admin_internal_token()):
+                    return self.json_response(403, {"ok": False, "error": "内部令牌无效"})
+                service = GroupAdminService(
+                    MEMORY, CONFIG_PATH,
+                    reload_callback=lambda: {
+                        "applied": ai_json("/config/reload", "POST", {"config": str(CONFIG_PATH)}, 15).get("status") == "ok"
+                    },
+                )
+                evt = SimpleNamespace(
+                    group_id=str(data.get("group_id") or ""), group_name=str(data.get("group_name") or ""),
+                    user_id=str(data.get("user_id") or ""), sender_name=str(data.get("sender_name") or ""),
+                    self_id=str(data.get("self_id") or ""), message_id=str(data.get("message_id") or ""),
+                    trace_id=str(data.get("trace_id") or uuid.uuid4().hex), text=str(data.get("command") or ""),
+                    raw=data.get("raw") if isinstance(data.get("raw"), dict) else {},
+                )
+                result = service.handle(evt) or {"handled": False}
             elif path == "/api/brain/tasks":
                 result = brain_tasks(data)
             elif path == "/api/brain/preview":
@@ -4012,6 +4138,7 @@ def main() -> int:
     if args.host not in {"127.0.0.1", "localhost"}:
         raise SystemExit("管理后台仅允许监听本机")
     LOG_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_admin_internal_token()
     normalize_existing_voice_titles()
     threading.Thread(target=health_check_loop, name="channel-health-check", daemon=True).start()
     threading.Thread(target=onebot_monitor_loop, name="onebot-monitor", daemon=True).start()

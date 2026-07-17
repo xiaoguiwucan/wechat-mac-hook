@@ -10,6 +10,7 @@ import re
 import threading
 import time
 import uuid
+from dataclasses import replace
 from dataclasses import dataclass, field
 from typing import Any, Callable, Deque, Dict, Iterable, List, Optional, Tuple
 
@@ -109,6 +110,7 @@ class BrainConfig:
     per_group_workers: int = 3
     model_concurrency: int = 6
     mute_duration_seconds: int = 180
+    mention_user_on_reply: bool = True
     factor_weights: Dict[str, float] = field(default_factory=lambda: {
         "involvement": 18, "continuity": 14, "memory": 16, "value": 14,
         "humor": 14, "emotion": 10, "timing": 14,
@@ -118,6 +120,7 @@ class BrainConfig:
         "media_match": 8, "useful_after_silence": 6, "unfinished_fast_exchange": -25,
         "growing_burst": -15, "already_answered": -20, "low_information": -15,
     })
+    group_overrides: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     @classmethod
     def from_raw(cls, raw: Dict[str, Any]) -> "BrainConfig":
@@ -143,8 +146,28 @@ class BrainConfig:
             per_group_workers=max(1, min(6, int(value.get("per_group_workers", 3)))),
             model_concurrency=max(1, min(16, int(value.get("model_concurrency", 6)))),
             mute_duration_seconds=max(10, min(86400, int(value.get("mute_duration_seconds", 180)))),
+            mention_user_on_reply=bool(value.get("mention_user_on_reply", True)),
             factor_weights=cleaned_weights,
             modifiers={key: float(modifiers.get(key, val)) for key, val in default_modifiers.items()},
+            group_overrides={
+                str(group_id): dict(item) for group_id, item in (value.get("group_overrides") or {}).items()
+                if isinstance(item, dict)
+            },
+        )
+
+    def for_group(self, group_id: str) -> "BrainConfig":
+        override = dict(self.group_overrides.get(str(group_id), {}))
+        if not override:
+            return self
+        mode = str(override.get("mode") or self.mode)
+        presets = {"reserved": 78.0, "natural": 65.0, "veteran": 52.0}
+        threshold = float(override.get("threshold", presets.get(mode, self.threshold)))
+        return replace(
+            self,
+            mode=mode,
+            threshold=max(0.0, min(100.0, threshold)),
+            scoring_mode=str(override.get("scoring_mode") or self.scoring_mode),
+            mention_user_on_reply=bool(override.get("mention_user_on_reply", self.mention_user_on_reply)),
         )
 
 

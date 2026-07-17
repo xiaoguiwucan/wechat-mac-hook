@@ -337,6 +337,7 @@
                 <div class="field"><label for="brainScoringMode">评分方式</label><select id="brainScoringMode"><option value="local_fast">本地快速（推荐）</option><option value="model_deep">远程模型深度评分</option></select></div>
                 <div class="field brain-mute-field" id="brainMuteField"><div class="brain-mute-field-title"><label for="brainMuteDuration">“闭嘴”暂停时长（秒）</label><b>最高优先级</b></div><input id="brainMuteDuration" type="number" min="10" max="86400" step="10" value="180"><small>群友发送“闭嘴”后，当前群完全静默；保存后立即生效。</small></div>
                 <label class="toggle-row"><span><strong>自适应二次重排</strong><small>含糊历史问题且首批置信不足时扩到 24 条</small></span><span class="switch"><input id="brainAdaptiveRerank" type="checkbox" checked><i></i></span></label>
+                <label class="toggle-row"><span><strong>默认艾特提问人</strong><small>未设置群级覆盖时，普通文字回复使用此默认值</small></span><span class="switch"><input id="brainMentionUser" type="checkbox" checked><i></i></span></label>
                 <div class="brain-note"><i class="ph ph-info"></i><p>明确 @、引用机器人、喊“小风”以及语音或表情命令会直接进入回复流程。“闭嘴”是最高优先级硬暂停，静默期内上述规则也不会触发回复。</p></div>
               </section>
               <section class="brain-column brain-score-column">
@@ -385,6 +386,14 @@
             <div class="group-discovery-bar"><div class="field"><label for="groupQuickSelect">微信群下拉选择</label><select id="groupQuickSelect"></select></div><button type="button" class="btn subtle" id="enableSelectedGroupBtn">勾选此群</button><span id="groupDiscoveryState" class="save-state">等待获取群列表</span></div>
             <div class="route-table-wrap"><div class="route-head permission-head"><span>AI 权限</span><span>群聊名称</span><span>群 ID</span><span>发现状态</span></div><div id="groupList" class="group-list permission-list"></div></div>
           </div>
+          <div class="panel group-mention-panel">
+            <div class="panel-head"><div><h2>回复称呼设置</h2><p>按群控制普通文字回复是否艾特提问人；关闭后直接发送回答正文</p></div><button type="button" class="btn primary" id="saveReplyMentionBtn">保存并立即生效</button></div>
+            <div class="panel-body group-mention-body">
+              <div class="field"><label for="replyMentionGroup">选择群聊</label><select id="replyMentionGroup"></select></div>
+              <label class="toggle-row"><span><strong>回复时艾特提问人</strong><small>只影响普通文字回复；引用回复、管理员卡片和媒体发送不会强制艾特</small></span><span class="switch"><input id="replyMentionEnabled" type="checkbox"><i></i></span></label>
+              <span id="replyMentionState" class="save-state">选择群聊后可独立设置</span>
+            </div>
+          </div>
           <div class="panel member-blacklist-panel">
             <div class="panel-head"><div><h2>群成员目录与对话黑名单</h2><p>优先显示真实群昵称，合并微信实时事件、全部历史发言和引用原话；勾选后可屏蔽其他机器人</p></div><div class="bar-actions"><button type="button" class="btn subtle" id="refreshGroupMembersBtn">刷新成员目录</button><button type="button" class="btn primary" id="saveGroupBlacklistBtn">保存并立即生效</button></div></div>
             <div class="panel-body member-blacklist-body">
@@ -395,6 +404,34 @@
               </div>
               <div class="member-blacklist-summary"><strong id="memberBlacklistCount">0</strong><span>人已屏蔽</span><small id="memberCatalogCount">尚未拉取成员目录</small></div>
               <div id="memberBlacklistList" class="member-blacklist-list"><div class="terminal-empty">选择群聊并点击“刷新成员目录”</div></div>
+            </div>
+          </div>
+          <div class="panel group-admin-panel">
+            <div class="panel-head"><div><h2>群管理员与权限</h2><p>以真实群 ID + 微信成员 ID 鉴权；昵称变化不影响授权，跨群完全隔离</p></div><div class="bar-actions"><button type="button" class="btn subtle" id="previewAdminMenuBtn">预览群内菜单</button><button type="button" class="btn primary" id="saveGroupAdminsBtn">保存权限并立即生效</button></div></div>
+            <div class="panel-body group-admin-body">
+              <div class="group-admin-toolbar">
+                <div class="field"><label for="groupAdminGroup">选择群聊</label><select id="groupAdminGroup"></select></div>
+                <div class="field"><label for="groupAdminSearch">搜索成员</label><input id="groupAdminSearch" placeholder="搜索群昵称、备注或 wxid"></div>
+                <div class="field"><label for="manualAdminId">手动精确授权</label><div class="inline-field"><input id="manualAdminId" placeholder="wxid / 微信内部 ID"><button type="button" class="btn ghost" id="addManualAdminBtn">添加</button></div></div>
+              </div>
+              <div class="group-admin-workspace">
+                <section class="admin-member-picker">
+                  <header><div><strong>成员目录</strong><small id="groupAdminCatalogMeta">选择群后加载</small></div><span>选择后加入管理员</span></header>
+                  <div id="groupAdminMemberList" class="admin-member-list"><div class="terminal-empty">请选择群聊</div></div>
+                </section>
+                <section class="admin-permission-editor">
+                  <header><div><strong>已授权管理员</strong><small id="groupAdminState">尚未加载</small></div><span id="groupAdminCount">0 人</span></header>
+                  <div id="groupAdminList" class="group-admin-list"><div class="terminal-empty">尚未添加管理员</div></div>
+                </section>
+                <aside class="admin-menu-preview">
+                  <header><div><strong>群内菜单预览</strong><small>轨道控制台 · 强制文字</small></div><span>LIVE</span></header>
+                  <pre id="groupAdminMenuPreview">选择管理员后预览 #菜单</pre>
+                </aside>
+              </div>
+              <section class="admin-audit-panel">
+                <header><div><strong>最近管理员操作</strong><small>权限判断、配置变更与失败原因永久保留</small></div><button type="button" class="btn ghost" id="refreshAdminAuditBtn">刷新审计</button></header>
+                <div id="groupAdminAuditList" class="admin-audit-list"><div class="terminal-empty">暂无管理记录</div></div>
+              </section>
             </div>
           </div>
           <div class="panel rules-panel">

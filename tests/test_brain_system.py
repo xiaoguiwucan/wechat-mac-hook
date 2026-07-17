@@ -61,6 +61,7 @@ class BrainSystemTest(unittest.TestCase):
         cfg = BrainConfig.from_raw({"reply_strategy": {}})
         self.assertEqual(cfg.scoring_mode, "local_fast")
         self.assertEqual(cfg.rerank_candidates, 12)
+        self.assertTrue(cfg.mention_user_on_reply)
         scorer = OpportunityScorer(cfg)
         evt = event("g", "u", "m", "小风，数据库索引应该怎么建？")
         local = scorer.local_score(evt, [], {"items": [], "culture": {}}, None)
@@ -68,6 +69,18 @@ class BrainSystemTest(unittest.TestCase):
         self.assertEqual(set(factors), set(cfg.factor_weights))
         self.assertTrue(all(0 <= value <= 100 for value in factors.values()))
         self.assertIn("本地快速评分", reason)
+
+    def test_reply_mention_can_be_overridden_per_group(self) -> None:
+        cfg = BrainConfig.from_raw({"reply_strategy": {
+            "mention_user_on_reply": True,
+            "group_overrides": {
+                "quiet@chatroom": {"mention_user_on_reply": False},
+                "loud@chatroom": {"mention_user_on_reply": True},
+            },
+        }})
+        self.assertFalse(cfg.for_group("quiet@chatroom").mention_user_on_reply)
+        self.assertTrue(cfg.for_group("loud@chatroom").mention_user_on_reply)
+        self.assertTrue(cfg.for_group("other@chatroom").mention_user_on_reply)
 
     def test_current_persisted_message_is_not_its_own_duplicate(self) -> None:
         cfg = BrainConfig()

@@ -357,6 +357,39 @@ class MemoryStore:
                   trigger_message_id TEXT NOT NULL DEFAULT '',
                   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
+                CREATE TABLE IF NOT EXISTS group_admins (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  group_id TEXT NOT NULL,
+                  user_id TEXT NOT NULL,
+                  display_name TEXT NOT NULL DEFAULT '',
+                  role TEXT NOT NULL DEFAULT 'custom',
+                  permissions_json TEXT NOT NULL DEFAULT '[]',
+                  source TEXT NOT NULL DEFAULT 'directory',
+                  enabled INTEGER NOT NULL DEFAULT 1,
+                  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  UNIQUE(group_id,user_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_group_admins_group
+                  ON group_admins(group_id,enabled,updated_at DESC);
+                CREATE TABLE IF NOT EXISTS group_admin_audit (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  group_id TEXT NOT NULL,
+                  user_id TEXT NOT NULL,
+                  display_name TEXT NOT NULL DEFAULT '',
+                  command TEXT NOT NULL DEFAULT '',
+                  permission TEXT NOT NULL DEFAULT '',
+                  message_id TEXT NOT NULL DEFAULT '',
+                  trace_id TEXT NOT NULL DEFAULT '',
+                  before_json TEXT NOT NULL DEFAULT '{}',
+                  after_json TEXT NOT NULL DEFAULT '{}',
+                  result TEXT NOT NULL DEFAULT '',
+                  error TEXT NOT NULL DEFAULT '',
+                  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  UNIQUE(group_id,message_id,command)
+                );
+                CREATE INDEX IF NOT EXISTS idx_group_admin_audit_group
+                  ON group_admin_audit(group_id,id DESC);
                 CREATE TABLE IF NOT EXISTS voice_packs (
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
                   name TEXT NOT NULL,
@@ -1445,6 +1478,150 @@ class MemoryStore:
             row["active"] = True
             row["remaining_seconds"] = max(1, int(float(row["muted_until"]) - now + 0.999))
         return rows
+
+    def clear_group_reply_mute(self, group_id: str) -> None:
+        with self.connect() as db:
+            db.execute("DELETE FROM group_reply_mutes WHERE group_id=?", (str(group_id),))
+
+    def group_admins(self, group_id: str = "", include_disabled: bool = False) -> List[Dict[str, Any]]:
+        where: List[str] = []
+        params: List[Any] = []
+        if group_id:
+            where.append("group_id=?")
+            params.append(str(group_id))
+        if not include_disabled:
+            where.append("enabled=1")
+        sql = "SELECT * FROM group_admins"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY group_id,updated_at DESC,id DESC"
+        with self.connect() as db:
+            rows = [dict(row) for row in db.execute(sql, params).fetchall()]
+        for row in rows:
+            try:
+                row["permissions"] = json.loads(row.pop("permissions_json") or "[]")
+            except Exception:
+                row["permissions"] = []
+            row["enabled"] = bool(row.get("enabled"))
+        return rows
+
+    def group_admin(self, group_id: str, user_id: str) -> Dict[str, Any]:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT * FROM group_admins WHERE group_id=? AND user_id=? AND enabled=1",
+                (str(group_id), str(user_id)),
+            ).fetchone()
+        if not row:
+            return {}
+        result = dict(row)
+        try:
+            result["permissions"] = json.loads(result.pop("permissions_json") or "[]")
+        except Exception:
+            result["permissions"] = []
+        result["enabled"] = bool(result.get("enabled"))
+        return result
+
+    def save_group_admins(self, group_id: str, admins: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        clean: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in admins:
+            user_id = str(item.get("user_id") or "").strip()
+            if not user_id or user_id.endswith("@chatroom") or user_id in seen:
+                continue
+            seen.add(user_id)
+            clean.append({
+                "user_id": user_id,
+                "display_name": str(item.get("display_name") or "")[:100],
+                "role": str(item.get("role") or "custom")[:40],
+                "permissions": sorted({str(value) for value in item.get("permissions") or [] if str(value)}),
+                "source": str(item.get("source") or "directory")[:40],
+                "enabled": bool(item.get("enabled", True)),
+            })
+        with self.connect() as db:
+            existing = {
+                str(row["user_id"]) for row in db.execute(
+                    "SELECT user_id FROM group_admins WHERE group_id=?", (str(group_id),)
+                ).fetchall()
+            }
+            for item in clean:
+                db.execute(
+                    """INSERT INTO group_admins(
+                         group_id,user_id,display_name,role,permissions_json,source,enabled,updated_at
+                       ) VALUES(?,?,?,?,?,?,?,?)
+                       ON CONFLICT(group_id,user_id) DO UPDATE SET
+                         display_name=excluded.display_name,role=excluded.role,
+                         permissions_json=excluded.permissions_json,source=excluded.source,
+                         enabled=excluded.enabled,updated_at=excluded.updated_at""",
+                    (
+                        str(group_id), item["user_id"], item["display_name"], item["role"],
+                        json.dumps(item["permissions"], ensure_ascii=False), item["source"],
+                        1 if item["enabled"] else 0, now_ts(),
+                    ),
+                )
+            removed = existing - seen
+            if removed:
+                placeholders = ",".join("?" for _ in removed)
+                db.execute(
+                    f"DELETE FROM group_admins WHERE group_id=? AND user_id IN ({placeholders})",
+                    [str(group_id), *sorted(removed)],
+                )
+        return self.group_admins(str(group_id), include_disabled=True)
+
+    def add_group_admin_audit(self, payload: Dict[str, Any]) -> tuple[bool, Dict[str, Any]]:
+        values = (
+            str(payload.get("group_id") or ""), str(payload.get("user_id") or ""),
+            str(payload.get("display_name") or "")[:100], str(payload.get("command") or "")[:500],
+            str(payload.get("permission") or "")[:80], str(payload.get("message_id") or ""),
+            str(payload.get("trace_id") or ""), json.dumps(payload.get("before") or {}, ensure_ascii=False),
+            json.dumps(payload.get("after") or {}, ensure_ascii=False), str(payload.get("result") or "")[:80],
+            str(payload.get("error") or "")[:1000], now_ts(),
+        )
+        try:
+            with self.connect() as db:
+                cur = db.execute(
+                    """INSERT INTO group_admin_audit(
+                         group_id,user_id,display_name,command,permission,message_id,trace_id,
+                         before_json,after_json,result,error,created_at
+                       ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    values,
+                )
+                audit_id = int(cur.lastrowid)
+            return True, {"id": audit_id, **payload}
+        except sqlite3.IntegrityError:
+            with self.connect() as db:
+                row = db.execute(
+                    """SELECT * FROM group_admin_audit
+                       WHERE group_id=? AND message_id=? AND command=?""",
+                    (values[0], values[5], values[3]),
+                ).fetchone()
+            return False, dict(row) if row else {}
+
+    def group_admin_audit(self, group_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+        with self.connect() as db:
+            rows = [dict(row) for row in db.execute(
+                "SELECT * FROM group_admin_audit WHERE group_id=? ORDER BY id DESC LIMIT ?",
+                (str(group_id), max(1, min(200, int(limit or 50)))),
+            ).fetchall()]
+        for row in rows:
+            for key in ("before_json", "after_json"):
+                try:
+                    row[key[:-5]] = json.loads(row.pop(key) or "{}")
+                except Exception:
+                    row[key[:-5]] = {}
+        return rows
+
+    def finish_group_admin_audit(self, audit_id: int, before: Dict[str, Any],
+                                 after: Dict[str, Any], result: str, error: str = "") -> None:
+        with self.connect() as db:
+            db.execute(
+                """UPDATE group_admin_audit SET before_json=?,after_json=?,result=?,error=?
+                   WHERE id=?""",
+                (
+                    json.dumps(before or {}, ensure_ascii=False),
+                    json.dumps(after or {}, ensure_ascii=False),
+                    str(result or "")[:80], str(error or "")[:1000], int(audit_id),
+                ),
+            )
 
     def claim_media_status(self, media_id: int, expected: Iterable[str], status: str) -> bool:
         values = [str(value) for value in expected if str(value)]

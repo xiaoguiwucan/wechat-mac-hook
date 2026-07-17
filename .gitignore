@@ -20,6 +20,7 @@ config/ai_reply_config.json
 config/ai_reply_config.before-*.json
 *.pid
 *.log
+*.lock
 logs/
 
 # Build outputs / packaged apps / proprietary binaries

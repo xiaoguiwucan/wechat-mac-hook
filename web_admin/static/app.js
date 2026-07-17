@@ -1,6 +1,6 @@
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
-const state = { config: null, status: null, brainConfig: null, replyTasks: [], faceItems: [], pokeFaceIds: new Set(), channels: [], selectedChannelId: '', channelHealth: {}, groupCatalog: [], groupMemberCatalog: {}, groupMemberCatalogMeta: {}, ignoredGroupMembers: {}, persona: { members: [], selectedUserId: '', detail: null, tab: 'overview', refreshTimer: null }, dirty: false, logs: [], source: 'all', miniSource: 'all', paused: false, eventSource: null, traceDiagnostic: null };
+const state = { config: null, status: null, brainConfig: null, replyTasks: [], faceItems: [], pokeFaceIds: new Set(), channels: [], selectedChannelId: '', channelHealth: {}, groupCatalog: [], groupMemberCatalog: {}, groupMemberCatalogMeta: {}, ignoredGroupMembers: {}, groupAdmins: {}, groupAdminRoles: {}, groupAdminPermissions: [], groupAdminPreviewUserId: '', persona: { members: [], selectedUserId: '', detail: null, tab: 'overview', refreshTimer: null }, dirty: false, logs: [], source: 'all', miniSource: 'all', paused: false, eventSource: null, traceDiagnostic: null };
 const pageMeta = {
   overview: ['运行总览', '第二微信、OneBot 与 AI 服务'], ai: ['模型配置', '对话、生图、OCR 与 ASR 模型配置'],
   groups: ['群聊策略', '目标群与自动回复规则'], brain: ['群聊大脑', '接话门槛、七维评分与并发策略'],
@@ -326,6 +326,7 @@ function fillBrainConfig(data) {
   $('#brainVectorLimit').value = retrieval.vector_limit ?? 60;
   $('#brainFtsLimit').value = retrieval.fts_limit ?? 30;
   $('#brainAdaptiveRerank').checked = retrieval.adaptive_rerank !== false;
+  $('#brainMentionUser').checked = c.mention_user_on_reply !== false;
   const weights = c.factor_weights || { involvement: 18, continuity: 14, memory: 16, value: 14, humor: 14, emotion: 10, timing: 14 };
   $('#factorEditor').innerHTML = Object.entries(factorLabels).map(([key, label]) => `<label><span>${label}</span><input data-factor="${key}" type="number" min="0" max="100" step="1" value="${Number(weights[key] ?? 0)}"></label>`).join('');
   const modifiers = c.modifiers || {};
@@ -360,7 +361,7 @@ async function saveBrainConfig(button) {
     const modifiers = {}; $$('[data-modifier]').forEach(x => { modifiers[x.dataset.modifier] = Number(x.value); });
     const old = state.brainConfig || {};
     const result = await api('/api/brain/config', { method: 'POST', body: JSON.stringify({
-      reply_strategy: { ...(old.reply_strategy || {}), mode: $('#brainMode').value, threshold: Number($('#brainThreshold').value), scoring_mode: $('#brainScoringMode').value, rerank_candidates: Number($('#brainRerankCandidates').value), global_workers: Number($('#brainGlobalWorkers').value), per_group_workers: Number($('#brainGroupWorkers').value), model_concurrency: Number($('#brainModelWorkers').value), mute_duration_seconds: Number($('#brainMuteDuration').value), factor_weights: weights, modifiers },
+      reply_strategy: { ...(old.reply_strategy || {}), mode: $('#brainMode').value, threshold: Number($('#brainThreshold').value), scoring_mode: $('#brainScoringMode').value, rerank_candidates: Number($('#brainRerankCandidates').value), global_workers: Number($('#brainGlobalWorkers').value), per_group_workers: Number($('#brainGroupWorkers').value), model_concurrency: Number($('#brainModelWorkers').value), mute_duration_seconds: Number($('#brainMuteDuration').value), mention_user_on_reply: $('#brainMentionUser').checked, factor_weights: weights, modifiers },
       embedding: { ...(old.embedding || {}), enabled: true, base_url: $('#embeddingBaseUrl').value.trim(), model: $('#embeddingModel').value.trim(), reranker_model: $('#rerankerModel').value.trim(), dimensions: 4096 },
       retrieval: { ...(old.retrieval || {}), vector_limit: Number($('#brainVectorLimit').value), fts_limit: Number($('#brainFtsLimit').value), adaptive_rerank: $('#brainAdaptiveRerank').checked }
     }) });
@@ -713,6 +714,71 @@ function updateBlacklistGroupOptions() {
   select.innerHTML = groups.map(x => `<option value="${escapeHtml(x.id)}">${escapeHtml(groupSelectLabel(x))}</option>`).join('');
   if ([...select.options].some(x => x.value === old)) select.value = old;
   updateBlacklistCount();
+  updateGroupAdminOptions();
+  updateReplyMentionOptions();
+}
+
+function updateGroupAdminOptions() {
+  const select = $('#groupAdminGroup'); if (!select) return;
+  const old = select.value;
+  const groups = state.groupCatalog.filter(x => x.id?.endsWith('@chatroom'));
+  select.innerHTML = groups.map(x => `<option value="${escapeHtml(x.id)}">${escapeHtml(groupSelectLabel(x))}</option>`).join('');
+  if ([...select.options].some(x => x.value === old)) select.value = old;
+}
+
+function updateReplyMentionOptions() {
+  const select = $('#replyMentionGroup'); if (!select) return;
+  const old = select.value;
+  const groups = state.groupCatalog.filter(x => x.id?.endsWith('@chatroom'));
+  select.innerHTML = groups.map(x => `<option value="${escapeHtml(x.id)}">${escapeHtml(groupSelectLabel(x))}</option>`).join('');
+  if ([...select.options].some(x => x.value === old)) select.value = old;
+  renderReplyMentionSetting();
+}
+
+function renderReplyMentionSetting() {
+  const groupId = $('#replyMentionGroup')?.value || '';
+  const strategy = state.brainConfig?.reply_strategy || {};
+  const override = strategy.group_overrides?.[groupId] || {};
+  const hasOverride = Object.prototype.hasOwnProperty.call(override, 'mention_user_on_reply');
+  const enabled = hasOverride
+    ? override.mention_user_on_reply !== false
+    : strategy.mention_user_on_reply !== false;
+  if ($('#replyMentionEnabled')) $('#replyMentionEnabled').checked = enabled;
+  if ($('#replyMentionState')) {
+    $('#replyMentionState').textContent = !groupId
+      ? '请选择群聊'
+      : hasOverride
+        ? `当前群独立设置：${enabled ? '回复时艾特' : '不艾特'}`
+        : `继承全局默认：${enabled ? '回复时艾特' : '不艾特'}`;
+  }
+}
+
+async function saveReplyMentionSetting(button) {
+  const groupId = $('#replyMentionGroup')?.value || '';
+  if (!groupId) { toast('请先选择群聊', 'error'); return; }
+  setBusy(button, true, '保存中…');
+  try {
+    const old = state.brainConfig || {};
+    const strategy = { ...(old.reply_strategy || {}) };
+    const overrides = { ...(strategy.group_overrides || {}) };
+    overrides[groupId] = {
+      ...(overrides[groupId] || {}),
+      mention_user_on_reply: $('#replyMentionEnabled').checked,
+    };
+    strategy.group_overrides = overrides;
+    const result = await api('/api/brain/config', {
+      method: 'POST', body: JSON.stringify({ reply_strategy: strategy })
+    });
+    fillBrainConfig(result);
+    $('#replyMentionGroup').value = groupId;
+    renderReplyMentionSetting();
+    const enabled = $('#replyMentionEnabled').checked;
+    toast(result.hot_reload?.applied
+      ? `本群已${enabled ? '开启' : '关闭'}回复艾特，AI PID ${result.hot_reload.response?.data?.pid || '未变化'}`
+      : `配置已保存，热加载失败：${result.hot_reload?.error || '未知错误'}`,
+      result.hot_reload?.applied ? 'success' : 'error', 7000);
+  } catch (e) { toast(`回复艾特设置失败：${e.message}`, 'error', 7000); }
+  finally { setBusy(button, false); }
 }
 
 function currentBlacklistIds() {
@@ -786,6 +852,138 @@ async function saveGroupBlacklist(button) {
     toast(result.hot_reload?.applied ? `对话黑名单已实时生效，AI PID ${result.hot_reload.response?.data?.pid || '未变'}` : `黑名单已保存，热加载失败：${result.hot_reload?.error || '未知错误'}`, result.hot_reload?.applied ? 'success' : 'error', 7000);
   } catch (e) { toast(`黑名单保存失败：${e.message}`, 'error', 7000); }
   finally { setBusy(button, false); }
+}
+
+const ADMIN_PERMISSION_LABELS = {
+  'status.view': '状态查看', 'reply.control': '回复控制', 'strategy.manage': '策略管理',
+  'media.manage': '媒介管理', 'personality.manage': '性格管理', 'members.manage': '成员管理',
+  'memory.manage': '上下文管理', 'audit.view': '审计查看'
+};
+const ADMIN_ROLE_LABELS = { observer: '观察员', moderator: '协管员', admin: '群管理员', custom: '自定义' };
+
+function currentAdminGroup() { return $('#groupAdminGroup')?.value || ''; }
+function currentGroupAdmins() { return state.groupAdmins[currentAdminGroup()] || []; }
+function memberNameForAdmin(userId) {
+  const item = (state.groupMemberCatalog[currentAdminGroup()] || []).find(x => String(x.user_id) === String(userId));
+  return item?.name && item.name !== '群友' ? item.name : `未识别成员 · ${String(userId || '').slice(-6)}`;
+}
+function addGroupAdmin(userId, displayName = '', source = 'directory') {
+  userId = String(userId || '').trim(); if (!userId || userId.endsWith('@chatroom')) return;
+  const groupId = currentAdminGroup(), rows = currentGroupAdmins();
+  if (rows.some(x => String(x.user_id) === userId)) { toast('该成员已经是本群管理员', 'error'); return; }
+  rows.push({ user_id: userId, display_name: displayName || memberNameForAdmin(userId), role: 'observer', permissions: [], source, enabled: true });
+  state.groupAdmins[groupId] = rows; state.groupAdminPreviewUserId = userId;
+  renderGroupAdminPanel(); loadAdminMenuPreview();
+}
+function effectiveAdminPermissions(item) {
+  return [...new Set([...(state.groupAdminRoles[item.role] || []), ...(item.permissions || [])])];
+}
+function renderGroupAdminPanel() {
+  const groupId = currentAdminGroup(), members = state.groupMemberCatalog[groupId] || [];
+  const query = ($('#groupAdminSearch')?.value || '').trim().toLowerCase();
+  const admins = currentGroupAdmins(), adminIds = new Set(admins.map(x => String(x.user_id)));
+  const visible = members.filter(x => !adminIds.has(String(x.user_id)) && (!query || `${x.name || ''} ${x.nickname || ''} ${x.card || ''} ${x.user_id || ''}`.toLowerCase().includes(query)));
+  $('#groupAdminCatalogMeta').textContent = `${members.length} 位已识别成员 · ${visible.length} 位可添加`;
+  $('#groupAdminMemberList').innerHTML = visible.length ? visible.map(item => {
+    const name = item.name && item.name !== '群友' ? item.name : `未识别成员 · ${String(item.user_id || '').slice(-6)}`;
+    return `<button type="button" class="admin-member-option" data-admin-add="${escapeHtml(item.user_id)}"><span class="member-avatar">${escapeHtml(name.slice(0, 1))}</span><span><strong>${escapeHtml(name)}</strong><small>${escapeHtml((item.sources || []).join(' · ') || '历史目录')}</small><code>${escapeHtml(item.user_id)}</code></span><i class="ph ph-plus"></i></button>`;
+  }).join('') : '<div class="terminal-empty">没有可添加的匹配成员</div>';
+  $$('[data-admin-add]', $('#groupAdminMemberList')).forEach(button => button.onclick = () => {
+    const item = members.find(x => String(x.user_id) === button.dataset.adminAdd);
+    addGroupAdmin(button.dataset.adminAdd, item?.name || '', 'directory');
+  });
+  $('#groupAdminCount').textContent = `${admins.length} 人`;
+  $('#groupAdminList').innerHTML = admins.length ? admins.map((item, index) => {
+    const name = item.display_name || memberNameForAdmin(item.user_id);
+    const roleOptions = Object.entries(ADMIN_ROLE_LABELS).map(([value, label]) => `<option value="${value}" ${item.role === value ? 'selected' : ''}>${label}</option>`).join('');
+    const effective = new Set(effectiveAdminPermissions(item));
+    const permissions = state.groupAdminPermissions.map(permission => `<label class="${effective.has(permission) ? 'active' : ''}"><input type="checkbox" data-admin-permission="${escapeHtml(permission)}" data-admin-index="${index}" ${effective.has(permission) ? 'checked' : ''} ${item.role !== 'custom' ? 'disabled' : ''}><span>${escapeHtml(ADMIN_PERMISSION_LABELS[permission] || permission)}</span></label>`).join('');
+    const warning = item.source === 'manual' ? '手动授权 · 请核对真实 ID' : ((state.groupMemberCatalog[groupId] || []).some(x => String(x.user_id) === String(item.user_id)) ? '当前群成员' : '历史授权 · 当前目录未发现');
+    return `<article class="group-admin-card ${state.groupAdminPreviewUserId === item.user_id ? 'selected' : ''}" data-admin-select="${escapeHtml(item.user_id)}"><header><span class="member-avatar">${escapeHtml(name.slice(0, 1))}</span><div><strong>${escapeHtml(name)}</strong><small>${escapeHtml(warning)}</small><code>${escapeHtml(item.user_id)}</code></div><button type="button" class="icon-btn" data-admin-remove="${index}" title="撤销授权"><i class="ph ph-trash"></i></button></header><div class="admin-role-row"><label>角色预设</label><select data-admin-role="${index}">${roleOptions}</select></div><div class="admin-permission-grid">${permissions}</div></article>`;
+  }).join('') : '<div class="terminal-empty">尚未添加管理员</div>';
+  $$('[data-admin-select]', $('#groupAdminList')).forEach(card => card.onclick = e => {
+    if (e.target.closest('select,input,button,label')) return;
+    state.groupAdminPreviewUserId = card.dataset.adminSelect; renderGroupAdminPanel(); loadAdminMenuPreview();
+  });
+  $$('[data-admin-remove]', $('#groupAdminList')).forEach(button => button.onclick = e => {
+    e.stopPropagation(); admins.splice(Number(button.dataset.adminRemove), 1);
+    if (!admins.some(x => x.user_id === state.groupAdminPreviewUserId)) state.groupAdminPreviewUserId = admins[0]?.user_id || '';
+    renderGroupAdminPanel(); loadAdminMenuPreview();
+  });
+  $$('[data-admin-role]', $('#groupAdminList')).forEach(select => select.onchange = () => {
+    const item = admins[Number(select.dataset.adminRole)]; item.role = select.value;
+    if (item.role !== 'custom') item.permissions = [];
+    renderGroupAdminPanel(); loadAdminMenuPreview();
+  });
+  $$('[data-admin-permission]', $('#groupAdminList')).forEach(input => input.onchange = () => {
+    const item = admins[Number(input.dataset.adminIndex)], permission = input.dataset.adminPermission;
+    const set = new Set(item.permissions || []); input.checked ? set.add(permission) : set.delete(permission);
+    item.permissions = [...set]; renderGroupAdminPanel(); loadAdminMenuPreview();
+  });
+}
+async function loadGroupAdmins(silent = false) {
+  const groupId = currentAdminGroup(); if (!groupId) return;
+  $('#groupAdminState').textContent = '正在加载权限…';
+  try {
+    if (!state.groupMemberCatalog[groupId]) {
+      const members = await api(`/api/groups/members?group_id=${encodeURIComponent(groupId)}`);
+      state.groupMemberCatalog[groupId] = members.items || [];
+      state.groupMemberCatalogMeta[groupId] = members;
+    }
+    const data = await api(`/api/group-admins?group_id=${encodeURIComponent(groupId)}`);
+    state.groupAdmins[groupId] = data.items || []; state.groupAdminRoles = data.roles || {}; state.groupAdminPermissions = data.permissions || [];
+    state.groupAdminPreviewUserId = state.groupAdmins[groupId][0]?.user_id || '';
+    $('#groupAdminState').textContent = `${data.items?.length || 0} 位管理员 · 按群隔离`;
+    renderGroupAdminPanel(); await Promise.all([loadAdminMenuPreview(), loadAdminAudit()]);
+  } catch (e) { $('#groupAdminState').textContent = '权限加载失败'; if (!silent) toast(`管理员加载失败：${e.message}`, 'error'); }
+}
+async function saveGroupAdmins(button) {
+  const groupId = currentAdminGroup(); if (!groupId) return;
+  setBusy(button, true, '保存中…');
+  try {
+    const data = await api('/api/group-admins/save', { method: 'POST', body: JSON.stringify({ group_id: groupId, admins: currentGroupAdmins() }) });
+    state.groupAdmins[groupId] = data.items || []; state.groupAdminRoles = data.roles || {}; state.groupAdminPermissions = data.permissions || [];
+    $('#groupAdminState').textContent = `已保存 ${data.items?.length || 0} 位管理员，立即生效`;
+    renderGroupAdminPanel(); await loadAdminMenuPreview(); toast('群管理员权限已实时生效', 'success');
+  } catch (e) { toast(`管理员保存失败：${e.message}`, 'error', 7000); }
+  finally { setBusy(button, false); }
+}
+async function loadAdminMenuPreview() {
+  const groupId = currentAdminGroup(); if (!groupId) return;
+  const local = currentGroupAdmins().find(item => String(item.user_id) === String(state.groupAdminPreviewUserId));
+  if (local) {
+    const group = state.groupCatalog.find(item => item.id === groupId);
+    const permissions = new Set(effectiveAdminPermissions(local));
+    const mark = permission => permissions.has(permission) ? '●' : '○';
+    $('#groupAdminMenuPreview').textContent = `╭─ ✦ 小风 · 群管理台
+│  ${groupDisplayName(group)} · 本群管理员
+│  ${ADMIN_ROLE_LABELS[local.role] || '自定义'} · 权限 ${permissions.size}/8
+│
+│  ◈ 快捷
+│  ${mark('status.view')} #状态
+│  ${mark('reply.control')} #机器人 开 / 关
+│  ${mark('reply.control')} #闭嘴 3m  ·  #开口
+│
+│  ◈ 功能
+│  ${mark('strategy.manage')} #菜单 策略
+│  ${mark('media.manage')} #菜单 媒介
+│  ${mark('personality.manage')} #菜单 性格
+│  ${mark('members.manage')} #菜单 成员
+│  ${mark('memory.manage')} #菜单 记忆
+╰─ ● 可执行  ○ 仅查看 · #帮助 命令`;
+    return;
+  }
+  try {
+    const data = await api(`/api/group-admins/menu-preview?group_id=${encodeURIComponent(groupId)}&user_id=${encodeURIComponent(state.groupAdminPreviewUserId || '')}`);
+    $('#groupAdminMenuPreview').textContent = data.text || '暂无预览';
+  } catch (e) { $('#groupAdminMenuPreview').textContent = `预览失败：${e.message}`; }
+}
+async function loadAdminAudit() {
+  const groupId = currentAdminGroup(); if (!groupId) return;
+  try {
+    const data = await api(`/api/group-admins/audit?group_id=${encodeURIComponent(groupId)}&limit=20`);
+    $('#groupAdminAuditList').innerHTML = (data.items || []).length ? data.items.map(item => `<article><time>${escapeHtml(item.created_at || '')}</time><div><strong>${escapeHtml(item.display_name || memberNameForAdmin(item.user_id))}</strong><p>${escapeHtml(item.command || '')}</p><small>${item.result === 'success' ? '✓ 执行成功' : item.result === 'failed' ? `× ${escapeHtml(item.error || '执行失败')}` : escapeHtml(item.result || '')}</small></div></article>`).join('') : '<div class="terminal-empty">暂无管理记录</div>';
+  } catch (e) { $('#groupAdminAuditList').innerHTML = `<div class="terminal-empty">审计加载失败：${escapeHtml(e.message)}</div>`; }
 }
 function escapeHtml(v) { const d = document.createElement('div'); d.textContent = v; return d.innerHTML; }
 
@@ -1977,7 +2175,7 @@ function renderDashboardLogs() {
 
 function connectLogs() {
   state.eventSource?.close(); const es = new EventSource('/api/events/stream'); state.eventSource = es;
-  es.onmessage = e => { try { const item = JSON.parse(e.data); pulseActivePageSignal(item.type === 'reply_task' ? 1 : item.type === 'persona_analysis' ? 2 : 0); if (item.type === 'log') addLog(item); else if (item.type === 'reply_task') { refreshReplyTasks(true); const phase = item.state || item.data?.state || ''; const node = phase.includes('rerank') ? 'reranker' : phase.includes('retriev') ? 'embedding' : phase.includes('voice') ? 'voice' : phase.includes('face') ? 'face' : phase.includes('generat') ? 'person' : 'fts'; pulseOrbitNode(node); } else if (item.type === 'memory_backfill') { refreshReplyTasks(true); pulseOrbitNode('embedding'); } else if (item.type === 'persona_analysis') { pulseOrbitNode('person'); clearTimeout(state.persona.refreshTimer); state.persona.refreshTimer = setTimeout(() => { if ($('#page-personas').classList.contains('active')) loadPersonaMembers(true); }, 180); } } catch (_) {} };
+  es.onmessage = e => { try { const item = JSON.parse(e.data); pulseActivePageSignal(item.type === 'reply_task' ? 1 : item.type === 'persona_analysis' ? 2 : 0); if (item.type === 'log') addLog(item); else if (item.type === 'reply_task') { refreshReplyTasks(true); const phase = item.state || item.data?.state || ''; const node = phase.includes('rerank') ? 'reranker' : phase.includes('retriev') ? 'embedding' : phase.includes('voice') ? 'voice' : phase.includes('face') ? 'face' : phase.includes('generat') ? 'person' : 'fts'; pulseOrbitNode(node); } else if (item.type === 'memory_backfill') { refreshReplyTasks(true); pulseOrbitNode('embedding'); } else if (item.type === 'persona_analysis') { pulseOrbitNode('person'); clearTimeout(state.persona.refreshTimer); state.persona.refreshTimer = setTimeout(() => { if ($('#page-personas').classList.contains('active')) loadPersonaMembers(true); }, 180); } else if (item.type === 'admin_command' && $('#page-groups').classList.contains('active')) { loadAdminAudit(); } } catch (_) {} };
   es.onerror = () => { $('#logPulse').style.opacity = '.3'; };
 }
 
@@ -2065,6 +2263,21 @@ function bind() {
   $('#saveGroupBlacklistBtn').onclick = e => saveGroupBlacklist(e.currentTarget);
   $('#memberBlacklistGroup').onchange = () => loadGroupMembers();
   $('#memberBlacklistQuery').oninput = renderGroupMembers;
+  $('#replyMentionGroup').onchange = renderReplyMentionSetting;
+  $('#replyMentionEnabled').onchange = () => {
+    $('#replyMentionState').textContent = `待保存：${$('#replyMentionEnabled').checked ? '回复时艾特' : '不艾特'}`;
+  };
+  $('#saveReplyMentionBtn').onclick = e => saveReplyMentionSetting(e.currentTarget);
+  $('#groupAdminGroup').onchange = () => loadGroupAdmins();
+  $('#groupAdminSearch').oninput = renderGroupAdminPanel;
+  $('#saveGroupAdminsBtn').onclick = e => saveGroupAdmins(e.currentTarget);
+  $('#previewAdminMenuBtn').onclick = () => loadAdminMenuPreview();
+  $('#refreshAdminAuditBtn').onclick = () => loadAdminAudit();
+  $('#addManualAdminBtn').onclick = () => {
+    const input = $('#manualAdminId'), value = input.value.trim();
+    if (!value || value.endsWith('@chatroom')) { toast('请输入精确的成员 wxid / 微信内部 ID', 'error'); return; }
+    addGroupAdmin(value, '', 'manual'); input.value = '';
+  };
   $$('.test-run').forEach(x => x.onclick = () => runTest(x.dataset.test, x));
   $('#clearTestConsole').onclick = () => { $('#testConsole').innerHTML = '<p class="muted">// 测试控制台已清空</p>'; };
   $('#refreshMemoryBtn').onclick = () => refreshMemoryStats(); $('#searchMemoryBtn').onclick = e => searchMemory(e.currentTarget); $('#vectorSearchBtn').onclick = e => vectorSearch(e.currentTarget);
@@ -2123,7 +2336,7 @@ async function init() {
   showPage(pageMeta[initialPage] ? initialPage : 'overview');
   bind(); connectLogs();
   try { fillConfig(await api('/api/config')); } catch (e) { toast(`配置加载失败：${e.message}`, 'error'); }
-  await loadBrainConfig(true); await refreshReplyTasks(true);
+  await loadBrainConfig(true); await loadGroupAdmins(true); await refreshReplyTasks(true);
   try { await loadPokeConfig(); } catch (e) { toast(`拍一拍配置加载失败：${e.message}`, 'error'); }
   await refreshStatus(); await refreshTraces(true); setInterval(() => refreshStatus(true), 5000); setInterval(() => refreshTraces(true), 5000); setInterval(() => refreshChannelHealth(true), 15000);
   refreshMemoryStats(true);

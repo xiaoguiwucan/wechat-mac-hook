@@ -51,6 +51,7 @@ from brain_engine import (BrainConfig, FINAL_STATES, OpportunityScorer, ReplySch
                           TaskRegistry, extract_explicit_media_kind, extract_image_generation_prompt,
                           media_suppression)  # noqa: E402
 from embedding_service import EmbeddingConfig, EmbeddingService  # noqa: E402
+from group_admin import GroupAdminService, is_admin_command  # noqa: E402
 
 
 def now_ts() -> str:
@@ -323,6 +324,8 @@ class AppConfig:
     allowed_user_ids: List[str] = field(default_factory=list)
     ignored_user_ids: List[str] = field(default_factory=list)
     ignored_group_members: Dict[str, List[str]] = field(default_factory=dict)
+    group_reply_enabled: Dict[str, bool] = field(default_factory=dict)
+    group_personalities: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     ignore_self_messages: bool = False
     trigger_keywords: List[str] = field(default_factory=list)
     require_keyword: bool = False
@@ -438,6 +441,24 @@ class AppConfig:
                 ).items()
                 if str(group_id).endswith("@chatroom") and isinstance(user_ids, list)
             },
+            group_reply_enabled={
+                str(group_id): bool(enabled)
+                for group_id, enabled in (
+                    raw.get("group_reply_enabled", {}) if isinstance(raw.get("group_reply_enabled"), dict) else {}
+                ).items()
+                if str(group_id).endswith("@chatroom")
+            },
+            group_personalities={
+                str(group_id): (
+                    {"enabled": True, "prompt": str(value)}
+                    if isinstance(value, str) else
+                    {"enabled": bool(value.get("enabled", True)), "prompt": str(value.get("prompt") or "")}
+                )
+                for group_id, value in (
+                    raw.get("group_personalities", {}) if isinstance(raw.get("group_personalities"), dict) else {}
+                ).items()
+                if str(group_id).endswith("@chatroom") and isinstance(value, (str, dict))
+            },
             ignore_self_messages=env_bool("AI_REPLY_IGNORE_SELF", bool(raw.get("ignore_self_messages", False))),
             trigger_keywords=[str(x) for x in raw.get("trigger_keywords", [])],
             require_keyword=env_bool("AI_REPLY_REQUIRE_KEYWORD", bool(raw.get("require_keyword", False))),
@@ -549,6 +570,12 @@ class AIReplyService:
         self.scorer = OpportunityScorer(cfg.brain)
         self.embedding_service = EmbeddingService(self.store, cfg.embedding, emit_brain_event)
         self.scheduler = ReplyScheduler(cfg.brain, self.task_registry)
+        self.group_admin_service = GroupAdminService(
+            self.store,
+            DEFAULT_CONFIG,
+            reload_callback=self._reload_admin_config,
+            runtime_callback=self._admin_runtime,
+        )
         self.media_worker = threading.Thread(target=self._media_worker_loop, name="ai-media-worker", daemon=True)
         self.culture_worker = threading.Thread(target=self._culture_worker_loop, name="culture-learner", daemon=True)
 
@@ -603,6 +630,28 @@ class AIReplyService:
                           "brain": self.brain_status(), "pid": os.getpid()})
         return {"pid": os.getpid(), "brain": self.brain_status()}
 
+    def _reload_admin_config(self) -> Dict[str, Any]:
+        try:
+            result = self.reload_config(AppConfig.from_file(DEFAULT_CONFIG))
+            return {"applied": True, **result}
+        except Exception as exc:
+            return {"applied": False, "error": str(exc)}
+
+    def _admin_runtime(self, group_id: str) -> Dict[str, Any]:
+        tasks = self.store.reply_tasks(group_id, 20)
+        active = [item for item in tasks if item.get("state") not in FINAL_STATES]
+        return {
+            "active_tasks": len(active),
+            "tasks": [
+                f"{item.get('state_label') or item.get('state')} · {str(item.get('question') or '')[:70]}"
+                for item in active[:8]
+            ],
+            "errors": [
+                f"{item.get('created_at') or item.get('time') or ''} · {str(item.get('error') or '')[:100]}"
+                for item in list(self.recent_errors)[-8:] if not item.get("group_id") or item.get("group_id") == group_id
+            ],
+        }
+
     def brain_status(self) -> Dict[str, Any]:
         scheduler = self.scheduler.snapshot()
         tasks = self.task_registry.snapshot(200)
@@ -621,6 +670,7 @@ class AIReplyService:
                 "scoring_mode": self.cfg.brain.scoring_mode,
                 "rerank_candidates": self.cfg.brain.rerank_candidates,
                 "mute_duration_seconds": self.cfg.brain.mute_duration_seconds,
+                "mention_user_on_reply": self.cfg.brain.mention_user_on_reply,
                 "factor_weights": self.cfg.brain.factor_weights,
                 "modifiers": self.cfg.brain.modifiers,
             },
@@ -653,6 +703,25 @@ class AIReplyService:
         evt, reason = self.parse_event(raw)
         if not evt:
             return False, reason
+        if (not raw.get("voice_transcript") and is_admin_command(evt.text)
+                and str(raw.get("post_type") or "") == "message"
+                and str(raw.get("message_type") or "") == "group"):
+            result = self.group_admin_service.handle(evt)
+            if result and result.get("handled"):
+                emit_brain_event({
+                    "type": "admin_command", "event": "handled", "time": time.time(),
+                    "group_id": evt.group_id, "user_id": evt.user_id, "command": evt.text[:300],
+                    "authorized": bool(result.get("authorized")), "duplicate": bool(result.get("duplicate")),
+                    "audit_id": result.get("audit_id"), "error": result.get("error", ""),
+                    "trace_id": evt.trace_id,
+                })
+                card = str(result.get("card") or "")
+                if card:
+                    threading.Thread(
+                        target=self.send_admin_card, args=(evt, card),
+                        name="group-admin-receipt", daemon=True,
+                    ).start()
+                return True, "admin_command_duplicate" if result.get("duplicate") else "admin_command_handled"
         if raw.get("voice_transcript"):
             transcript = str(raw.get("voice_transcript_text") or evt.text).strip()
             transcript = re.sub(r"^\[语音转文字\]\s*", "", transcript).strip()
@@ -1061,6 +1130,9 @@ class AIReplyService:
             log("info", "group_not_target_skip", group_id=evt.group_id,
                 configured_groups=list(self.cfg.target_groups.keys()), trace_id=evt.trace_id)
             return False
+        if not getattr(self.cfg, "group_reply_enabled", {}).get(evt.group_id, True):
+            log("info", "group_reply_disabled_skip", group_id=evt.group_id, trace_id=evt.trace_id)
+            return False
         if self.cfg.ignore_self_messages and evt.self_id and evt.user_id == evt.self_id:
             log("info", "self_message_skip", group_id=evt.group_id, user_id=evt.user_id, trace_id=evt.trace_id)
             return False
@@ -1174,6 +1246,9 @@ class AIReplyService:
 
     def handle_brain_task(self, task: ReplyTask, evt: OneBotEvent) -> None:
         registry = self.task_registry
+        brain_cfg = self.cfg.brain.for_group(evt.group_id)
+        scorer = getattr(self, "scorer", None) if brain_cfg is self.cfg.brain else None
+        scorer = scorer or OpportunityScorer(brain_cfg)
         if self.group_is_muted(evt.group_id, evt.trace_id, "task_start"):
             registry.update(task, "skipped", result="group_muted", details={"mute_gate": True})
             return
@@ -1193,7 +1268,7 @@ class AIReplyService:
             if task.state not in FINAL_STATES:
                 registry.update(task, "completed", result=task.result or "media_sent")
             return
-        registry.update(task, "scoring", threshold=self.cfg.brain.threshold)
+        registry.update(task, "scoring", threshold=brain_cfg.threshold)
         recent = self.store.recent_context(evt.group_id, 30)
         last_outgoing = next((x for x in reversed(recent) if x.get("direction") == "outgoing"), None)
         last_bot_reply = None
@@ -1204,9 +1279,9 @@ class AIReplyService:
                               "event_time": last_outgoing.get("event_time")}
 
         prefilter_started = time.monotonic()
-        prefilter = self.scorer.local_score(evt, recent, {"items": [], "culture": {}}, last_bot_reply)
+        prefilter = scorer.local_score(evt, recent, {"items": [], "culture": {}}, last_bot_reply)
         prefilter_ms = (time.monotonic() - prefilter_started) * 1000
-        prefilter_threshold = min(20.0, float(self.cfg.brain.threshold))
+        prefilter_threshold = min(20.0, float(brain_cfg.threshold))
         if not prefilter["mandatory"] and float(prefilter["pre_score"]) < prefilter_threshold:
             registry.update(task, "skipped", score=float(prefilter["pre_score"]), details={
                 "local": prefilter, "reason": "local_prefilter", "prefilter_threshold": prefilter_threshold,
@@ -1218,26 +1293,26 @@ class AIReplyService:
         memory = self.embedding_service.search(
             evt.text, evt.group_id, 12,
             stage_callback=lambda state: registry.update(task, state),
-            rerank_candidates=self.cfg.brain.rerank_candidates,
+            rerank_candidates=brain_cfg.rerank_candidates,
             context_messages=recent[-4:],
             sender_name=evt.sender_name,
         )
         task.details = {**task.details, "memory_count": len(memory.get("items") or []),
                         "embedding_error": memory.get("error", "")}
         scoring_started = time.monotonic()
-        local = self.scorer.local_score(evt, recent, memory, last_bot_reply)
-        if self.cfg.brain.scoring_mode == "model_deep":
+        local = scorer.local_score(evt, recent, memory, last_bot_reply)
+        if brain_cfg.scoring_mode == "model_deep":
             factors, score_reason, score_model = self.score_reply_opportunity(evt, recent, memory, local)
         else:
-            factors, score_reason = self.scorer.local_factors(evt, recent, memory, local, last_bot_reply)
+            factors, score_reason = scorer.local_factors(evt, recent, memory, local, last_bot_reply)
             score_model = "local-fast"
-        score = self.scorer.final_score(factors, local.get("reasons") or [])
+        score = scorer.final_score(factors, local.get("reasons") or [])
         scoring_ms = (time.monotonic() - scoring_started) * 1000
         timings = {"prefilter": round(prefilter_ms, 1), **(memory.get("timings_ms") or {}),
                    "scoring": round(scoring_ms, 1),
                    "pre_generation_total": round((time.monotonic() - pipeline_started) * 1000, 1)}
         task.details = {"local": local, "factors": factors, "score_reason": score_reason,
-                        "scoring_mode": self.cfg.brain.scoring_mode, "timings_ms": timings,
+                        "scoring_mode": brain_cfg.scoring_mode, "timings_ms": timings,
                         "recalled_count": memory.get("recalled_count", 0),
                         "reranked_count": memory.get("reranked_count", 0),
                         "route_counts": memory.get("route_counts", {}),
@@ -1246,9 +1321,9 @@ class AIReplyService:
                         "rerank_skipped_reason": memory.get("rerank_skipped_reason", ""),
                         "rerank_cache_hits": memory.get("rerank_cache_hits", 0),
                         "memory": [{k: v for k, v in x.items() if k != "vector_blob"} for x in (memory.get("items") or [])[:12]]}
-        registry.update(task, "scoring", score=score, threshold=self.cfg.brain.threshold, model=score_model, details=task.details)
+        registry.update(task, "scoring", score=score, threshold=brain_cfg.threshold, model=score_model, details=task.details)
         mandatory_trigger = bool(local.get("mandatory"))
-        if score < self.cfg.brain.threshold and not mandatory_trigger:
+        if score < brain_cfg.threshold and not mandatory_trigger:
             task.details = {
                 **task.details,
                 "threshold_gate": "below_threshold",
@@ -1258,7 +1333,7 @@ class AIReplyService:
             registry.update(task, "skipped", result="score_below_threshold", details=task.details)
             log("info", "score_below_threshold_skip", group_id=evt.group_id,
                 user_id=evt.user_id, sender=evt.sender_name, score=score,
-                threshold=self.cfg.brain.threshold, mandatory=bool(local.get("mandatory")),
+                threshold=brain_cfg.threshold, mandatory=bool(local.get("mandatory")),
                 alias_hit=str(local.get("alias_hit") or ""), task_id=task.task_id,
                 message_id=evt.message_id, trace_id=evt.trace_id)
             return
@@ -1267,7 +1342,7 @@ class AIReplyService:
             task.details = {
                 **task.details,
                 "threshold_gate": "mandatory_bypass",
-                "below_threshold": score < self.cfg.brain.threshold,
+                "below_threshold": score < brain_cfg.threshold,
                 "trigger_was_mandatory": True,
                 "mandatory_reason": (
                     "at_self" if local.get("at_self") else
@@ -1276,11 +1351,11 @@ class AIReplyService:
                     "explicit_media"
                 ),
             }
-            registry.update(task, "scoring", score=score, threshold=self.cfg.brain.threshold,
+            registry.update(task, "scoring", score=score, threshold=brain_cfg.threshold,
                             model=score_model, details=task.details)
             log("info", "mandatory_trigger_bypass_threshold", group_id=evt.group_id,
                 user_id=evt.user_id, sender=evt.sender_name, score=score,
-                threshold=self.cfg.brain.threshold, reason=task.details["mandatory_reason"],
+                threshold=brain_cfg.threshold, reason=task.details["mandatory_reason"],
                 alias_hit=str(local.get("alias_hit") or ""), task_id=task.task_id,
                 message_id=evt.message_id, trace_id=evt.trace_id)
 
@@ -2081,9 +2156,15 @@ class AIReplyService:
     def build_messages(self, evt: OneBotEvent) -> List[Dict[str, str]]:
         with self.history_locks[evt.group_id]:
             hist = list(self.histories[evt.group_id])
+        group_personality = self.cfg.group_personalities.get(evt.group_id) or {}
+        active_personality = (
+            str(group_personality.get("prompt") or "").strip()
+            if group_personality.get("enabled", False) else ""
+        )
+        personality_text = active_personality or self.cfg.personality.strip()
         personality_rule = (
-            "机器人性格（最高优先级，必须严格遵守）：\n" + self.cfg.personality.strip()
-            if self.cfg.personality.strip() else ""
+            "机器人性格（最高优先级，必须严格遵守；当前群独立配置）：\n" + personality_text
+            if personality_text else ""
         )
         system_content = self.cfg.ai.system_prompt
         if personality_rule:
@@ -2860,11 +2941,25 @@ class AIReplyService:
         with self.send_locks[group_id]:
             self._send_group_msg_locked(group_id, text, trace_id, evt)
 
+    def send_admin_card(self, evt: OneBotEvent, text: str) -> None:
+        """Send management receipts as quote-bound text, bypassing ordinary mute/media gates."""
+        try:
+            with self.send_locks[evt.group_id]:
+                self._send_group_msg_locked(evt.group_id, text, evt.trace_id, evt, quote_message=True)
+            log("info", "admin_command_receipt_sent", group_id=evt.group_id, user_id=evt.user_id,
+                message_id=evt.message_id, trace_id=evt.trace_id)
+        except Exception as exc:
+            log("error", "admin_command_receipt_failed", group_id=evt.group_id, user_id=evt.user_id,
+                message_id=evt.message_id, error=str(exc), trace_id=evt.trace_id)
+
     def _send_group_msg_locked(self, group_id: str, text: str, trace_id: str,
-                               evt: Optional[OneBotEvent]) -> None:
+                               evt: Optional[OneBotEvent], quote_message: bool = False) -> None:
         url = self.cfg.onebot_api.rstrip("/") + "/send_group_msg"
         message: List[Dict[str, Any]] = []
-        if (evt and evt.user_id and evt.user_id != evt.self_id
+        if quote_message and evt and evt.message_id:
+            message.append({"type": "reply", "data": {"id": evt.message_id}})
+        mention_enabled = self.cfg.brain.for_group(group_id).mention_user_on_reply
+        if (mention_enabled and not quote_message and evt and evt.user_id and evt.user_id != evt.self_id
                 and not evt.user_id.endswith("@chatroom")):
             display_name = self.store.resolve_member_name(evt.group_id, evt.user_id, evt.sender_name)
             if is_readable_member_name(display_name, evt.user_id):
