@@ -48,7 +48,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from memory_store import MemoryStore, is_readable_member_name  # noqa: E402
 from brain_engine import (BrainConfig, FINAL_STATES, OpportunityScorer, ReplyScheduler, ReplyTask,
-                          TaskRegistry, extract_image_generation_prompt)  # noqa: E402
+                          TaskRegistry, extract_explicit_media_kind, extract_image_generation_prompt,
+                          media_suppression)  # noqa: E402
 from embedding_service import EmbeddingConfig, EmbeddingService  # noqa: E402
 
 
@@ -2301,7 +2302,8 @@ class AIReplyService:
                     self.task_registry.update(task, "failed", error="生图或图片发送失败")
                 self._record_history(evt, "[生图失败，未发送图片]")
                 return
-        if not is_asr_transcript and command is None and re.search(r"(发|来|整|搞).{0,8}(语音|语音包|声音|音频)", evt.text):
+        explicit_media_kind = extract_explicit_media_kind(evt.text)
+        if not is_asr_transcript and command is None and explicit_media_kind == "voice":
             result = self.send_voice_pack_tool(evt, evt.text, quiet=True)
             if result == "__NO_TEXT_REPLY__":
                 self._record_history(evt, "[已按语音名称匹配并发送语音包]")
@@ -2312,7 +2314,7 @@ class AIReplyService:
                     self.task_registry.update(task, "failed", error="显式语音请求未发送成功")
                 self._record_history(evt, "[显式语音请求失败，未发送文字]")
                 return
-        if not is_asr_transcript and command is None and re.search(r"(发|来|整|搞).{0,8}(表情|表情包|梗图|动图)", evt.text):
+        if not is_asr_transcript and command is None and explicit_media_kind == "face":
             result = self.send_face_pack_tool(evt, evt.text, quiet=True)
             if result == "__NO_TEXT_REPLY__":
                 self._record_history(evt, "[已按语义匹配并发送表情]")
@@ -2782,6 +2784,24 @@ class AIReplyService:
             "min_candidate_confidence": min_confidence,
             "voice_probability": voice_probability, "face_probability": face_probability,
         })
+        suppressed = media_suppression(evt.text)
+        details["user_suppressed_media"] = sorted(suppressed)
+        # The model-selected medium is the final answer type, not a loose hint.
+        # Do not let high UI probabilities replace a useful text answer with
+        # unrelated voice/face material.
+        if requested_medium == "text":
+            details.update({
+                "voice_gate": "model_selected_text",
+                "face_gate": "model_selected_text",
+                "selected_medium": "text",
+            })
+            return "text", {}, details
+        if requested_medium in suppressed:
+            details.update({
+                f"{requested_medium}_gate": "user_suppressed",
+                "selected_medium": "text",
+            })
+            return "text", {}, details
         options: List[Tuple[float, str, Dict[str, Any], float]] = []
         if voice_effective_fit >= voice_min_fit:
             voice = self.select_voice_pack_item(query, evt)

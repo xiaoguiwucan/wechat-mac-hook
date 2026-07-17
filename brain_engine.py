@@ -67,6 +67,35 @@ def extract_image_generation_prompt(text: str) -> str:
     return ""
 
 
+def media_suppression(text: str) -> set[str]:
+    """Return media types the user explicitly asked not to receive."""
+    raw = re.sub(r"^@\S+?[\s\u2005]+", "", str(text or "").strip()).strip()
+    compact = re.sub(r"\s+", "", raw)
+    suppressed: set[str] = set()
+    if re.search(r"(?:只|仅)(?:要|用|发|回|回复)?(?:文字|文本)|(?:文字|文本)(?:就行|回复|回答)", compact):
+        suppressed.update({"voice", "face"})
+    if re.search(r"(?:别|不要|不用|不许|禁止|停止)(?:再)?(?:给我)?(?:发|用|来|整|搞)?(?:任何)?(?:语音|语音包|声音|音频)", compact):
+        suppressed.add("voice")
+    if re.search(r"(?:别|不要|不用|不许|禁止|停止)(?:再)?(?:给我)?(?:发|用|来|整|搞)?(?:任何)?(?:表情|表情包|梗图|动图)", compact):
+        suppressed.add("face")
+    return suppressed
+
+
+def extract_explicit_media_kind(text: str) -> str:
+    """Recognize affirmative voice/face requests while respecting negation."""
+    raw = re.sub(r"^@\S+?[\s\u2005]+", "", str(text or "").strip()).strip()
+    suppressed = media_suppression(raw)
+    if raw.startswith("/发语音"):
+        return "voice"
+    if raw.startswith("/发表情"):
+        return "face"
+    if "voice" not in suppressed and re.search(r"(?:发|来|整|搞).{0,8}(?:语音|语音包|声音|音频)", raw):
+        return "voice"
+    if "face" not in suppressed and re.search(r"(?:发|来|整|搞).{0,8}(?:表情|表情包|梗图|动图)", raw):
+        return "face"
+    return ""
+
+
 @dataclass
 class BrainConfig:
     mode: str = "veteran"
@@ -231,14 +260,7 @@ class OpportunityScorer:
         reply_id = next((str((seg.get("data") or {}).get("id") or "") for seg in (raw_segments or [])
                          if isinstance(seg, dict) and seg.get("type") == "reply"), "")
         alias_hit = next((x for x in self.cfg.bot_aliases if x and x in text), "")
-        explicit_media = bool(
-            extract_image_generation_prompt(text)
-            or re.search(
-                r"(?:/发语音|/发表情|(?:发|来|整|搞).{0,8}"
-                r"(?:语音|语音包|声音|音频|表情|梗图|动图))",
-                text,
-            )
-        )
+        explicit_media = bool(extract_image_generation_prompt(text) or extract_explicit_media_kind(text))
         mandatory = bool(at_self or reply_id or alias_hit or explicit_media)
         score = 24.0 if len(text) >= 3 else 10.0
         reasons: List[Dict[str, Any]] = []

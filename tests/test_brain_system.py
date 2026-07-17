@@ -408,7 +408,7 @@ class BrainSystemTest(unittest.TestCase):
         self.assertEqual(cfg.voice_min_fit, 80)
         self.assertEqual(cfg.face_min_fit, 80)
 
-    def test_voice_and_face_fit_gates_are_independent(self) -> None:
+    def test_model_selected_text_is_not_overridden_by_fit_or_probability(self) -> None:
         service = object.__new__(AIReplyService)
         service.cfg = SimpleNamespace(media_reply=MediaReplyConfig(
             voice_probability=1, face_probability=1, voice_min_fit=55,
@@ -420,15 +420,40 @@ class BrainSystemTest(unittest.TestCase):
         service.select_face_pack_item = lambda *_args, **_kwargs: {
             "id": 2, "image_summary": "表情", "match_score": .8,
         }
-        evt = event("group-a", "user-a", "media-gates", "哈哈哈")
+        evt = event("group-a", "user-a", "media-gates", "@AI小助手给我找几个黑丝美腿番号")
         decision = SimpleNamespace(
             medium="text", voice_fit=54, face_fit=46, media_query="搞笑", intent="调侃",
         )
         medium, item, details = service.choose_auto_medium(evt, decision)
-        self.assertEqual(medium, "face")
-        self.assertEqual(item["id"], 2)
-        self.assertEqual(details["voice_gate"], "fit_below_threshold")
-        self.assertEqual(details["selected_medium"], "face")
+        self.assertEqual(medium, "text")
+        self.assertEqual(item, {})
+        self.assertEqual(details["voice_gate"], "model_selected_text")
+        self.assertEqual(details["face_gate"], "model_selected_text")
+        self.assertEqual(details["selected_medium"], "text")
+
+    def test_negative_face_request_is_not_treated_as_explicit_media(self) -> None:
+        scorer = OpportunityScorer(BrainConfig())
+        evt = event("group-a", "user-a", "negative-face", "@AI小助手别发表情给我找番号")
+        result = scorer.local_score(evt, [], {"items": [], "culture": {}}, None)
+        self.assertFalse(result["explicit_media"])
+
+        service = object.__new__(AIReplyService)
+        service.cfg = SimpleNamespace(media_reply=MediaReplyConfig(
+            voice_probability=1, face_probability=1, voice_min_fit=1,
+            face_min_fit=1, min_candidate_confidence=0,
+        ))
+        service._task_for_event = lambda _evt: None
+        service.select_voice_pack_item = lambda *_args, **_kwargs: {}
+        service.voice_candidate_confidence = lambda _item: 0
+        service.select_face_pack_item = lambda *_args, **_kwargs: {
+            "id": 1, "image_summary": "走开啊别拍我", "match_score": 1,
+        }
+        decision = SimpleNamespace(
+            medium="face", voice_fit=0, face_fit=100, media_query="拒绝", intent="拒绝",
+        )
+        medium, item, details = service.choose_auto_medium(evt, decision)
+        self.assertEqual((medium, item), ("text", {}))
+        self.assertEqual(details["face_gate"], "user_suppressed")
 
     def test_model_medium_preference_is_not_discarded(self) -> None:
         service = object.__new__(AIReplyService)
