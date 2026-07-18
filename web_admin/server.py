@@ -574,6 +574,7 @@ def read_config() -> Dict[str, Any]:
         "onebot_api": env.get("AI_REPLY_ONEBOT_API", cfg.get("onebot_api", "http://127.0.0.1:58080")),
         "target_groups": cfg.get("target_groups", []),
         "group_aliases": cfg.get("group_aliases", {}) if isinstance(cfg.get("group_aliases", {}), dict) else {},
+        "group_personalities": cfg.get("group_personalities", {}) if isinstance(cfg.get("group_personalities", {}), dict) else {},
         "memory": cfg.get("memory", {"enabled": True, "max_turns": 12, "summary_enabled": True}),
         "tools": cfg.get("tools", {"enabled": True, "allowed": ["get_status", "get_recent_logs", "list_groups", "test_model_channel", "send_probe", "search_messages", "get_group_memory", "vector_search", "list_personas", "list_media"]}),
         "onebot_monitor": cfg.get("onebot_monitor", {"enabled": True, "auto_recover": True}),
@@ -1998,6 +1999,54 @@ def save_group_member_blacklist(data: Dict[str, Any]) -> Dict[str, Any]:
         hot_reload = {"applied": False, "error": str(exc)}
     return {"group_id": group_id, "ignored_ids": user_ids, "count": len(user_ids),
             "hot_reload": hot_reload, "revision": config_revision()}
+
+
+def group_personality_payload(group_id: str) -> Dict[str, Any]:
+    group_id = str(group_id or "").strip()
+    if not group_id.endswith("@chatroom"):
+        raise ValueError("请选择有效的微信群")
+    current = json_read(CONFIG_PATH, {})
+    mapping = current.get("group_personalities") if isinstance(current.get("group_personalities"), dict) else {}
+    raw = mapping.get(group_id) or {}
+    if isinstance(raw, str):
+        raw = {"enabled": True, "name": "", "prompt": raw}
+    return {
+        "group_id": group_id,
+        "item": {
+            "enabled": bool(raw.get("enabled", bool(raw.get("prompt")))),
+            "name": str(raw.get("name") or ""),
+            "prompt": str(raw.get("prompt") or ""),
+        },
+        "revision": config_revision(),
+    }
+
+
+def save_group_personality(data: Dict[str, Any]) -> Dict[str, Any]:
+    group_id = str(data.get("group_id") or "").strip()
+    if not group_id.endswith("@chatroom"):
+        raise ValueError("请选择有效的微信群")
+    enabled = bool(data.get("enabled", False))
+    name = str(data.get("name") or "").strip()[:80]
+    prompt = str(data.get("prompt") or "").strip()
+    if len(prompt) > 6000:
+        raise ValueError("单群性格提示词不能超过 6000 字")
+    if enabled and not prompt:
+        raise ValueError("启用单群性格前请填写性格与表达规则")
+    item = {"enabled": enabled, "name": name, "prompt": prompt}
+    with CONFIG_WRITE_LOCK:
+        current = json_read(CONFIG_PATH, {})
+        mapping = current.get("group_personalities") if isinstance(current.get("group_personalities"), dict) else {}
+        mapping = dict(mapping)
+        mapping[group_id] = item
+        current["group_personalities"] = mapping
+        atomic_write(CONFIG_PATH, json.dumps(current, ensure_ascii=False, indent=2) + "\n")
+    hot_reload: Dict[str, Any] = {"applied": False}
+    try:
+        response = ai_json("/config/reload", "POST", {"config": str(CONFIG_PATH)}, 15)
+        hot_reload = {"applied": response.get("status") == "ok", "response": response}
+    except Exception as exc:
+        hot_reload = {"applied": False, "error": str(exc)}
+    return {"group_id": group_id, "item": item, "hot_reload": hot_reload, "revision": config_revision()}
 
 
 def save_group_aliases(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -3827,6 +3876,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json_response(200, {"ok": True, "data": group_members_catalog(group_id)})
             except Exception as exc:
                 return self.json_response(400, {"ok": False, "error": str(exc)})
+        if path == "/api/groups/personality":
+            try:
+                qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                group_id = str((qs.get("group_id") or [""])[0])
+                return self.json_response(200, {"ok": True, "data": group_personality_payload(group_id)})
+            except Exception as exc:
+                return self.json_response(400, {"ok": False, "error": str(exc)})
         if path in {"/api/group-admins", "/api/group-admins/audit", "/api/group-admins/menu-preview"}:
             try:
                 qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -3924,6 +3980,8 @@ class Handler(BaseHTTPRequestHandler):
                 result = memory_persona_save(data)
             elif path == "/api/groups/ignored-members":
                 result = save_group_member_blacklist(data)
+            elif path == "/api/groups/personality":
+                result = save_group_personality(data)
             elif path == "/api/group-admins/save":
                 result = save_group_admins_api(data)
             elif path == "/api/group-admins/execute":

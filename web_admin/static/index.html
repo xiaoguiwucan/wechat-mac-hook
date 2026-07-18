@@ -394,6 +394,25 @@
               <span id="replyMentionState" class="save-state">选择群聊后可独立设置</span>
             </div>
           </div>
+          <div class="panel group-personality-panel">
+            <div class="panel-head">
+              <div><h2>单群回复性格</h2><p>每个群独立设置机器人说话风格；关闭后继承全局机器人性格</p></div>
+              <button type="button" class="btn primary" id="saveGroupPersonalityBtn">保存并立即生效</button>
+            </div>
+            <div class="panel-body group-personality-body">
+              <div class="group-personality-meta">
+                <div class="field"><label for="groupPersonalityGroup">选择群聊</label><select id="groupPersonalityGroup"></select></div>
+                <label class="toggle-row"><span><strong>启用当前群独立性格</strong><small>只作用于所选群，不影响其他群</small></span><span class="switch"><input id="groupPersonalityEnabled" type="checkbox"><i></i></span></label>
+                <div class="field"><label for="groupPersonalityName">性格名称</label><input id="groupPersonalityName" maxlength="80" placeholder="例如：会接梗的损友"></div>
+                <span id="groupPersonalityState" class="save-state">选择群聊后显示当前配置</span>
+              </div>
+              <div class="field group-personality-prompt">
+                <label for="groupPersonalityPrompt">性格与表达规则 <span><b id="groupPersonalityCount">0</b> / 6000</span></label>
+                <textarea id="groupPersonalityPrompt" rows="7" maxlength="6000" placeholder="例如：你是这个群熟悉大家的损友型群友。说话简短自然，善于理解反话和群梗；严肃问题仍认真回答。"></textarea>
+                <small>保存后由 AI 热加载，PID 不变化；群内管理员的「#性格」命令与这里共用同一份配置。</small>
+              </div>
+            </div>
+          </div>
           <div class="panel member-blacklist-panel">
             <div class="panel-head"><div><h2>群成员目录与对话黑名单</h2><p>优先显示真实群昵称，合并微信实时事件、全部历史发言和引用原话；勾选后可屏蔽其他机器人</p></div><div class="bar-actions"><button type="button" class="btn subtle" id="refreshGroupMembersBtn">刷新成员目录</button><button type="button" class="btn primary" id="saveGroupBlacklistBtn">保存并立即生效</button></div></div>
             <div class="panel-body member-blacklist-body">

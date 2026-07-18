@@ -218,6 +218,19 @@ body{font-size:14px}
 .group-mention-body .save-state{align-self:center;max-width:320px;color:var(--green);line-height:1.45;text-align:right}
 @media(max-width:900px){.group-mention-body{grid-template-columns:1fr 1fr}.group-mention-body .save-state{grid-column:1/-1;max-width:none;text-align:left}}
 @media(max-width:620px){.group-mention-panel .panel-head{align-items:flex-start}.group-mention-panel .panel-head .btn{width:100%}.group-mention-body{grid-template-columns:1fr}.group-mention-body .save-state{grid-column:auto}}
+.group-personality-panel{margin-top:14px;border-color:rgba(37,183,123,.42);box-shadow:0 0 0 1px rgba(37,183,123,.06),0 14px 34px rgba(0,0,0,.16)}
+.group-personality-panel .panel-head{background:linear-gradient(90deg,rgba(37,183,123,.11),transparent 58%)}
+.group-personality-panel .panel-head h2{color:var(--green)}
+.group-personality-body{display:grid;grid-template-columns:minmax(280px,360px) minmax(420px,1fr);gap:16px;align-items:start}
+.group-personality-meta{display:grid;gap:12px}
+.group-personality-meta .toggle-row{min-height:66px}
+.group-personality-prompt textarea{min-height:150px}
+.group-personality-prompt>small{display:block;margin-top:7px;color:var(--dim);font-size:10px;line-height:1.55}
+.group-personality-prompt label>span{color:var(--dim);font:10px ui-monospace,SFMono-Regular,Menlo,monospace}
+.group-personality-prompt label b{color:var(--green)}
+.group-personality-panel .save-state{color:var(--green);line-height:1.5}
+@media(max-width:900px){.group-personality-body{grid-template-columns:1fr}.group-personality-meta{grid-template-columns:1fr 1fr}.group-personality-meta .save-state{grid-column:1/-1}}
+@media(max-width:620px){.group-personality-panel .panel-head{align-items:flex-start}.group-personality-panel .panel-head .btn{width:100%}.group-personality-meta{grid-template-columns:1fr}.group-personality-meta .save-state{grid-column:auto}}
 .member-blacklist-body{display:grid;gap:12px}
 .member-blacklist-toolbar{display:grid;grid-template-columns:minmax(220px,320px) minmax(260px,1fr) auto;gap:12px;align-items:end}
 .member-blacklist-toolbar .save-state{align-self:center;max-width:380px;text-align:right;line-height:1.45}

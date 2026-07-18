@@ -1,6 +1,6 @@
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
-const state = { config: null, status: null, brainConfig: null, replyTasks: [], faceItems: [], pokeFaceIds: new Set(), channels: [], selectedChannelId: '', channelHealth: {}, groupCatalog: [], groupMemberCatalog: {}, groupMemberCatalogMeta: {}, ignoredGroupMembers: {}, groupAdmins: {}, groupAdminRoles: {}, groupAdminPermissions: [], groupAdminPreviewUserId: '', persona: { members: [], selectedUserId: '', detail: null, tab: 'overview', refreshTimer: null }, dirty: false, logs: [], source: 'all', miniSource: 'all', paused: false, eventSource: null, traceDiagnostic: null };
+const state = { config: null, status: null, brainConfig: null, replyTasks: [], faceItems: [], pokeFaceIds: new Set(), channels: [], selectedChannelId: '', channelHealth: {}, groupCatalog: [], groupMemberCatalog: {}, groupMemberCatalogMeta: {}, ignoredGroupMembers: {}, groupPersonalities: {}, groupAdmins: {}, groupAdminRoles: {}, groupAdminPermissions: [], groupAdminPreviewUserId: '', persona: { members: [], selectedUserId: '', detail: null, tab: 'overview', refreshTimer: null }, dirty: false, logs: [], source: 'all', miniSource: 'all', paused: false, eventSource: null, traceDiagnostic: null };
 const pageMeta = {
   overview: ['运行总览', '第二微信、OneBot 与 AI 服务'], ai: ['模型配置', '对话、生图、OCR 与 ASR 模型配置'],
   groups: ['群聊策略', '目标群与自动回复规则'], brain: ['群聊大脑', '接话门槛、七维评分与并发策略'],
@@ -572,6 +572,7 @@ function applyProviderPreset(key, target = 'current') {
 
 function fillConfig(c) {
   state.config = c;
+  state.groupPersonalities = c.group_personalities && typeof c.group_personalities === 'object' ? { ...c.group_personalities } : {};
   state.channels = c.channels.map(x => ({ ...x })); state.selectedChannelId = c.active_channel_id || state.channels[0]?.id || '';
   $('#temperature').value = c.temperature; $('#temperatureValue').value = c.temperature;
   $('#maxTokens').value = c.max_tokens; $('#systemPrompt').value = c.system_prompt;
@@ -716,6 +717,7 @@ function updateBlacklistGroupOptions() {
   updateBlacklistCount();
   updateGroupAdminOptions();
   updateReplyMentionOptions();
+  updateGroupPersonalityOptions();
 }
 
 function updateGroupAdminOptions() {
@@ -733,6 +735,65 @@ function updateReplyMentionOptions() {
   select.innerHTML = groups.map(x => `<option value="${escapeHtml(x.id)}">${escapeHtml(groupSelectLabel(x))}</option>`).join('');
   if ([...select.options].some(x => x.value === old)) select.value = old;
   renderReplyMentionSetting();
+}
+
+function updateGroupPersonalityOptions() {
+  const select = $('#groupPersonalityGroup'); if (!select) return;
+  const old = select.value;
+  const groups = state.groupCatalog.filter(x => x.id?.endsWith('@chatroom'));
+  select.innerHTML = groups.map(x => `<option value="${escapeHtml(x.id)}">${escapeHtml(groupSelectLabel(x))}</option>`).join('');
+  if ([...select.options].some(x => x.value === old)) select.value = old;
+  renderGroupPersonalitySetting();
+}
+
+function normalizeGroupPersonality(value) {
+  if (typeof value === 'string') return { enabled: true, name: '', prompt: value };
+  const item = value && typeof value === 'object' ? value : {};
+  return { enabled: !!item.enabled, name: String(item.name || ''), prompt: String(item.prompt || '') };
+}
+
+function renderGroupPersonalitySetting() {
+  const groupId = $('#groupPersonalityGroup')?.value || '';
+  const item = normalizeGroupPersonality(state.groupPersonalities[groupId]);
+  if ($('#groupPersonalityEnabled')) $('#groupPersonalityEnabled').checked = item.enabled;
+  if ($('#groupPersonalityName')) $('#groupPersonalityName').value = item.name;
+  if ($('#groupPersonalityPrompt')) $('#groupPersonalityPrompt').value = item.prompt;
+  if ($('#groupPersonalityCount')) $('#groupPersonalityCount').textContent = String(item.prompt.length);
+  if ($('#groupPersonalityState')) {
+    $('#groupPersonalityState').textContent = !groupId
+      ? '请选择群聊'
+      : item.prompt
+        ? `当前群独立配置：${item.enabled ? '已启用' : '已关闭'}${item.name ? ` · ${item.name}` : ''}`
+        : '尚未设置，当前继承全局机器人性格';
+  }
+}
+
+function markGroupPersonalityPending() {
+  const name = $('#groupPersonalityName')?.value.trim() || '未命名性格';
+  if ($('#groupPersonalityCount')) $('#groupPersonalityCount').textContent = String($('#groupPersonalityPrompt')?.value.length || 0);
+  if ($('#groupPersonalityState')) $('#groupPersonalityState').textContent = `待保存：${$('#groupPersonalityEnabled')?.checked ? '启用' : '关闭'} · ${name}`;
+}
+
+async function saveGroupPersonalitySetting(button) {
+  const groupId = $('#groupPersonalityGroup')?.value || '';
+  const enabled = !!$('#groupPersonalityEnabled')?.checked;
+  const name = $('#groupPersonalityName')?.value.trim() || '';
+  const prompt = $('#groupPersonalityPrompt')?.value.trim() || '';
+  if (!groupId) { toast('请先选择群聊', 'error'); return; }
+  if (enabled && !prompt) { toast('启用单群性格前请填写性格与表达规则', 'error'); $('#groupPersonalityPrompt')?.focus(); return; }
+  setBusy(button, true, '保存中…');
+  try {
+    const result = await api('/api/groups/personality', {
+      method: 'POST', body: JSON.stringify({ group_id: groupId, enabled, name, prompt })
+    });
+    state.groupPersonalities[groupId] = result.item;
+    renderGroupPersonalitySetting();
+    toast(result.hot_reload?.applied
+      ? `单群性格已实时生效，AI PID ${result.hot_reload.response?.data?.pid || '未变化'}`
+      : `配置已保存，热加载失败：${result.hot_reload?.error || '未知错误'}`,
+      result.hot_reload?.applied ? 'success' : 'error', 7000);
+  } catch (e) { toast(`单群性格保存失败：${e.message}`, 'error', 7000); }
+  finally { setBusy(button, false); }
 }
 
 function renderReplyMentionSetting() {
@@ -2268,6 +2329,11 @@ function bind() {
     $('#replyMentionState').textContent = `待保存：${$('#replyMentionEnabled').checked ? '回复时艾特' : '不艾特'}`;
   };
   $('#saveReplyMentionBtn').onclick = e => saveReplyMentionSetting(e.currentTarget);
+  $('#groupPersonalityGroup').onchange = renderGroupPersonalitySetting;
+  $('#groupPersonalityEnabled').onchange = markGroupPersonalityPending;
+  $('#groupPersonalityName').oninput = markGroupPersonalityPending;
+  $('#groupPersonalityPrompt').oninput = markGroupPersonalityPending;
+  $('#saveGroupPersonalityBtn').onclick = e => saveGroupPersonalitySetting(e.currentTarget);
   $('#groupAdminGroup').onchange = () => loadGroupAdmins();
   $('#groupAdminSearch').oninput = renderGroupAdminPanel;
   $('#saveGroupAdminsBtn').onclick = e => saveGroupAdmins(e.currentTarget);
