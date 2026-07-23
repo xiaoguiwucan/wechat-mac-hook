@@ -108,13 +108,15 @@ class HermesAutomationService:
                 self.state["last_error"] = str(exc)[:500]
             return False
 
-    def _queue_run(self, row: Dict[str, Any], trace_id: str = "") -> Dict[str, Any]:
+    def _queue_run(self, row: Dict[str, Any], trace_id: str = "",
+                   purpose: str = "automation") -> Dict[str, Any]:
         run_id = str(row["run_id"])
         task = {
             "run_id": run_id, "group_id": str(row.get("group_id") or ""),
             "user_id": str(row.get("user_id") or ""), "trace_id": trace_id or run_id,
             "intent": str(row.get("intent") or ""), "risk_level": str(row.get("risk_level") or "read"),
             "source_event_id": str(row.get("source_event_id") or ""),
+            "purpose": "answer" if purpose == "answer" else "automation",
         }
         try:
             self.tasks.put_nowait(task)
@@ -123,9 +125,14 @@ class HermesAutomationService:
             return {"accepted": False, "run_id": run_id, "message": "自动化队列已满，请稍后重试。"}
         with self.lock:
             self.state["queued"] += 1
+        message = (
+            "我正在调用 Hermes 的工具查询，查到后直接回复你。"
+            if task["purpose"] == "answer" else
+            f"任务已接收（{run_id[-8:]}），完成后我会把结果发回群里。"
+        )
         return {
             "accepted": True, "run_id": run_id,
-            "message": f"任务已接收（{run_id[-8:]}），完成后我会把结果发回群里。",
+            "message": message,
         }
 
     def submit(self, event: Any, route: Dict[str, Any],
@@ -156,7 +163,10 @@ class HermesAutomationService:
             })
             return {"accepted": False, "approval_required": True, "run_id": run_id,
                     "message": "这个操作风险较高，已暂停，等待项目所有者确认。"}
-        return self._queue_run(row, str(getattr(event, "trace_id", "") or run_id))
+        purpose = "answer" if str(route.get("hermes_mode") or "") == "answer" else "automation"
+        return self._queue_run(
+            row, str(getattr(event, "trace_id", "") or run_id), purpose=purpose
+        )
 
     def submit_manual(self, group_id: str, intent: str, risk_level: str = "write") -> Dict[str, Any]:
         event_id = f"web-admin|{time.time_ns()}"
@@ -225,12 +235,22 @@ class HermesAutomationService:
     def _execute(self, task: Dict[str, Any]) -> None:
         local_run_id = str(task["run_id"])
         self.store.update_automation_run(local_run_id, status="starting")
-        instructions = (
-            "你是微信项目运维自动化执行器。只在允许的工作区执行任务；"
-            "保留现有单微信进程，不启动第二个微信；运行测试后再提交或部署；"
-            "不要输出密钥；返回简洁的中文执行总结。"
-            f"\n允许工作区：{self.cfg.workspace}"
-        )
+        answer_mode = str(task.get("purpose") or "") == "answer"
+        if answer_mode:
+            instructions = (
+                "你是微信群机器人的工具执行层。必须按问题需要主动调用天气、网页搜索、"
+                "浏览器、文件、代码或其他可用工具获取真实结果；优先使用最新数据，"
+                "不得用模型记忆猜测实时信息。直接用简洁中文回答原问题，不提内部任务、"
+                "Hermes、自动化编号或工具过程；只读查询不得修改文件或服务。"
+                f"\n允许工作区：{self.cfg.workspace}"
+            )
+        else:
+            instructions = (
+                "你是微信项目运维自动化执行器。只在允许的工作区执行任务；"
+                "保留现有单微信进程，不启动第二个微信；运行测试后再提交或部署；"
+                "不要输出密钥；返回简洁的中文执行总结。"
+                f"\n允许工作区：{self.cfg.workspace}"
+            )
         created = self._request("POST", "/v1/runs", {
             "input": task["intent"],
             "session_id": f"wechat-{task['group_id']}",
@@ -261,9 +281,11 @@ class HermesAutomationService:
             local_run_id, status="completed", result_summary=output[:4000], error=""
         )
         self.store.add_automation_event(local_run_id, "completed", final)
+        message = output[:1800] if answer_mode else (
+            f"自动化任务已完成（{local_run_id[-8:]}）\n{output[:1200]}"
+        )
         self.send_callback(
-            str(task["group_id"]),
-            f"自动化任务已完成（{local_run_id[-8:]}）\n{output[:1200]}",
+            str(task["group_id"]), message,
             str(task.get("trace_id") or local_run_id),
         )
         with self.lock:

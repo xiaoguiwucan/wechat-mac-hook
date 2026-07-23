@@ -1586,7 +1586,17 @@ class AIReplyService:
             "运行测试", "构建", "部署", "重启服务", "恢复服务", "服务状态",
             "健康检查", "定时任务", "监控",
         )
-        local_automation = any(term in text.lower() for term in automation_terms)
+        capability_terms = (
+            "天气", "气温", "温度", "降雨", "空气质量", "台风",
+            "实时", "最新消息", "最新新闻", "今天新闻", "热搜",
+            "股价", "股票价格", "汇率", "金价", "油价", "比赛结果",
+            "查一下", "查询一下", "搜一下", "搜索一下", "帮我查",
+            "网上查", "联网查", "浏览网页", "打开网页", "官网", "网址", "链接",
+        )
+        lower_text = text.lower()
+        local_automation = any(term in lower_text for term in automation_terms)
+        local_capability = any(term in lower_text for term in capability_terms)
+        local_hermes = local_automation or local_capability
         high_terms = ("强制推送", "force push", "删除", "密钥", "生产部署", "回滚")
         write_terms = (
             "提交", "推送", "更新", "测试", "构建", "部署", "重启",
@@ -1601,9 +1611,10 @@ class AIReplyService:
             "available": False,
             "reply_required": bool(mandatory),
             "memory_ids": [],
-            "automation_required": local_automation,
-            "automation_intent": text[:500] if local_automation else "",
+            "automation_required": local_hermes,
+            "automation_intent": text[:500] if local_hermes else "",
             "risk_level": local_risk if local_automation else "read",
+            "hermes_mode": "automation" if local_automation else "answer",
             "model": "",
             "reason": "local_fallback",
         }
@@ -1636,7 +1647,9 @@ class AIReplyService:
             "automation_required(bool), automation_intent(string), "
             "risk_level(read|write|high), reason(string)。"
             "明确@机器人、引用机器人、叫机器人名字或直接提问时 reply_required 必须为 true。"
-            "只有需要操作代码、GitHub、测试、部署、监控或定时任务时 automation_required 才为 true。"
+            "需要实时天气、新闻、价格、比赛、联网搜索、浏览网页、读取外部资源、调用工具，"
+            "或者操作代码、GitHub、测试、部署、监控、定时任务时 automation_required 必须为 true。"
+            "纯聊天和可直接可靠回答的常识才为 false。"
             "memory_ids只能从候选ID中选择，不相关记忆不要选。\n"
             f"强制触发={mandatory}\n当前消息={evt.sender_name}: {evt.text[:800]}\n"
             "最近对话=\n" + "\n".join(recent_lines) +
@@ -1672,6 +1685,10 @@ class AIReplyService:
                 "automation_intent": str(parsed.get("automation_intent") or "")[:500],
                 "risk_level": str(parsed.get("risk_level") or "read")
                     if str(parsed.get("risk_level") or "read") in {"read", "write", "high"} else "high",
+                "hermes_mode": (
+                    "automation" if str(parsed.get("risk_level") or "read") in {"write", "high"}
+                    else "answer"
+                ),
                 "model": cfg.model,
                 "reason": str(parsed.get("reason") or "")[:300],
             }
@@ -2677,6 +2694,27 @@ class AIReplyService:
             hist.append(("AI", ai_text))
         self.save_memory()
 
+    @staticmethod
+    def reply_needs_hermes(text: str) -> bool:
+        """Detect a model capability failure before that failure is sent to the group."""
+        value = re.sub(r"\s+", "", str(text or "")).lower()
+        if not value:
+            return False
+        direct_markers = (
+            "拿不到实时数据", "没有实时数据", "无法获取实时", "不能获取实时",
+            "无法联网", "不能联网", "无法浏览网页", "不能浏览网页",
+            "无法访问互联网", "不能访问互联网", "无法搜索网络", "不能搜索网络",
+            "无法确认最新", "无法得知最新",
+        )
+        if any(marker in value for marker in direct_markers):
+            return True
+        limitation = any(marker in value for marker in ("无法", "不能", "没法", "不具备"))
+        capability = any(marker in value for marker in (
+            "获取", "查询", "搜索", "访问", "联网", "浏览", "打开", "读取",
+            "执行", "确认", "实时", "最新", "外部数据", "工具",
+        ))
+        return limitation and capability
+
     def handle_event(self, evt: OneBotEvent) -> None:
         log("info", "reply_job_start", group_id=evt.group_id, group_name=evt.group_name,
             message_id=evt.message_id, text=evt.text[:300], trace_id=evt.trace_id)
@@ -2744,6 +2782,26 @@ class AIReplyService:
             return
         decision = ReplyDecision(text=str(raw_reply), medium="text") if command is not None else self.parse_reply_decision(raw_reply)
         task = self._task_for_event(evt)
+        if command is None and self.reply_needs_hermes(decision.text):
+            route = {
+                "automation_required": True,
+                "automation_intent": evt.text[:500],
+                "risk_level": "read",
+                "hermes_mode": "answer",
+                "reason": "model_capability_fallback",
+            }
+            result = self.hermes.submit(evt, route)
+            message = str(result.get("message") or "工具调用未能接收。")
+            if not self.cfg.dry_run:
+                self.send_group_msg(evt.group_id, message, evt.trace_id, evt)
+            self._record_history(evt, message)
+            if task:
+                self.task_registry.update(
+                    task, "completed" if result.get("accepted") else "failed",
+                    result="hermes_capability_queued" if result.get("accepted") else "hermes_capability_rejected",
+                    details={**(task.details or {}), "hermes_capability": result},
+                )
+            return
         legacy_marker = decision.reason == "legacy_marker"
         selected_medium = "text"
         selected_item: Dict[str, Any] = {}

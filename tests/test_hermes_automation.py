@@ -71,6 +71,18 @@ class HermesAutomationTests(unittest.TestCase):
             "cancelled",
         )
 
+    def test_read_capability_query_is_queued_as_direct_answer(self):
+        self.event.text = "上海现在天气怎么样"
+        result = self.service.submit(self.event, {
+            "risk_level": "read",
+            "automation_intent": self.event.text,
+            "hermes_mode": "answer",
+        })
+        self.assertTrue(result["accepted"])
+        self.assertIn("调用 Hermes", result["message"])
+        queued = self.service.tasks.get_nowait()
+        self.assertEqual(queued["purpose"], "answer")
+
 
 if __name__ == "__main__":
     unittest.main()

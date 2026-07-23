@@ -57,6 +57,11 @@ PYTHONPATH=tools/runtime/python python3 scripts/migrate_sqlite_to_postgres.py
 - `write`：必须是后台配置的群管理员。
 - `high`：删除、强推、密钥、生产部署和回滚进入确认状态，不直接执行。
 
+实时天气、新闻、价格、比赛、联网搜索、网页读取等问题会以 `read` 模式转给
+Hermes 工具层。普通模型如果生成“无法获取实时数据、不能联网或不能访问网页”
+一类能力失败回复，也会在发送到群前被拦截，自动改由 Hermes 查询并直接返回
+自然语言答案。代码修改、部署等操作仍按 `write/high` 权限处理。
+
 每个自动化任务在 SQLite 中保存发起群、成员、原消息、Hermes run ID、工具事件
 和最终结果。创建任务后立即回执，最终结果异步回群。
 
