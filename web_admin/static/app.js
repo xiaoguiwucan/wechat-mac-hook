@@ -7,6 +7,7 @@ const pageMeta = {
   overview: ['运行总览', '当前微信、OneBot 与 AI 服务'], ai: ['模型配置', '对话、生图、OCR 与 ASR 模型配置'],
   groups: ['群聊策略', '目标群与自动回复规则'], brain: ['群聊大脑', '接话门槛、七维评分与并发策略'],
   personas: ['USR 用户画像', '永久档案、行为统计、关系与原话证据'],
+  'memory-infra': ['记忆与自动化', '中央主库、媒体归档、关系图与 Hermes 状态'],
   'reply-tasks': ['实时对话', '回复线程、任务阶段与耗时'], vector: ['本地向量', 'oMLX 模型、检索与永久记忆回填'],
   tests: ['评估看板', '验证模型、Hook 与完整回调链路'], media: ['图片图库', '图片 OCR、文件/视频索引与媒体记忆'],
   'voice-records': ['语音内容', '群语音泡、ASR 转写与语音记忆'],
@@ -17,7 +18,7 @@ const pageMeta = {
 const pageWorkspace = {
   overview: 'runtime',
   ai: 'intelligence', groups: 'intelligence', brain: 'intelligence', 'reply-tasks': 'intelligence', tests: 'intelligence',
-  personas: 'memory', vector: 'memory', memory: 'memory',
+  personas: 'memory', 'memory-infra': 'memory', vector: 'memory', memory: 'memory',
   media: 'assets', 'voice-records': 'assets', voices: 'assets', faces: 'assets',
   logs: 'diagnostics'
 };
@@ -45,6 +46,7 @@ const orbitalPageDesigns = {
   voices: { tone: 'violet', icon: 'ph-speaker-high', code: 'VOICE PACK ORBIT', title: '语音包素材引擎', description: '按分组管理 SILK 素材，通过标题、分类与语义选择最合适的接话。', state: '语音检索在线', nodes: [['ph-package', '语音分组', 'PACK', '独立管理'], ['ph-file-audio', '原始格式', 'SILK', '快速发送'], ['ph-magnifying-glass', '语义推荐', 'VECTOR', '上下文匹配']] },
   faces: { tone: 'violet', icon: 'ph-smiley', code: 'REACTION ORBIT', title: '表情反应素材库', description: '用 OCR、别名、情绪和意图快速找到符合当前语境的表情。', state: '表情检索在线', nodes: [['ph-fingerprint', '去重收藏', 'HASH', '稳定 face_key'], ['ph-smiley', '情绪意图', 'TAG', '上下文适配'], ['ph-vector-three', '语义检索', 'VEC', '快速命中']] },
   personas: { tone: 'mint', icon: 'ph-user-focus', code: 'PERSONA ORBIT', title: '永久人物认知图谱', description: '按群隔离保存成员档案、行为、关系、群梗与可追溯原话。', state: '永久画像系统', nodes: [['ph-clock-counter-clockwise', '行为统计', '7×24', '全历史'], ['ph-share-network', '关系网络', 'TOP 20', '真实互动'], ['ph-quotes', '原话证据', 'TRACE', '可追溯']] },
+  'memory-infra': { tone: 'mint', icon: 'ph-share-network', code: 'DURABLE MEMORY', title: '中央记忆与自动化总线', description: '用可靠缓冲、中央主库、永久媒体、时序关系图和异步工具执行组成完整记忆链。', state: '多服务实时检测', nodes: [['ph-database', '中央主库', 'PG', '全文与向量'], ['ph-images', '媒体归档', 'MINIO', '哈希去重'], ['ph-git-branch', '关系记忆', 'GRAPH', '时序事实'], ['ph-robot', '自动化', 'HERMES', '异步执行']] },
   memory: { tone: 'cyan', icon: 'ph-database', code: 'MEMORY ORBIT', title: '永久记忆数据库', description: '消息、人物、群梗、媒体与向量共同组成严格群隔离的记忆层。', state: 'WAL 永久存储', nodes: [['ph-text-columns', '全文检索', 'FTS5', '精确命中'], ['ph-vector-three', '语义召回', 'VECTOR', '久远记忆'], ['ph-lock-key', '群聊隔离', 'STRICT', '禁止串群']] },
   logs: { tone: 'mint', icon: 'ph-terminal-window', code: 'TELEMETRY ORBIT', title: '实时遥测终端', description: '聚合 AI 与 OneBot 事件，以 trace_id 还原每一次回复链路。', state: '日志流连接中', nodes: [['ph-broadcast', '事件通道', 'SSE', '实时推送'], ['ph-funnel', '多维筛选', 'LIVE', '群与级别'], ['ph-path', '链路标识', 'TRACE_ID', '完整定位']] }
 };
@@ -282,6 +284,7 @@ function showPage(name) {
   if (name === 'faces') requestAnimationFrame(() => { loadFaces(null, true); loadMediaReplyStats(true); });
   if (name === 'groups') requestAnimationFrame(() => loadGroupMembers(null, true));
   if (name === 'personas') { $('#page-personas').dataset.mobilePane = 'directory'; requestAnimationFrame(() => loadPersonaMembers(true)); }
+  if (name === 'memory-infra') requestAnimationFrame(() => refreshMemoryInfrastructure(true));
   if (name === 'brain') requestAnimationFrame(runOrbitSequence);
   else requestAnimationFrame(() => animatePageSignal(name));
   if (name === 'memory' && $('#memoryResults')?.textContent?.includes('选择左侧操作')) {
@@ -1284,6 +1287,101 @@ async function refreshMemoryStats(silent = false) {
       <section class="memory-stat-group recency"><header>最近活动</header><div><span title="${escapeHtml(latest)}">${escapeHtml(latest)}</span><small>最新入库</small></div></section>
       <code>${escapeHtml(r.db_path)}</code>`;
   } catch (e) { if (!silent) toast(`记忆库统计失败：${e.message}`, 'error'); }
+}
+
+function infraCard(name) { return $(`[data-infra-service="${name}"]`); }
+function setInfraCard(name, stateName, label, fields = {}, note = '') {
+  const card = infraCard(name); if (!card) return;
+  card.classList.remove('running', 'stopped', 'degraded');
+  card.classList.add(stateName);
+  $('.status-badge', card).textContent = label;
+  Object.entries(fields).forEach(([key, value]) => {
+    const node = $(`[data-field="${key}"]`, card); if (node) node.textContent = value;
+  });
+  const noteNode = $('[data-field="note"]', card); if (noteNode) {
+    noteNode.textContent = note || '运行正常';
+    noteNode.title = note || '';
+  }
+}
+
+function infraCounts(value = {}) {
+  const entries = Object.entries(value || {}).filter(([, count]) => Number(count) > 0);
+  return entries.length ? entries.map(([name, count]) => `${name} ${count}`).join(' · ') : '0';
+}
+
+async function refreshMemoryInfrastructure(silent = false, button = null) {
+  if (button) setBusy(button, true, '刷新中…');
+  try {
+    const r = await api('/api/memory/infrastructure');
+    const local = r.local || {}, outbox = local.outbox || {}, pg = r.postgres || {};
+    const minio = r.minio || {}, graph = r.graphiti || {}, hermes = r.hermes || {};
+    const router = r.router || {}, embedding = r.embedding || {};
+    const overallLabel = { healthy: '全部核心服务在线', degraded: '部分服务降级', offline: '服务离线' }[r.overall] || '状态未知';
+    $('#infraOverall').className = `infra-overall ${r.overall || 'degraded'}`;
+    $('#infraOverall').textContent = overallLabel;
+    $('#infraCheckedAt').textContent = `检查于 ${r.checked_at || '--'}`;
+    $('#infraCentralEvents').textContent = Number(pg.events || 0).toLocaleString();
+    $('#infraOutboxPending').textContent = Number(outbox.pending || 0).toLocaleString();
+    $('#infraMediaCount').textContent = Number(minio.stored_media || 0).toLocaleString();
+    $('#infraDeadline').textContent = `${router.retrieval_deadline_ms || 250}ms`;
+
+    const localHealthy = Number(outbox.failed || 0) === 0;
+    setInfraCard('sqlite', localHealthy ? 'running' : 'degraded', localHealthy ? '缓冲正常' : '存在失败', {
+      messages: Number(local.messages || 0).toLocaleString(),
+      synced: Number(outbox.synced || 0).toLocaleString(),
+      pending: Number(outbox.pending || 0).toLocaleString(),
+    }, outbox.oldest_pending ? `最早待同步：${outbox.oldest_pending}` : '当前没有积压，断网后会自动续传');
+
+    const pgHealthy = Boolean(pg.healthy);
+    setInfraCard('postgres', pgHealthy ? 'running' : 'stopped', pgHealthy ? '中央主库在线' : '连接失败', {
+      events: Number(pg.events || 0).toLocaleString(),
+      vectors: Number(pg.embeddings || 0).toLocaleString(),
+      extensions: (pg.extensions || []).join(' + ') || '--',
+    }, pgHealthy ? `事实 ${pg.facts || 0} · 摘要 ${pg.summaries || 0} · HNSW 可重建` : (pg.error || '中央数据库不可用'));
+
+    setInfraCard('minio', minio.healthy ? 'running' : 'stopped', minio.healthy ? '对象存储在线' : '连接失败', {
+      media: Number(minio.stored_media || 0).toLocaleString(),
+      bucket: minio.bucket || '--',
+      endpoint: minio.endpoint || '--',
+    }, minio.healthy ? '媒体原件独立保存，数据库只保留索引与哈希' : (minio.error || '对象存储不可用'));
+
+    const graphDegraded = Boolean(graph.failed || graph.last_error);
+    setInfraCard('graphiti', graph.healthy ? (graphDegraded ? 'degraded' : 'running') : 'stopped',
+      graph.healthy ? (graphDegraded ? '在线·正在重试' : '关系图在线') : '关系图离线', {
+        pending: Number(graph.pending_jobs || 0).toLocaleString(),
+        processed: Number(graph.processed || 0).toLocaleString(),
+        failed: Number(graph.failed || 0).toLocaleString(),
+      }, graph.last_error || '人物、事件、偏好和关系在后台异步构建');
+
+    setInfraCard('hermes', hermes.healthy ? 'running' : 'stopped', hermes.healthy ? '自动化在线' : '自动化离线', {
+      queued: Number(hermes.queued || 0).toLocaleString(),
+      running: Number(hermes.running || 0).toLocaleString(),
+      completed: Number(hermes.completed || 0).toLocaleString(),
+    }, hermes.last_error || 'GitHub、测试、部署和监控走独立工作池');
+
+    setInfraCard('router', router.healthy ? 'running' : 'degraded', router.healthy ? '回复链路在线' : '使用规则降级', {
+      router: router.model || '--',
+      final: router.final_model || '--',
+      local: embedding.local_model_disabled ? '已停用·省内存' : '运行中',
+    }, `${router.retrieval_deadline_ms || 250}ms 总截止；超时使用${router.fallback || '缓存'}直接回答`);
+
+    $('#infraSyncBadge').textContent = Number(outbox.pending || 0) ? `积压 ${outbox.pending}` : '无积压';
+    $('#infraSyncBadge').className = Number(outbox.pending || 0) ? 'warn' : 'good';
+    $('#infraSyncDetails').innerHTML = `<p><span>本地消息</span><b>${Number(local.messages || 0).toLocaleString()}</b></p><p><span>成功同步</span><b>${Number(outbox.synced || 0).toLocaleString()}</b></p><p><span>中央去重记录</span><b>${Number(pg.events || 0).toLocaleString()}</b></p>`;
+    $('#infraGraphBadge').textContent = graph.healthy ? '后台在线' : '已降级';
+    $('#infraGraphBadge').className = graph.healthy ? (graphDegraded ? 'warn' : 'good') : 'bad';
+    $('#infraGraphDetails').innerHTML = `<p><span>任务分布</span><b>${escapeHtml(infraCounts(graph.job_counts))}</b></p><p><span>FalkorDB</span><b>${r.services?.falkordb ? '在线' : '离线'}</b></p><p><span>回复线程</span><b>不等待图构建</b></p>`;
+    $('#infraHermesBadge').textContent = hermes.healthy ? 'API 在线' : '离线';
+    $('#infraHermesBadge').className = hermes.healthy ? 'good' : 'bad';
+    $('#infraHermesDetails').innerHTML = `<p><span>本地任务</span><b>${escapeHtml(infraCounts(hermes.local_runs))}</b></p><p><span>中央任务</span><b>${escapeHtml(infraCounts(hermes.central_runs))}</b></p><p><span>实时槽位</span><b>与回复线程隔离</b></p>`;
+    $('#infraFallbackDetails').innerHTML = `<p><span>路由模型</span><b>${escapeHtml(router.model || '--')}</b></p><p><span>最终模型</span><b>${escapeHtml(router.final_model || '--')}</b></p><p><span>深层检索超时</span><b>${router.retrieval_deadline_ms || 250}ms 后用缓存回答</b></p>`;
+  } catch (e) {
+    $('#infraOverall').className = 'infra-overall offline';
+    $('#infraOverall').textContent = '状态接口失败';
+    if (!silent) toast(`中央记忆状态获取失败：${e.message}`, 'error');
+  } finally {
+    if (button) setBusy(button, false);
+  }
 }
 
 function setMemoryMode(title, sub, mode) {
@@ -2421,6 +2519,7 @@ function bind() {
   $$('.test-run').forEach(x => x.onclick = () => runTest(x.dataset.test, x));
   $('#clearTestConsole').onclick = () => { $('#testConsole').innerHTML = '<p class="muted">// 测试控制台已清空</p>'; };
   $('#refreshMemoryBtn').onclick = () => refreshMemoryStats(); $('#searchMemoryBtn').onclick = e => searchMemory(e.currentTarget); $('#vectorSearchBtn').onclick = e => vectorSearch(e.currentTarget);
+  $('#refreshInfraBtn').onclick = e => refreshMemoryInfrastructure(false, e.currentTarget);
   $('#loadMembersBtn').onclick = e => loadMembers(e.currentTarget); $('#loadMediaBtn').onclick = e => loadMedia(e.currentTarget);
   $('#mediaRefreshBtn').onclick = e => loadMediaCenter(e.currentTarget); $('#mediaSearchBtn').onclick = e => loadMediaCenter(e.currentTarget); $('#mediaOpenMemoryBtn').onclick = () => showPage('memory');
   $$('#mediaGroup,#mediaType,#mediaStatus').forEach(x => x.addEventListener('change', () => loadMediaCenter(null, true)));
@@ -2485,6 +2584,7 @@ async function init() {
   setInterval(() => { if ($('#page-groups').classList.contains('active') && !state.dirty) loadDiscoveredGroups(true); }, 30000);
   setInterval(() => { if ($('#page-media').classList.contains('active')) loadMediaCenter(null, true); }, 5000);
   setInterval(() => { if ($('#page-voice-records')?.classList.contains('active')) loadVoiceRecords(null, true); }, 5000);
+  setInterval(() => { if ($('#page-memory-infra')?.classList.contains('active')) refreshMemoryInfrastructure(true); }, 5000);
   setInterval(() => refreshReplyTasks(true), 3000);
 }
 init();

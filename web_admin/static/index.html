@@ -45,6 +45,7 @@
       <section class="context-group" data-workspace-group="memory">
         <div class="context-title"><span>长期记忆</span><small>BRAIN</small></div>
         <button class="nav-item" data-page="personas"><i class="ph ph-user-focus"></i><span>用户画像</span></button>
+        <button class="nav-item" data-page="memory-infra"><i class="ph ph-share-network"></i><span>记忆与自动化</span></button>
         <button class="nav-item" data-page="vector"><i class="ph ph-vector-three"></i><span>本地向量</span></button>
         <button class="nav-item" data-page="memory"><i class="ph ph-database"></i><span>记忆数据库</span></button>
       </section>
@@ -242,6 +243,71 @@
             </div>
           </div>
         </form>
+      </section>
+
+      <section class="page" id="page-memory-infra">
+        <div class="page-bar">
+          <div><h2>中央记忆与 Hermes 自动化</h2><p>PostgreSQL、MinIO、Graphiti/FalkorDB、SQLite 缓冲和 Hermes 的真实运行状态</p></div>
+          <div class="bar-actions"><span class="infra-overall" id="infraOverall">正在检测</span><button class="btn primary" id="refreshInfraBtn"><i class="ph ph-arrow-clockwise"></i>刷新状态</button></div>
+        </div>
+        <section class="panel infra-summary">
+          <div class="infra-kpis">
+            <article><span>中央消息</span><strong id="infraCentralEvents">--</strong><small>PostgreSQL chat_events</small></article>
+            <article><span>本地缓冲</span><strong id="infraOutboxPending">--</strong><small>等待同步 / 重试</small></article>
+            <article><span>媒体归档</span><strong id="infraMediaCount">--</strong><small>MinIO 索引对象</small></article>
+            <article><span>记忆截止</span><strong id="infraDeadline">250ms</strong><small>超时立即降级回答</small></article>
+          </div>
+          <div class="infra-flow">
+            <div><b>01</b><strong>OneBot → SQLite</strong><small>消息先事务入队，断网和重启可重放</small></div>
+            <i class="ph ph-arrow-right"></i>
+            <div><b>02</b><strong>PostgreSQL + MinIO</strong><small>原始消息、媒体与来源证据永久归档</small></div>
+            <i class="ph ph-arrow-right"></i>
+            <div><b>03</b><strong>多路记忆召回</strong><small>PGroonga、pgvector 与 Graphiti 并行</small></div>
+            <i class="ph ph-arrow-right"></i>
+            <div><b>04</b><strong>快速回复 / Hermes</strong><small>实时回答与异步自动化互不抢占</small></div>
+          </div>
+        </section>
+        <div class="infra-service-grid" id="infraServiceGrid">
+          <article class="status-card degraded" data-infra-service="sqlite">
+            <div class="card-top"><div class="service-name"><span class="service-mark ob">SQL</span><div><h3>Mac SQLite 缓冲</h3><small>可靠入队与断线重放</small></div></div><span class="status-badge">检测中</span></div>
+            <dl><div><dt>本地消息</dt><dd data-field="messages">--</dd></div><div><dt>已同步</dt><dd data-field="synced">--</dd></div><div><dt>待同步</dt><dd data-field="pending">--</dd></div></dl>
+            <p class="infra-card-note" data-field="note">读取本地可靠缓冲状态</p>
+          </article>
+          <article class="status-card degraded" data-infra-service="postgres">
+            <div class="card-top"><div class="service-name"><span class="service-mark ai">PG</span><div><h3>PostgreSQL 中央主库</h3><small>PGroonga + pgvector/HNSW</small></div></div><span class="status-badge">检测中</span></div>
+            <dl><div><dt>消息</dt><dd data-field="events">--</dd></div><div><dt>向量</dt><dd data-field="vectors">--</dd></div><div><dt>扩展</dt><dd data-field="extensions">--</dd></div></dl>
+            <p class="infra-card-note" data-field="note">读取中央数据库状态</p>
+          </article>
+          <article class="status-card degraded" data-infra-service="minio">
+            <div class="card-top"><div class="service-name"><span class="service-mark ai">OBJ</span><div><h3>MinIO 媒体归档</h3><small>图片、语音、表情与文件原件</small></div></div><span class="status-badge">检测中</span></div>
+            <dl><div><dt>媒体记录</dt><dd data-field="media">--</dd></div><div><dt>Bucket</dt><dd data-field="bucket">--</dd></div><div><dt>端点</dt><dd data-field="endpoint">--</dd></div></dl>
+            <p class="infra-card-note" data-field="note">检查对象存储健康接口</p>
+          </article>
+          <article class="status-card degraded" data-infra-service="graphiti">
+            <div class="card-top"><div class="service-name"><span class="service-mark wx">G</span><div><h3>Graphiti + FalkorDB</h3><small>人物、事件与关系的时序图</small></div></div><span class="status-badge">检测中</span></div>
+            <dl><div><dt>待构建</dt><dd data-field="pending">--</dd></div><div><dt>已处理</dt><dd data-field="processed">--</dd></div><div><dt>失败</dt><dd data-field="failed">--</dd></div></dl>
+            <p class="infra-card-note" data-field="note">后台构建，不阻塞实时回复</p>
+          </article>
+          <article class="status-card degraded" data-infra-service="hermes">
+            <div class="card-top"><div class="service-name"><span class="service-mark wx">H</span><div><h3>Hermes Agent</h3><small>GitHub、测试、部署与监控</small></div></div><span class="status-badge">检测中</span></div>
+            <dl><div><dt>排队</dt><dd data-field="queued">--</dd></div><div><dt>运行</dt><dd data-field="running">--</dd></div><div><dt>完成</dt><dd data-field="completed">--</dd></div></dl>
+            <p class="infra-card-note" data-field="note">异步任务独立于实时回复线程</p>
+          </article>
+          <article class="status-card degraded" data-infra-service="router">
+            <div class="card-top"><div class="service-name"><span class="service-mark ai">AI</span><div><h3>双模型快速路由</h3><small>筛选记忆后交给最终模型</small></div></div><span class="status-badge">检测中</span></div>
+            <dl><div><dt>路由</dt><dd data-field="router">--</dd></div><div><dt>回复</dt><dd data-field="final">--</dd></div><div><dt>本地 8B</dt><dd data-field="local">--</dd></div></dl>
+            <p class="infra-card-note" data-field="note">路由故障时自动使用本地规则降级</p>
+          </article>
+        </div>
+        <section class="panel infra-detail-panel">
+          <div class="panel-head"><div><h2>可靠性与降级状态</h2><p>这里展示真实计数和当前错误；深层记忆失败不会拖慢普通回答</p></div><span class="route-status" id="infraCheckedAt">--</span></div>
+          <div class="infra-detail-grid">
+            <article><header><strong>SQLite → PostgreSQL</strong><span id="infraSyncBadge">--</span></header><div id="infraSyncDetails" class="infra-detail-lines"><p>正在读取…</p></div></article>
+            <article><header><strong>Graphiti 后台任务</strong><span id="infraGraphBadge">--</span></header><div id="infraGraphDetails" class="infra-detail-lines"><p>正在读取…</p></div></article>
+            <article><header><strong>Hermes 自动化</strong><span id="infraHermesBadge">--</span></header><div id="infraHermesDetails" class="infra-detail-lines"><p>正在读取…</p></div></article>
+            <article><header><strong>回复降级策略</strong><span class="good">不阻塞</span></header><div id="infraFallbackDetails" class="infra-detail-lines"><p>正在读取…</p></div></article>
+          </div>
+        </section>
       </section>
 
       <section class="page" id="page-vector">

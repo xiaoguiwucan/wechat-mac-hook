@@ -3181,6 +3181,146 @@ def memory_stats() -> Dict[str, Any]:
     return stats
 
 
+def memory_infrastructure_status() -> Dict[str, Any]:
+    """Return a secret-free snapshot of the durable memory and automation stack."""
+    config = json_read(CONFIG_PATH, {})
+    env = parse_env(ENV_PATH)
+    checked_at = time.strftime("%Y-%m-%d %H:%M:%S")
+    ai_health: Dict[str, Any] = {}
+    ai_error = ""
+    try:
+        ai_health = ai_json("/health", timeout=2)
+    except Exception as exc:
+        ai_error = str(exc)
+    brain = ai_health.get("brain") if isinstance(ai_health.get("brain"), dict) else {}
+    durable = brain.get("durable") if isinstance(brain.get("durable"), dict) else {}
+    hermes = brain.get("hermes") if isinstance(brain.get("hermes"), dict) else {}
+    graphiti = brain.get("graphiti") if isinstance(brain.get("graphiti"), dict) else {}
+    embedding = brain.get("embedding") if isinstance(brain.get("embedding"), dict) else {}
+
+    local_stats = MEMORY.stats()
+    outbox = MEMORY.durable_outbox_stats()
+    automation_counts: Dict[str, int] = {}
+    with MEMORY.connect() as db:
+        for row in db.execute("SELECT status,COUNT(*) AS count FROM automation_runs GROUP BY status").fetchall():
+            automation_counts[str(row["status"])] = int(row["count"])
+
+    postgres: Dict[str, Any] = {
+        "healthy": False, "events": 0, "media": 0, "embeddings": 0,
+        "facts": 0, "summaries": 0, "graph_jobs": {}, "automation": {},
+        "extensions": [], "error": "",
+    }
+    dsn = str(env.get("WECHAT_POSTGRES_DSN") or os.environ.get("WECHAT_POSTGRES_DSN") or "").strip()
+    if dsn:
+        try:
+            import psycopg  # type: ignore
+            with psycopg.connect(dsn, connect_timeout=2) as db:
+                with db.cursor() as cur:
+                    cur.execute(
+                        """SELECT
+                             (SELECT COUNT(*) FROM chat_events),
+                             (SELECT COUNT(*) FROM media_objects),
+                             (SELECT COUNT(*) FROM memory_embeddings),
+                             (SELECT COUNT(*) FROM memory_facts),
+                             (SELECT COUNT(*) FROM memory_summaries)"""
+                    )
+                    counts = cur.fetchone() or (0, 0, 0, 0, 0)
+                    postgres.update({
+                        "events": int(counts[0]), "media": int(counts[1]),
+                        "embeddings": int(counts[2]), "facts": int(counts[3]),
+                        "summaries": int(counts[4]),
+                    })
+                    cur.execute("SELECT status,COUNT(*) FROM graph_sync_jobs GROUP BY status")
+                    postgres["graph_jobs"] = {str(row[0]): int(row[1]) for row in cur.fetchall()}
+                    cur.execute("SELECT status,COUNT(*) FROM automation_runs GROUP BY status")
+                    postgres["automation"] = {str(row[0]): int(row[1]) for row in cur.fetchall()}
+                    cur.execute(
+                        "SELECT extname FROM pg_extension WHERE extname IN ('pgroonga','vector') ORDER BY extname"
+                    )
+                    postgres["extensions"] = [str(row[0]) for row in cur.fetchall()]
+                    postgres["healthy"] = True
+        except Exception as exc:
+            postgres["error"] = str(exc)[:300]
+    else:
+        postgres["error"] = "未配置 WECHAT_POSTGRES_DSN"
+
+    minio_endpoint = str(env.get("WECHAT_MINIO_ENDPOINT") or os.environ.get("WECHAT_MINIO_ENDPOINT") or "127.0.0.1:9000")
+    minio_healthy = False
+    minio_error = ""
+    try:
+        scheme = "https" if str(env.get("WECHAT_MINIO_SECURE") or "0") == "1" else "http"
+        with urllib.request.urlopen(f"{scheme}://{minio_endpoint}/minio/health/live", timeout=2) as resp:
+            minio_healthy = resp.status == 200
+    except Exception as exc:
+        minio_error = str(exc)[:300]
+
+    memory_cfg = config.get("memory") if isinstance(config.get("memory"), dict) else {}
+    router_cfg = config.get("router") if isinstance(config.get("router"), dict) else {}
+    ai_cfg = config.get("ai") if isinstance(config.get("ai"), dict) else {}
+    final_model = str(ai_cfg.get("model") or env.get("AI_REPLY_MODEL") or "")
+    graph_jobs = postgres.get("graph_jobs") or {}
+    graph_pending = int(graph_jobs.get("pending", 0)) + int(graph_jobs.get("retry", 0))
+    core_states = [
+        bool(ai_health.get("status") == "ok"),
+        bool(postgres.get("healthy")),
+        bool(minio_healthy),
+        bool(durable.get("connected")),
+        bool(hermes.get("healthy")),
+        bool(graphiti.get("ready")),
+    ]
+    return {
+        "checked_at": checked_at,
+        "overall": "healthy" if all(core_states) else ("degraded" if any(core_states) else "offline"),
+        "ai_error": ai_error,
+        "local": {
+            "healthy": True,
+            "db_path": str(local_stats.get("db_path") or ""),
+            "messages": int(local_stats.get("messages") or 0),
+            "groups": int(local_stats.get("groups") or 0),
+            "outbox": outbox,
+        },
+        "postgres": postgres,
+        "minio": {
+            "healthy": minio_healthy,
+            "endpoint": minio_endpoint,
+            "bucket": str(env.get("WECHAT_MINIO_BUCKET") or "wechat-media"),
+            "stored_media": int(postgres.get("media") or 0),
+            "error": minio_error,
+        },
+        "graphiti": {
+            **graphiti,
+            "healthy": bool(graphiti.get("ready")),
+            "pending_jobs": graph_pending,
+            "job_counts": graph_jobs,
+        },
+        "hermes": {
+            **hermes,
+            "healthy": bool(hermes.get("healthy")),
+            "local_runs": automation_counts,
+            "central_runs": postgres.get("automation") or {},
+        },
+        "embedding": {
+            **embedding,
+            "local_model_disabled": not bool(embedding.get("enabled")),
+            "central_vectors": int(postgres.get("embeddings") or 0),
+        },
+        "router": {
+            "healthy": bool(ai_health.get("status") == "ok"),
+            "model": str(router_cfg.get("model") or "grok-chat-fast"),
+            "final_model": final_model or "grok-4.5",
+            "retrieval_deadline_ms": int(memory_cfg.get("retrieval_deadline_ms") or 250),
+            "fallback": "本地规则 + 最近消息/人物缓存/群摘要",
+        },
+        "services": {
+            "ai": bool(ai_health.get("status") == "ok"),
+            "postgres": bool(postgres.get("healthy")),
+            "minio": minio_healthy,
+            "falkordb": port_open(6379),
+            "hermes": bool(hermes.get("healthy")),
+        },
+    }
+
+
 def memory_search(data: Dict[str, Any]) -> Dict[str, Any]:
     rows = MEMORY.search_messages(
         query=str(data.get("query") or "").strip(),
@@ -3970,6 +4110,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.json_response(200, {"ok": True, "data": recent_traces()})
         if path == "/api/memory/stats":
             return self.json_response(200, {"ok": True, "data": memory_stats()})
+        if path == "/api/memory/infrastructure":
+            try:
+                return self.json_response(200, {"ok": True, "data": memory_infrastructure_status()})
+            except Exception as exc:
+                return self.json_response(500, {"ok": False, "error": str(exc)})
         if path in {"/api/personas/list", "/api/personas/detail", "/api/personas/jobs"}:
             try:
                 qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
