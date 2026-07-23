@@ -1300,6 +1300,16 @@ function infraCounts(value = {}) {
   return entries.length ? entries.map(([name, count]) => `${name} ${count}`).join(' · ') : '0';
 }
 
+function formatDuration(seconds) {
+  const value = Number(seconds);
+  if (!Number.isFinite(value) || value < 0) return '--';
+  if (value < 60) return `${Math.max(1, Math.round(value))} 秒`;
+  if (value < 3600) return `${Math.ceil(value / 60)} 分钟`;
+  const hours = Math.floor(value / 3600);
+  const minutes = Math.ceil((value % 3600) / 60);
+  return minutes ? `${hours} 小时 ${minutes} 分钟` : `${hours} 小时`;
+}
+
 async function refreshMemoryInfrastructure(silent = false, button = null) {
   if (button) setBusy(button, true, '刷新中…');
   try {
@@ -1337,12 +1347,31 @@ async function refreshMemoryInfrastructure(silent = false, button = null) {
     }, minio.healthy ? '媒体原件独立保存，数据库只保留索引与哈希' : (minio.error || '对象存储不可用'));
 
     const graphDegraded = Boolean(graph.failed || graph.last_error);
+    const graphProgress = graph.progress || {};
+    const graphPercent = Math.max(0, Math.min(100, Number(graphProgress.percent || 0)));
     setInfraCard('graphiti', graph.enabled === false ? 'degraded' : graph.healthy ? (graphDegraded ? 'degraded' : 'running') : 'stopped',
       graph.enabled === false ? '已手动停用' : graph.healthy ? (graphDegraded ? '在线·正在重试' : '关系图在线') : '关系图离线', {
         pending: Number(graph.pending_jobs || 0).toLocaleString(),
         processed: Number(graph.job_counts?.synced ?? graph.processed ?? 0).toLocaleString(),
         failed: Number(graph.failed || 0).toLocaleString(),
       }, graph.last_error || '人物、事件、偏好和关系在后台异步构建');
+
+    $('#infraGraphPercent').textContent = `${graphPercent.toFixed(1)}%`;
+    $('#infraGraphProgressState').textContent = graphProgress.remaining > 0
+      ? `正在构建 · 剩余 ${Number(graphProgress.remaining).toLocaleString()}`
+      : graphProgress.total > 0 ? '历史任务已完成' : '暂无构建任务';
+    $('#infraGraphProgressBar').style.width = `${graphPercent}%`;
+    const graphTrack = $('.graphiti-progress-track');
+    if (graphTrack) graphTrack.setAttribute('aria-valuenow', String(graphPercent));
+    $('#infraGraphTotal').textContent = Number(graphProgress.total || 0).toLocaleString();
+    $('#infraGraphCompleted').textContent = Number(graphProgress.completed || 0).toLocaleString();
+    $('#infraGraphRemaining').textContent = Number(graphProgress.remaining || 0).toLocaleString();
+    $('#infraGraphRate').textContent = `${Number(graphProgress.rate_per_minute || 0).toFixed(1)}/分钟`;
+    $('#infraGraphEta').textContent = graphProgress.remaining > 0
+      ? formatDuration(graphProgress.eta_seconds)
+      : graphProgress.total > 0 ? '已完成' : '--';
+    $('#infraGraphLastCompleted').textContent = `最近完成：${graphProgress.last_completed || '--'}`;
+    $('#infraGraphRetrying').textContent = `重试 ${Number(graphProgress.retrying || 0).toLocaleString()} · 失败 ${Number(graphProgress.failed || 0).toLocaleString()}`;
 
     setInfraCard('hermes', hermes.enabled === false ? 'degraded' : hermes.healthy ? 'running' : 'stopped',
       hermes.enabled === false ? '已手动停用' : hermes.healthy ? '自动化在线' : '自动化离线', {
@@ -1363,7 +1392,7 @@ async function refreshMemoryInfrastructure(silent = false, button = null) {
     $('#infraSyncDetails').innerHTML = `<p><span>本地消息</span><b>${Number(local.messages || 0).toLocaleString()}</b></p><p><span>成功同步</span><b>${Number(outbox.synced || 0).toLocaleString()}</b></p><p><span>中央去重记录</span><b>${Number(pg.events || 0).toLocaleString()}</b></p>`;
     $('#infraGraphBadge').textContent = graph.healthy ? '后台在线' : '已降级';
     $('#infraGraphBadge').className = graph.healthy ? (graphDegraded ? 'warn' : 'good') : 'bad';
-    $('#infraGraphDetails').innerHTML = `<p><span>任务分布</span><b>${escapeHtml(infraCounts(graph.job_counts))}</b></p><p><span>FalkorDB</span><b>${r.services?.falkordb ? '在线' : '离线'}</b></p><p><span>回复线程</span><b>不等待图构建</b></p>`;
+    $('#infraGraphDetails').innerHTML = `<p><span>完成进度</span><b>${graphPercent.toFixed(1)}%</b></p><p><span>任务分布</span><b>${escapeHtml(infraCounts(graph.job_counts))}</b></p><p><span>处理速度</span><b>${Number(graphProgress.rate_per_minute || 0).toFixed(1)} / 分钟</b></p><p><span>FalkorDB</span><b>${r.services?.falkordb ? '在线' : '离线'}</b></p><p><span>回复线程</span><b>不等待图构建</b></p>`;
     $('#infraHermesBadge').textContent = hermes.healthy ? 'API 在线' : '离线';
     $('#infraHermesBadge').className = hermes.healthy ? 'good' : 'bad';
     const poolWorkers = Object.values(hermes.pools || {}).reduce((sum, item) => sum + Number(item?.workers || 0), 0);

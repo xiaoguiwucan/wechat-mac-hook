@@ -299,6 +299,28 @@
             <p class="infra-card-note" data-field="note">路由故障时自动使用本地规则降级</p>
           </article>
         </div>
+        <section class="panel graphiti-progress-panel" id="infraGraphProgressPanel">
+          <div class="panel-head">
+            <div><h2>Graphiti 关系记忆构建进度</h2><p>每 5 秒自动刷新；构建在后台并发执行，不占用机器人回复线程</p></div>
+            <div class="graphiti-progress-heading"><strong id="infraGraphPercent">--%</strong><span id="infraGraphProgressState">正在读取</span></div>
+          </div>
+          <div class="graphiti-progress-body">
+            <div class="graphiti-progress-track" role="progressbar" aria-label="Graphiti 构建进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+              <i id="infraGraphProgressBar"></i>
+            </div>
+            <div class="graphiti-progress-metrics">
+              <article><span>任务总数</span><strong id="infraGraphTotal">--</strong></article>
+              <article><span>已完成</span><strong id="infraGraphCompleted">--</strong></article>
+              <article><span>剩余任务</span><strong id="infraGraphRemaining">--</strong></article>
+              <article><span>当前速度</span><strong id="infraGraphRate">--/分钟</strong></article>
+              <article><span>预计完成</span><strong id="infraGraphEta">--</strong></article>
+            </div>
+            <div class="graphiti-progress-foot">
+              <span id="infraGraphLastCompleted">最近完成：--</span>
+              <span id="infraGraphRetrying">重试 0 · 失败 0</span>
+            </div>
+          </div>
+        </section>
         <section class="panel infra-detail-panel">
           <div class="panel-head"><div><h2>可靠性与降级状态</h2><p>这里展示真实计数和当前错误；深层记忆失败不会拖慢普通回答</p></div><span class="route-status" id="infraCheckedAt">--</span></div>
           <div class="infra-detail-grid">

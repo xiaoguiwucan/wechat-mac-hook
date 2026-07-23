@@ -261,7 +261,7 @@ Keys / Skills / MCP / Plugins** 页面管理；微信机器人只配置 Hermes A
 | 实时对话 | `/#reply-tasks` | 排队、召回、生成和发送阶段耗时 |
 | 评估看板 | `/#tests` | 模型及回复链路评估 |
 | 用户画像 | `/#personas` | 成员事实、关系、风格和群内画像 |
-| 记忆与自动化 | `/#memory-infra` | PostgreSQL、MinIO、Graphiti、Hermes 配置与操作 |
+| 记忆与自动化 | `/#memory-infra` | PostgreSQL、MinIO、Graphiti 构建进度、Hermes 配置与操作 |
 | 记忆数据库 | `/#memory` | 原始聊天、摘要、事实和检索记录 |
 | 图片图库 | `/#media` | 图片内容、标签和媒体状态 |
 | 语音内容 | `/#voice-records` | 语音记录与转写 |
@@ -270,7 +270,9 @@ Keys / Skills / MCP / Plugins** 页面管理；微信机器人只配置 Hermes A
 | 完整日志 | `/#logs` | AI/OneBot 实时日志、群、级别和 trace ID 筛选 |
 
 “记忆与自动化”页面不是只读展示页：可以保存路由、检索预算、Graphiti 和 Hermes
-配置，执行健康检查、重试、备份、任务提交、审批和停止操作。
+配置，执行健康检查、重试、备份、任务提交、审批和停止操作。Graphiti 进度面板
+每 5 秒刷新一次，显示完成率、总量、已完成、待处理、构建速率、预计剩余时间、
+最近完成时间以及重试/失败数量。
 
 ## 运行要求
 

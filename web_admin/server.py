@@ -3217,6 +3217,7 @@ def memory_infrastructure_status() -> Dict[str, Any]:
     postgres: Dict[str, Any] = {
         "healthy": False, "events": 0, "media": 0, "embeddings": 0,
         "facts": 0, "summaries": 0, "graph_jobs": {}, "automation": {},
+        "graph_progress": {},
         "extensions": [], "error": "",
     }
     dsn = str(env.get("WECHAT_POSTGRES_DSN") or os.environ.get("WECHAT_POSTGRES_DSN") or "").strip()
@@ -3241,6 +3242,55 @@ def memory_infrastructure_status() -> Dict[str, Any]:
                     })
                     cur.execute("SELECT status,COUNT(*) FROM graph_sync_jobs GROUP BY status")
                     postgres["graph_jobs"] = {str(row[0]): int(row[1]) for row in cur.fetchall()}
+                    cur.execute(
+                        """SELECT
+                             COUNT(*) AS total,
+                             COUNT(*) FILTER (WHERE status='synced') AS completed,
+                             COUNT(*) FILTER (WHERE status IN ('pending','retry')) AS remaining,
+                             COUNT(*) FILTER (WHERE status='retry') AS retrying,
+                             COUNT(*) FILTER (WHERE status='failed') AS failed,
+                             COUNT(*) FILTER (
+                               WHERE status='synced' AND updated_at >= now()-interval '5 minutes'
+                             ) AS completed_recent,
+                             MIN(updated_at) FILTER (
+                               WHERE status='synced' AND updated_at >= now()-interval '5 minutes'
+                             ) AS recent_window_start,
+                             MIN(created_at) FILTER (WHERE status IN ('pending','retry')) AS oldest_pending,
+                             MAX(updated_at) FILTER (WHERE status='synced') AS last_completed
+                           FROM graph_sync_jobs"""
+                    )
+                    progress = cur.fetchone() or (0, 0, 0, 0, 0, 0, None, None, None)
+                    total = int(progress[0] or 0)
+                    completed = int(progress[1] or 0)
+                    remaining = int(progress[2] or 0)
+                    completed_recent = int(progress[5] or 0)
+                    recent_window_start = progress[6]
+                    elapsed_minutes = 5.0
+                    if recent_window_start is not None:
+                        elapsed_minutes = max(
+                            1.0 / 60.0,
+                            min(5.0, (time.time() - recent_window_start.timestamp()) / 60.0),
+                        )
+                    rate_per_minute = completed_recent / elapsed_minutes if completed_recent else 0.0
+                    eta_seconds = int(remaining / rate_per_minute * 60) if rate_per_minute > 0 else None
+                    postgres["graph_progress"] = {
+                        "total": total,
+                        "completed": completed,
+                        "remaining": remaining,
+                        "retrying": int(progress[3] or 0),
+                        "failed": int(progress[4] or 0),
+                        "percent": round(completed * 100 / total, 1) if total else 100.0,
+                        "rate_per_minute": round(rate_per_minute, 1),
+                        "eta_seconds": eta_seconds,
+                        "oldest_pending": (
+                            progress[7].astimezone().strftime("%Y-%m-%d %H:%M:%S")
+                            if progress[7] else ""
+                        ),
+                        "last_completed": (
+                            progress[8].astimezone().strftime("%Y-%m-%d %H:%M:%S")
+                            if progress[8] else ""
+                        ),
+                    }
                     cur.execute("SELECT status,COUNT(*) FROM automation_runs GROUP BY status")
                     postgres["automation"] = {str(row[0]): int(row[1]) for row in cur.fetchall()}
                     cur.execute(
@@ -3268,6 +3318,7 @@ def memory_infrastructure_status() -> Dict[str, Any]:
     ai_cfg = config.get("ai") if isinstance(config.get("ai"), dict) else {}
     final_model = str(ai_cfg.get("model") or env.get("AI_REPLY_MODEL") or "")
     graph_jobs = postgres.get("graph_jobs") or {}
+    graph_progress = postgres.get("graph_progress") or {}
     graph_pending = int(graph_jobs.get("pending", 0)) + int(graph_jobs.get("retry", 0))
     core_states = [
         bool(ai_health.get("status") == "ok"),
@@ -3304,6 +3355,7 @@ def memory_infrastructure_status() -> Dict[str, Any]:
             "healthy": bool(graphiti.get("ready")),
             "pending_jobs": graph_pending,
             "job_counts": graph_jobs,
+            "progress": graph_progress,
         },
         "hermes": {
             **hermes,
