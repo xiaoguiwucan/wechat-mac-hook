@@ -3372,6 +3372,16 @@ def memory_infrastructure_config() -> Dict[str, Any]:
             "workspace": str(env.get("HERMES_WORKSPACE") or ROOT),
             "poll_seconds": float(env.get("HERMES_POLL_SECONDS", "1")),
             "max_run_seconds": int(env.get("HERMES_MAX_RUN_SECONDS", "3600")),
+            "read_workers": int(env.get("HERMES_READ_WORKERS", "16")),
+            "cron_workers": int(env.get("HERMES_CRON_WORKERS", "6")),
+            "ops_workers": int(env.get("HERMES_OPS_WORKERS", "8")),
+            "high_workers": int(env.get("HERMES_HIGH_WORKERS", "2")),
+            "answer_ack_delay_seconds": float(env.get("HERMES_ANSWER_ACK_DELAY_SECONDS", "30")),
+            "cache_default_seconds": int(env.get("HERMES_CACHE_DEFAULT_SECONDS", "86400")),
+            "cache_weather_seconds": int(env.get("HERMES_CACHE_WEATHER_SECONDS", "3600")),
+            "cache_market_seconds": int(env.get("HERMES_CACHE_MARKET_SECONDS", "900")),
+            "cache_news_seconds": int(env.get("HERMES_CACHE_NEWS_SECONDS", "21600")),
+            "cache_status_seconds": int(env.get("HERMES_CACHE_STATUS_SECONDS", "120")),
         },
         "links": {
             "hermes_dashboard": "http://127.0.0.1:9119",
@@ -3432,6 +3442,28 @@ def save_memory_infrastructure_config(data: Dict[str, Any]) -> Dict[str, Any]:
             "HERMES_WORKSPACE": str(workspace.resolve()),
             "HERMES_POLL_SECONDS": max(0.5, min(10.0, float(hermes_in.get("poll_seconds", 1)))),
             "HERMES_MAX_RUN_SECONDS": max(60, min(86400, int(hermes_in.get("max_run_seconds", 3600)))),
+            "HERMES_READ_WORKERS": max(1, min(64, int(hermes_in.get("read_workers", 16)))),
+            "HERMES_CRON_WORKERS": max(1, min(32, int(hermes_in.get("cron_workers", 6)))),
+            "HERMES_OPS_WORKERS": max(1, min(32, int(hermes_in.get("ops_workers", 8)))),
+            "HERMES_HIGH_WORKERS": max(1, min(16, int(hermes_in.get("high_workers", 2)))),
+            "HERMES_ANSWER_ACK_DELAY_SECONDS": max(
+                1, min(300, float(hermes_in.get("answer_ack_delay_seconds", 30)))
+            ),
+            "HERMES_CACHE_DEFAULT_SECONDS": max(
+                0, min(2592000, int(hermes_in.get("cache_default_seconds", 86400)))
+            ),
+            "HERMES_CACHE_WEATHER_SECONDS": max(
+                0, min(604800, int(hermes_in.get("cache_weather_seconds", 3600)))
+            ),
+            "HERMES_CACHE_MARKET_SECONDS": max(
+                0, min(86400, int(hermes_in.get("cache_market_seconds", 900)))
+            ),
+            "HERMES_CACHE_NEWS_SECONDS": max(
+                0, min(604800, int(hermes_in.get("cache_news_seconds", 21600)))
+            ),
+            "HERMES_CACHE_STATUS_SECONDS": max(
+                0, min(3600, int(hermes_in.get("cache_status_seconds", 120)))
+            ),
         })
     restart = run_action("restart_ai")
     return {

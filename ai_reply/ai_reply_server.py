@@ -1513,17 +1513,24 @@ class AIReplyService:
                 memory = {**memory, "items": selected[:12]}
         if route.get("automation_required"):
             result = self.hermes.submit(evt, route)
-            message = str(result.get("message") or "自动化任务未能接收。")
-            try:
-                self.send_group_msg(evt.group_id, message, evt.trace_id, evt)
-            except Exception as exc:
-                task.details = {**task.details, "automation": result, "automation_ack_error": str(exc)}
-                self.task_registry.update(task, "failed", result="automation_ack_failed", details=task.details)
-                return
+            message = str(result.get("message") or "")
+            if not result.get("accepted") and not message:
+                message = "自动化任务未能接收。"
+            if message:
+                try:
+                    self.send_group_msg(evt.group_id, message, evt.trace_id, evt)
+                except Exception as exc:
+                    task.details = {**task.details, "automation": result, "automation_ack_error": str(exc)}
+                    self.task_registry.update(task, "failed", result="automation_ack_failed", details=task.details)
+                    return
             task.details = {**task.details, "automation": result}
             self.task_registry.update(
                 task, "completed" if result.get("accepted") else "failed",
-                result="automation_queued" if result.get("accepted") else "automation_rejected",
+                result=(
+                    "automation_cache_hit" if result.get("cached")
+                    else "automation_queued" if result.get("accepted")
+                    else "automation_rejected"
+                ),
                 details=task.details,
             )
             return
@@ -2794,14 +2801,21 @@ class AIReplyService:
                 "reason": "model_capability_fallback",
             }
             result = self.hermes.submit(evt, route)
-            message = str(result.get("message") or "工具调用未能接收。")
-            if not self.cfg.dry_run:
+            message = str(result.get("message") or "")
+            if not result.get("accepted") and not message:
+                message = "工具调用未能接收。"
+            if message and not self.cfg.dry_run:
                 self.send_group_msg(evt.group_id, message, evt.trace_id, evt)
-            self._record_history(evt, message)
+            if message:
+                self._record_history(evt, message)
             if task:
                 self.task_registry.update(
                     task, "completed" if result.get("accepted") else "failed",
-                    result="hermes_capability_queued" if result.get("accepted") else "hermes_capability_rejected",
+                    result=(
+                        "hermes_capability_cache_hit" if result.get("cached")
+                        else "hermes_capability_queued" if result.get("accepted")
+                        else "hermes_capability_rejected"
+                    ),
                     details={**(task.details or {}), "hermes_capability": result},
                 )
             return

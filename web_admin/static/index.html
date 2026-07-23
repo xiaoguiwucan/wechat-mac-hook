@@ -344,6 +344,17 @@
               <div class="field"><label for="infraHermesWorkspace">允许工作目录</label><input id="infraHermesWorkspace"></div>
               <div class="field"><label for="infraHermesPoll">状态轮询</label><div class="unit-input"><input id="infraHermesPoll" type="number" min="0.5" max="10" step="0.5"><span>SEC</span></div></div>
               <div class="field"><label for="infraHermesMaxRun">最长任务时间</label><div class="unit-input"><input id="infraHermesMaxRun" type="number" min="60" max="86400"><span>SEC</span></div></div>
+              <div class="field"><label for="infraHermesReadWorkers">只读查询线程</label><input id="infraHermesReadWorkers" type="number" min="1" max="64"></div>
+              <div class="field"><label for="infraHermesCronWorkers">定时任务线程</label><input id="infraHermesCronWorkers" type="number" min="1" max="32"></div>
+              <div class="field"><label for="infraHermesOpsWorkers">开发运维线程</label><input id="infraHermesOpsWorkers" type="number" min="1" max="32"></div>
+              <div class="field"><label for="infraHermesHighWorkers">高风险任务线程</label><input id="infraHermesHighWorkers" type="number" min="1" max="16"></div>
+              <div class="field"><label for="infraHermesAckDelay">查询提示延迟</label><div class="unit-input"><input id="infraHermesAckDelay" type="number" min="1" max="300"><span>SEC</span></div></div>
+              <div class="field"><label for="infraHermesCacheDefault">普通结果缓存</label><div class="unit-input"><input id="infraHermesCacheDefault" type="number" min="0" max="720"><span>H</span></div></div>
+              <div class="field"><label for="infraHermesCacheWeather">天气缓存</label><div class="unit-input"><input id="infraHermesCacheWeather" type="number" min="0" max="168"><span>H</span></div></div>
+              <div class="field"><label for="infraHermesCacheMarket">行情缓存</label><div class="unit-input"><input id="infraHermesCacheMarket" type="number" min="0" max="1440"><span>MIN</span></div></div>
+              <div class="field"><label for="infraHermesCacheNews">新闻缓存</label><div class="unit-input"><input id="infraHermesCacheNews" type="number" min="0" max="168"><span>H</span></div></div>
+              <div class="field"><label for="infraHermesCacheStatus">状态缓存</label><div class="unit-input"><input id="infraHermesCacheStatus" type="number" min="0" max="60"><span>MIN</span></div></div>
+              <p class="field-note">默认共 32 个独立线程。0～30 秒保持静默，超过 30 秒才发送一次“正在查询”。</p>
             </fieldset>
             <div class="infra-config-actions"><span id="infraConfigState">读取配置中</span><button class="btn primary" id="infraSaveConfigBtn" type="submit">保存并应用配置</button></div>
           </form>

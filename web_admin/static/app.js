@@ -1366,7 +1366,8 @@ async function refreshMemoryInfrastructure(silent = false, button = null) {
     $('#infraGraphDetails').innerHTML = `<p><span>任务分布</span><b>${escapeHtml(infraCounts(graph.job_counts))}</b></p><p><span>FalkorDB</span><b>${r.services?.falkordb ? '在线' : '离线'}</b></p><p><span>回复线程</span><b>不等待图构建</b></p>`;
     $('#infraHermesBadge').textContent = hermes.healthy ? 'API 在线' : '离线';
     $('#infraHermesBadge').className = hermes.healthy ? 'good' : 'bad';
-    $('#infraHermesDetails').innerHTML = `<p><span>本地任务</span><b>${escapeHtml(infraCounts(hermes.local_runs))}</b></p><p><span>中央任务</span><b>${escapeHtml(infraCounts(hermes.central_runs))}</b></p><p><span>实时槽位</span><b>与回复线程隔离</b></p>`;
+    const poolWorkers = Object.values(hermes.pools || {}).reduce((sum, item) => sum + Number(item?.workers || 0), 0);
+    $('#infraHermesDetails').innerHTML = `<p><span>本地任务</span><b>${escapeHtml(infraCounts(hermes.local_runs))}</b></p><p><span>中央任务</span><b>${escapeHtml(infraCounts(hermes.central_runs))}</b></p><p><span>独立工作线程</span><b>${poolWorkers || hermes.worker_count || 32}</b></p><p><span>缓存命中</span><b>${Number(hermes.cache_hits || 0).toLocaleString()}</b></p><p><span>查询提示</span><b>${Number(hermes.answer_ack_delay_seconds || 30)} 秒后</b></p>`;
     $('#infraFallbackDetails').innerHTML = `<p><span>路由模型</span><b>${escapeHtml(router.model || '--')} · ${escapeHtml(routerLabel)}</b></p><p><span>最终模型</span><b>${escapeHtml(router.final_model || '--')}</b></p><p><span>深层检索超时</span><b>${router.retrieval_deadline_ms || 250}ms 后用缓存回答</b></p>`;
   } catch (e) {
     $('#infraOverall').className = 'infra-overall offline';
@@ -1401,6 +1402,16 @@ async function loadMemoryInfrastructureConfig(silent = false) {
     $('#infraHermesWorkspace').value = hermes.workspace || '';
     $('#infraHermesPoll').value = hermes.poll_seconds ?? 1;
     $('#infraHermesMaxRun').value = hermes.max_run_seconds ?? 3600;
+    $('#infraHermesReadWorkers').value = hermes.read_workers ?? 16;
+    $('#infraHermesCronWorkers').value = hermes.cron_workers ?? 6;
+    $('#infraHermesOpsWorkers').value = hermes.ops_workers ?? 8;
+    $('#infraHermesHighWorkers').value = hermes.high_workers ?? 2;
+    $('#infraHermesAckDelay').value = hermes.answer_ack_delay_seconds ?? 30;
+    $('#infraHermesCacheDefault').value = (hermes.cache_default_seconds ?? 86400) / 3600;
+    $('#infraHermesCacheWeather').value = (hermes.cache_weather_seconds ?? 3600) / 3600;
+    $('#infraHermesCacheMarket').value = (hermes.cache_market_seconds ?? 900) / 60;
+    $('#infraHermesCacheNews').value = (hermes.cache_news_seconds ?? 21600) / 3600;
+    $('#infraHermesCacheStatus').value = (hermes.cache_status_seconds ?? 120) / 60;
     const oldGroup = $('#infraTaskGroup').value;
     $('#infraTaskGroup').innerHTML = (c.groups || []).map(group => `<option value="${escapeHtml(group.id)}">${escapeHtml(group.name || group.id)}</option>`).join('');
     if ((c.groups || []).some(group => group.id === oldGroup)) $('#infraTaskGroup').value = oldGroup;
@@ -1447,6 +1458,16 @@ async function saveMemoryInfrastructureConfig(button) {
           workspace: $('#infraHermesWorkspace').value.trim(),
           poll_seconds: Number($('#infraHermesPoll').value),
           max_run_seconds: Number($('#infraHermesMaxRun').value),
+          read_workers: Number($('#infraHermesReadWorkers').value),
+          cron_workers: Number($('#infraHermesCronWorkers').value),
+          ops_workers: Number($('#infraHermesOpsWorkers').value),
+          high_workers: Number($('#infraHermesHighWorkers').value),
+          answer_ack_delay_seconds: Number($('#infraHermesAckDelay').value),
+          cache_default_seconds: Number($('#infraHermesCacheDefault').value) * 3600,
+          cache_weather_seconds: Number($('#infraHermesCacheWeather').value) * 3600,
+          cache_market_seconds: Number($('#infraHermesCacheMarket').value) * 60,
+          cache_news_seconds: Number($('#infraHermesCacheNews').value) * 3600,
+          cache_status_seconds: Number($('#infraHermesCacheStatus').value) * 60,
         },
       }),
     });

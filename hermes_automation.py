@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import queue
+import re
 import threading
 import time
 import urllib.error
@@ -13,7 +14,7 @@ import urllib.request
 import uuid
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from memory_store import MemoryStore
 
@@ -27,6 +28,17 @@ class HermesConfig:
     poll_seconds: float
     max_run_seconds: int
     owner_user_ids: tuple[str, ...] = ()
+    read_workers: int = 16
+    cron_workers: int = 6
+    ops_workers: int = 8
+    high_workers: int = 2
+    queue_size: int = 1000
+    answer_ack_delay_seconds: float = 30.0
+    cache_default_seconds: int = 86400
+    cache_weather_seconds: int = 3600
+    cache_market_seconds: int = 900
+    cache_news_seconds: int = 21600
+    cache_status_seconds: int = 120
 
     @classmethod
     def from_env(cls) -> "HermesConfig":
@@ -44,6 +56,29 @@ class HermesConfig:
                 value.strip() for value in os.getenv("HERMES_OWNER_USER_IDS", "").split(",")
                 if value.strip()
             ),
+            read_workers=max(1, min(64, int(os.getenv("HERMES_READ_WORKERS", "16")))),
+            cron_workers=max(1, min(32, int(os.getenv("HERMES_CRON_WORKERS", "6")))),
+            ops_workers=max(1, min(32, int(os.getenv("HERMES_OPS_WORKERS", "8")))),
+            high_workers=max(1, min(16, int(os.getenv("HERMES_HIGH_WORKERS", "2")))),
+            queue_size=max(100, min(10000, int(os.getenv("HERMES_QUEUE_SIZE", "1000")))),
+            answer_ack_delay_seconds=max(
+                1.0, min(300.0, float(os.getenv("HERMES_ANSWER_ACK_DELAY_SECONDS", "30")))
+            ),
+            cache_default_seconds=max(
+                0, min(2592000, int(os.getenv("HERMES_CACHE_DEFAULT_SECONDS", "86400")))
+            ),
+            cache_weather_seconds=max(
+                0, min(604800, int(os.getenv("HERMES_CACHE_WEATHER_SECONDS", "3600")))
+            ),
+            cache_market_seconds=max(
+                0, min(86400, int(os.getenv("HERMES_CACHE_MARKET_SECONDS", "900")))
+            ),
+            cache_news_seconds=max(
+                0, min(604800, int(os.getenv("HERMES_CACHE_NEWS_SECONDS", "21600")))
+            ),
+            cache_status_seconds=max(
+                0, min(3600, int(os.getenv("HERMES_CACHE_STATUS_SECONDS", "120")))
+            ),
         )
 
 
@@ -54,9 +89,14 @@ class HermesAutomationService:
         self.store = store
         self.send_callback = send_callback
         self.cfg = config or HermesConfig.from_env()
-        self.tasks: "queue.Queue[Dict[str, Any]]" = queue.Queue(maxsize=200)
+        self.queues: Dict[str, "queue.Queue[Dict[str, Any]]"] = {
+            name: queue.Queue(maxsize=self.cfg.queue_size)
+            for name in ("read", "cron", "ops", "high")
+        }
+        # Kept as a compatibility alias for callers that only inspect queue size.
+        self.tasks = self.queues["ops"]
         self.stop_event = threading.Event()
-        self.worker = threading.Thread(target=self._loop, name="hermes-automation", daemon=True)
+        self.workers: List[threading.Thread] = []
         self.lock = threading.RLock()
         self.state: Dict[str, Any] = {
             "enabled": self.cfg.enabled,
@@ -66,24 +106,115 @@ class HermesAutomationService:
             "completed": 0,
             "failed": 0,
             "last_error": "",
+            "cache_hits": 0,
+            "pools": {
+                name: {"workers": workers, "queued": 0, "running": 0}
+                for name, workers in self._worker_counts().items()
+            },
         }
 
     def start(self) -> None:
-        if self.cfg.enabled and not self.worker.is_alive():
-            self.worker.start()
+        if not self.cfg.enabled or any(worker.is_alive() for worker in self.workers):
+            return
+        self.stop_event.clear()
+        # Probe once before spawning the pool instead of making every read
+        # worker hit the Hermes health endpoint at the same time.
+        self.health()
+        for pool_name, count in self._worker_counts().items():
+            for index in range(count):
+                worker = threading.Thread(
+                    target=self._loop,
+                    args=(pool_name,),
+                    name=f"hermes-{pool_name}-{index + 1}",
+                    daemon=True,
+                )
+                worker.start()
+                self.workers.append(worker)
 
     def stop(self) -> None:
         self.stop_event.set()
-        try:
-            self.tasks.put_nowait({})
-        except queue.Full:
-            pass
+        for pool_name, count in self._worker_counts().items():
+            for _ in range(count):
+                try:
+                    self.queues[pool_name].put_nowait({})
+                except queue.Full:
+                    break
 
     def snapshot(self) -> Dict[str, Any]:
         with self.lock:
             result = dict(self.state)
-        result["queue_size"] = self.tasks.qsize()
+            result["pools"] = {
+                name: dict(values) for name, values in self.state["pools"].items()
+            }
+        result["queue_size"] = sum(item.qsize() for item in self.queues.values())
+        result["worker_count"] = sum(self._worker_counts().values())
+        result["answer_ack_delay_seconds"] = self.cfg.answer_ack_delay_seconds
+        result["cache_seconds"] = {
+            "default": self.cfg.cache_default_seconds,
+            "weather": self.cfg.cache_weather_seconds,
+            "market": self.cfg.cache_market_seconds,
+            "news": self.cfg.cache_news_seconds,
+            "status": self.cfg.cache_status_seconds,
+        }
         return result
+
+    def _worker_counts(self) -> Dict[str, int]:
+        return {
+            "read": self.cfg.read_workers,
+            "cron": self.cfg.cron_workers,
+            "ops": self.cfg.ops_workers,
+            "high": self.cfg.high_workers,
+        }
+
+    @staticmethod
+    def _is_schedule_intent(intent: str) -> bool:
+        return any(marker in str(intent or "") for marker in (
+            "提醒", "闹钟", "定时", "分钟后", "小时后", "每天", "每周", "每月",
+            "暂停任务", "恢复任务", "删除任务", "cron", "Cron",
+        ))
+
+    @classmethod
+    def _queue_for(cls, purpose: str, risk_level: str, intent: str) -> str:
+        if purpose == "answer":
+            return "read"
+        if risk_level == "high":
+            return "high"
+        if cls._is_schedule_intent(intent):
+            return "cron"
+        return "ops"
+
+    @staticmethod
+    def _normalize_cache_intent(intent: str) -> str:
+        text = str(intent or "").lower().strip()
+        text = re.sub(r"@[\w\u4e00-\u9fff·._-]+", "", text)
+        text = re.sub(r"(请|帮我|麻烦|小风|机器人|查一下|查下|查询|查)", "", text)
+        return re.sub(r"[\s，。！？、,.!?：:；;\"'“”‘’（）()【】\[\]]+", "", text)
+
+    @classmethod
+    def _cache_key(cls, intent: str) -> str:
+        normalized = cls._normalize_cache_intent(intent)
+        return hashlib.sha256(normalized.encode("utf-8", "ignore")).hexdigest() if normalized else ""
+
+    @staticmethod
+    def _cache_bypassed(intent: str) -> bool:
+        return any(marker in str(intent or "") for marker in (
+            "强制刷新", "重新查询", "重新查", "不要缓存", "忽略缓存", "刷新一下",
+        ))
+
+    def _cache_ttl_for(self, intent: str) -> int:
+        text = str(intent or "").lower()
+        if any(marker in text for marker in ("天气", "气温", "下雨", "台风", "空气质量")):
+            return self.cfg.cache_weather_seconds
+        if any(marker in text for marker in (
+            "价格", "金价", "银价", "黄金", "白银", "汇率", "股票", "股价",
+            "基金", "币价", "比特币", "行情",
+        )):
+            return self.cfg.cache_market_seconds
+        if any(marker in text for marker in ("新闻", "热搜", "最新消息", "头条", "资讯")):
+            return self.cfg.cache_news_seconds
+        if any(marker in text for marker in ("状态", "健康", "运行情况", "在线吗")):
+            return self.cfg.cache_status_seconds
+        return self.cfg.cache_default_seconds
 
     def _request(self, method: str, path: str,
                  payload: Optional[Dict[str, Any]] = None,
@@ -116,28 +247,36 @@ class HermesAutomationService:
     def _queue_run(self, row: Dict[str, Any], trace_id: str = "",
                    purpose: str = "automation") -> Dict[str, Any]:
         run_id = str(row["run_id"])
+        queue_name = str(row.get("queue_name") or self._queue_for(
+            purpose,
+            str(row.get("risk_level") or "read"),
+            str(row.get("intent") or ""),
+        ))
         task = {
             "run_id": run_id, "group_id": str(row.get("group_id") or ""),
             "user_id": str(row.get("user_id") or ""), "trace_id": trace_id or run_id,
             "intent": str(row.get("intent") or ""), "risk_level": str(row.get("risk_level") or "read"),
             "source_event_id": str(row.get("source_event_id") or ""),
             "purpose": "answer" if purpose == "answer" else "automation",
+            "queue_name": queue_name,
+            "cache_key": str(row.get("cache_key") or ""),
+            "queued_monotonic": time.monotonic(),
         }
         try:
-            self.tasks.put_nowait(task)
+            self.queues[queue_name].put_nowait(task)
         except queue.Full:
             self.store.update_automation_run(run_id, status="failed", error="automation_queue_full")
             return {"accepted": False, "run_id": run_id, "message": "自动化队列已满，请稍后重试。"}
         with self.lock:
             self.state["queued"] += 1
-        message = (
-            "我正在调用 Hermes 的工具查询，查到后直接回复你。"
-            if task["purpose"] == "answer" else
+            self.state["pools"][queue_name]["queued"] += 1
+        message = "" if task["purpose"] == "answer" else (
             f"任务已接收（{run_id[-8:]}），完成后我会把结果发回群里。"
         )
         return {
             "accepted": True, "run_id": run_id,
-            "message": message,
+            "message": message, "queue": queue_name,
+            "deferred_ack": task["purpose"] == "answer",
         }
 
     def submit(self, event: Any, route: Dict[str, Any],
@@ -148,6 +287,27 @@ class HermesAutomationService:
         if risk == "write" and not trusted and not admin and not owner:
             return {"accepted": False, "message": "这个操作需要群管理员权限。"}
         intent = str(route.get("automation_intent") or event.text).strip()[:4000]
+        purpose = "answer" if str(route.get("hermes_mode") or "") == "answer" else "automation"
+        queue_name = self._queue_for(purpose, risk, intent)
+        cache_key = self._cache_key(intent) if purpose == "answer" and risk == "read" else ""
+        cache_ttl = self._cache_ttl_for(intent)
+        if cache_key and cache_ttl > 0 and not self._cache_bypassed(intent):
+            cached = self.store.cached_automation_result(
+                str(event.group_id), cache_key, cache_ttl
+            )
+            if cached:
+                with self.lock:
+                    self.state["cache_hits"] += 1
+                return {
+                    "accepted": True,
+                    "cached": True,
+                    "final": True,
+                    "run_id": str(cached.get("run_id") or ""),
+                    "message": str(cached.get("result_summary") or "")[:1800],
+                    "cache_age_seconds": float(cached.get("cache_age_seconds") or 0),
+                    "cache_ttl_seconds": cache_ttl,
+                    "queue": "cache",
+                }
         key_source = f"{event.event_id}|{event.message_id}|{intent}"
         idempotency_key = hashlib.sha256(key_source.encode("utf-8", "ignore")).hexdigest()
         run_id = "auto-" + uuid.uuid4().hex
@@ -155,6 +315,7 @@ class HermesAutomationService:
             "run_id": run_id, "idempotency_key": idempotency_key,
             "source_event_id": event.event_id, "group_id": event.group_id,
             "user_id": event.user_id, "intent": intent, "risk_level": risk,
+            "purpose": purpose, "queue_name": queue_name, "cache_key": cache_key,
             "status": "queued" if risk != "high" or approved else "awaiting_approval",
         })
         if not created:
@@ -169,7 +330,6 @@ class HermesAutomationService:
             })
             return {"accepted": False, "approval_required": True, "run_id": run_id,
                     "message": "这个操作风险较高，已暂停，等待项目所有者确认。"}
-        purpose = "answer" if str(route.get("hermes_mode") or "") == "answer" else "automation"
         return self._queue_run(
             row, str(getattr(event, "trace_id", "") or run_id), purpose=purpose
         )
@@ -242,9 +402,41 @@ class HermesAutomationService:
         local_run_id = str(task["run_id"])
         self.store.update_automation_run(local_run_id, status="starting")
         answer_mode = str(task.get("purpose") or "") == "answer"
-        schedule_mode = any(marker in str(task.get("intent") or "") for marker in (
-            "提醒", "闹钟", "定时", "分钟后", "小时后", "每天", "每周", "每月",
-        ))
+        schedule_mode = self._is_schedule_intent(str(task.get("intent") or ""))
+        queue_wait_ms = round(
+            max(0.0, time.monotonic() - float(task.get("queued_monotonic") or time.monotonic()))
+            * 1000,
+            1,
+        )
+        self.store.add_automation_event(local_run_id, "worker_started", {
+            "queue": str(task.get("queue_name") or "ops"),
+            "queue_wait_ms": queue_wait_ms,
+        })
+        ack_cancel = threading.Event()
+        task["_ack_cancel"] = ack_cancel
+        if answer_mode:
+            def delayed_ack() -> None:
+                if ack_cancel.wait(self.cfg.answer_ack_delay_seconds):
+                    return
+                try:
+                    self.send_callback(
+                        str(task["group_id"]),
+                        "正在查询最新结果，完成后直接回复你。",
+                        str(task.get("trace_id") or local_run_id),
+                    )
+                    self.store.add_automation_event(local_run_id, "delayed_ack_sent", {
+                        "delay_seconds": self.cfg.answer_ack_delay_seconds,
+                    })
+                except Exception as exc:
+                    self.store.add_automation_event(local_run_id, "delayed_ack_failed", {
+                        "error": str(exc)[:500],
+                    })
+
+            threading.Thread(
+                target=delayed_ack,
+                name=f"hermes-ack-{local_run_id[-8:]}",
+                daemon=True,
+            ).start()
         if answer_mode:
             instructions = (
                 "你是微信群机器人的工具执行层。必须按问题需要主动调用天气、网页搜索、"
@@ -271,9 +463,18 @@ class HermesAutomationService:
                     "向群里发送最终提醒或任务结果。这样仍复用现有唯一微信 Hook，不启用 Hermes 微信通道。"
                     "\n创建成功后返回任务名称、job_id、下次执行时间和是否重复。"
                 )
+        if answer_mode:
+            session_id = (
+                f"wechat-read-{task['group_id']}-"
+                f"{str(task.get('cache_key') or local_run_id)[-16:]}"
+            )
+        elif schedule_mode:
+            session_id = f"wechat-cron-{local_run_id}"
+        else:
+            session_id = f"wechat-ops-{task['group_id']}-{task['user_id']}"
         created = self._request("POST", "/v1/runs", {
             "input": task["intent"],
-            "session_id": f"wechat-{task['group_id']}",
+            "session_id": session_id,
             "instructions": instructions,
         }, timeout=10)
         hermes_run_id = str(created.get("run_id") or "")
@@ -301,6 +502,7 @@ class HermesAutomationService:
             local_run_id, status="completed", result_summary=output[:4000], error=""
         )
         self.store.add_automation_event(local_run_id, "completed", final)
+        ack_cancel.set()
         message = output[:1800] if answer_mode else (
             f"自动化任务已完成（{local_run_id[-8:]}）\n{output[:1200]}"
         )
@@ -311,24 +513,32 @@ class HermesAutomationService:
         with self.lock:
             self.state["completed"] += 1
 
-    def _loop(self) -> None:
-        self.health()
+    def _loop(self, pool_name: str) -> None:
+        work_queue = self.queues[pool_name]
         while not self.stop_event.is_set():
             try:
-                task = self.tasks.get(timeout=0.5)
+                task = work_queue.get(timeout=0.5)
             except queue.Empty:
                 continue
             if not task:
+                work_queue.task_done()
                 continue
             row = self.store.automation_run(str(task.get("run_id") or ""))
             if str(row.get("status") or "") == "cancelled":
                 with self.lock:
                     self.state["queued"] = max(0, self.state["queued"] - 1)
-                self.tasks.task_done()
+                    self.state["pools"][pool_name]["queued"] = max(
+                        0, self.state["pools"][pool_name]["queued"] - 1
+                    )
+                work_queue.task_done()
                 continue
             with self.lock:
                 self.state["queued"] = max(0, self.state["queued"] - 1)
                 self.state["running"] += 1
+                self.state["pools"][pool_name]["queued"] = max(
+                    0, self.state["pools"][pool_name]["queued"] - 1
+                )
+                self.state["pools"][pool_name]["running"] += 1
             try:
                 self._execute(task)
                 with self.lock:
@@ -356,6 +566,12 @@ class HermesAutomationService:
                     self.state["healthy"] = False
                     self.state["last_error"] = str(exc)[:500]
             finally:
+                ack_cancel = task.get("_ack_cancel")
+                if isinstance(ack_cancel, threading.Event):
+                    ack_cancel.set()
                 with self.lock:
                     self.state["running"] = max(0, self.state["running"] - 1)
-                self.tasks.task_done()
+                    self.state["pools"][pool_name]["running"] = max(
+                        0, self.state["pools"][pool_name]["running"] - 1
+                    )
+                work_queue.task_done()

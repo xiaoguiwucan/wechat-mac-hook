@@ -79,9 +79,45 @@ class HermesAutomationTests(unittest.TestCase):
             "hermes_mode": "answer",
         })
         self.assertTrue(result["accepted"])
-        self.assertIn("调用 Hermes", result["message"])
-        queued = self.service.tasks.get_nowait()
+        self.assertEqual(result["message"], "")
+        self.assertTrue(result["deferred_ack"])
+        self.assertEqual(result["queue"], "read")
+        queued = self.service.queues["read"].get_nowait()
         self.assertEqual(queued["purpose"], "answer")
+
+    def test_completed_read_query_is_reused_from_long_cache(self):
+        self.event.text = "上海天气怎么样"
+        first = self.service.submit(self.event, {
+            "risk_level": "read",
+            "automation_intent": self.event.text,
+            "hermes_mode": "answer",
+        })
+        self.store.update_automation_run(
+            first["run_id"], status="completed", result_summary="上海晴，最高34℃"
+        )
+        second_event = SimpleNamespace(
+            group_id=self.event.group_id, user_id="another",
+            event_id="event-2", message_id="message-2",
+            text="@小风 帮我查上海天气怎么样", trace_id="trace-2",
+        )
+        second = self.service.submit(second_event, {
+            "risk_level": "read",
+            "automation_intent": second_event.text,
+            "hermes_mode": "answer",
+        })
+        self.assertTrue(second["accepted"])
+        self.assertTrue(second["cached"])
+        self.assertEqual(second["queue"], "cache")
+        self.assertIn("最高34", second["message"])
+
+    def test_worker_pools_default_to_high_concurrency(self):
+        snapshot = self.service.snapshot()
+        self.assertEqual(snapshot["worker_count"], 32)
+        self.assertEqual(snapshot["pools"]["read"]["workers"], 16)
+        self.assertEqual(snapshot["pools"]["cron"]["workers"], 6)
+        self.assertEqual(snapshot["pools"]["ops"]["workers"], 8)
+        self.assertEqual(snapshot["pools"]["high"]["workers"], 2)
+        self.assertEqual(snapshot["answer_ack_delay_seconds"], 30)
 
     def test_global_owner_can_create_schedule_from_any_group(self):
         service = HermesAutomationService(

@@ -353,6 +353,9 @@ class MemoryStore:
                   user_id TEXT NOT NULL,
                   intent TEXT NOT NULL,
                   risk_level TEXT NOT NULL DEFAULT 'read',
+                  purpose TEXT NOT NULL DEFAULT 'automation',
+                  queue_name TEXT NOT NULL DEFAULT 'ops',
+                  cache_key TEXT NOT NULL DEFAULT '',
                   status TEXT NOT NULL DEFAULT 'queued',
                   hermes_run_id TEXT NOT NULL DEFAULT '',
                   result_summary TEXT NOT NULL DEFAULT '',
@@ -649,6 +652,22 @@ class MemoryStore:
             # so an old edit is never silently mistaken for a new manual override.
             db.execute("UPDATE personas SET auto_summary=summary WHERE auto_summary='' AND summary!=''")
 
+            automation_cols = {
+                r["name"] for r in db.execute("PRAGMA table_info(automation_runs)").fetchall()
+            }
+            automation_migrations = {
+                "purpose": "ALTER TABLE automation_runs ADD COLUMN purpose TEXT NOT NULL DEFAULT 'automation'",
+                "queue_name": "ALTER TABLE automation_runs ADD COLUMN queue_name TEXT NOT NULL DEFAULT 'ops'",
+                "cache_key": "ALTER TABLE automation_runs ADD COLUMN cache_key TEXT NOT NULL DEFAULT ''",
+            }
+            for col, sql in automation_migrations.items():
+                if col not in automation_cols:
+                    db.execute(sql)
+            db.execute(
+                """CREATE INDEX IF NOT EXISTS idx_automation_runs_cache
+                   ON automation_runs(group_id,cache_key,status,updated_at)"""
+            )
+
             # Voice pack migrations.
             db.execute(
                 """
@@ -930,13 +949,18 @@ class MemoryStore:
         with self.connect() as db:
             cur = db.execute(
                 """INSERT OR IGNORE INTO automation_runs(
-                     run_id,idempotency_key,source_event_id,group_id,user_id,intent,risk_level,status,updated_at)
-                   VALUES(?,?,?,?,?,?,?,? ,?)""",
+                     run_id,idempotency_key,source_event_id,group_id,user_id,intent,
+                     risk_level,purpose,queue_name,cache_key,status,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     str(item["run_id"]), str(item["idempotency_key"]),
                     str(item.get("source_event_id") or ""), str(item["group_id"]),
                     str(item["user_id"]), str(item.get("intent") or ""),
-                    str(item.get("risk_level") or "read"), str(item.get("status") or "queued"),
+                    str(item.get("risk_level") or "read"),
+                    str(item.get("purpose") or "automation"),
+                    str(item.get("queue_name") or "ops"),
+                    str(item.get("cache_key") or ""),
+                    str(item.get("status") or "queued"),
                     now_ts(),
                 ),
             )
@@ -983,6 +1007,35 @@ class MemoryStore:
         params.append(max(1, min(200, int(limit or 50))))
         with self.connect() as db:
             return [dict(row) for row in db.execute(sql, params).fetchall()]
+
+    def cached_automation_result(
+        self, group_id: str, cache_key: str, max_age_seconds: int
+    ) -> Dict[str, Any]:
+        if not group_id or not cache_key or int(max_age_seconds) <= 0:
+            return {}
+        with self.connect() as db:
+            row = db.execute(
+                """SELECT * FROM automation_runs
+                   WHERE group_id=? AND cache_key=? AND risk_level='read'
+                     AND purpose='answer' AND status='completed' AND result_summary!=''
+                   ORDER BY updated_at DESC LIMIT 1""",
+                (str(group_id), str(cache_key)),
+            ).fetchone()
+        if not row:
+            return {}
+        result = dict(row)
+        try:
+            updated_at = time.mktime(
+                time.strptime(str(result.get("updated_at") or ""), "%Y-%m-%d %H:%M:%S")
+            )
+        except (TypeError, ValueError, OverflowError):
+            return {}
+        age_seconds = max(0.0, time.time() - updated_at)
+        if age_seconds > int(max_age_seconds):
+            return {}
+        result["cache_age_seconds"] = round(age_seconds, 1)
+        result["cache_ttl_seconds"] = int(max_age_seconds)
+        return result
 
     def search_messages(self, query: str = "", group_id: str = "", user_id: str = "", limit: int = 50) -> List[Dict[str, Any]]:
         limit = max(1, min(300, int(limit or 50)))
