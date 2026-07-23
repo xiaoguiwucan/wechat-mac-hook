@@ -37,11 +37,19 @@ manifest = [
     {"object": obj.object_name, "size": obj.size, "etag": obj.etag}
     for obj in client.list_objects(bucket, recursive=True)
 ]
+(dest / "minio-objects").mkdir(parents=True, exist_ok=True)
+for item in manifest:
+    target = dest / "minio-objects" / item["object"]
+    target.parent.mkdir(parents=True, exist_ok=True)
+    client.fget_object(bucket, item["object"], str(target))
 (dest / "minio-manifest.json").write_text(
     json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
 )
 PY
 
+(cd "$DEST" && find minio-objects -type f -exec shasum -a 256 {} + | sort) \
+  > "$DEST/MINIO_SHA256SUMS"
 shasum -a 256 "$DEST/edge-memory.sqlite" "$DEST/postgres.dump" \
-  "$DEST/minio-manifest.json" > "$DEST/SHA256SUMS"
+  "$DEST/minio-manifest.json" "$DEST/MINIO_SHA256SUMS" > "$DEST/SHA256SUMS"
+chmod -R go-rwx "$DEST"
 echo "$DEST"

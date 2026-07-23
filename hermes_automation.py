@@ -48,7 +48,7 @@ class HermesConfig:
             api_key=os.getenv("HERMES_API_KEY", ""),
             workspace=os.getenv(
                 "HERMES_WORKSPACE",
-                "/Users/zkx/Documents/cursor/macos版本微信插件",
+                "/Users/zkx/Projects/wechat-agent-advanced",
             ),
             poll_seconds=max(0.5, min(10.0, float(os.getenv("HERMES_POLL_SECONDS", "1")))),
             max_run_seconds=max(60, min(86400, int(os.getenv("HERMES_MAX_RUN_SECONDS", "3600")))),
@@ -458,9 +458,10 @@ class HermesAutomationService:
                     "查询或删除真实的 Hermes Cron 任务，不得回答“做不了”。"
                     f"\n来源群 group_id={task['group_id']}，发起人 user_id={task['user_id']}。"
                     "\n新建任务时 deliver 必须设为 local，并在 Cron 任务 prompt 中明确要求："
-                    "任务触发后使用 Python urllib 向 http://127.0.0.1:58080/send_group_msg "
-                    "POST JSON，group_id 使用上述来源群，message 必须使用 OneBot 消息段数组，"
-                    "向群里发送最终提醒或任务结果。这样仍复用现有唯一微信 Hook，不启用 Hermes 微信通道。"
+                    "任务触发后使用 Python urllib 向 http://127.0.0.1:36060/automation/deliver "
+                    "POST JSON，字段为 group_id、message、job_id；group_id 使用上述来源群。"
+                    "该内部入口会统一完成 OneBot 发送和消息归档，仍复用现有唯一微信 Hook，"
+                    "不启用 Hermes 微信通道，也不要直接请求 58080。"
                     "\n创建成功后返回任务名称、job_id、下次执行时间和是否重复。"
                 )
         if answer_mode:

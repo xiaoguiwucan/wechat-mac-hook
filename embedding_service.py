@@ -6,6 +6,7 @@ import json
 import collections
 import concurrent.futures
 import hashlib
+import math
 import re
 import threading
 import time
@@ -42,6 +43,7 @@ class EmbeddingConfig:
     timeout_seconds: int = 120
     query_instruction: str = DEFAULT_QUERY_INSTRUCTION
     auto_backfill: bool = True
+    backend: str = "openai_compatible"
     vector_limit: int = 60
     fts_limit: int = 30
     person_limit: int = 12
@@ -65,12 +67,17 @@ class EmbeddingConfig:
             enabled=bool(value.get("enabled", True)),
             base_url=str(value.get("base_url") or "http://127.0.0.1:8017/v1").rstrip("/"),
             model=str(value.get("model") or "Qwen3-Embedding-8B-mxfp8"),
-            reranker_model=str(value.get("reranker_model") or "Qwen3-Reranker-4B-mxfp8"),
+            reranker_model=(
+                str(value["reranker_model"])
+                if "reranker_model" in value
+                else "Qwen3-Reranker-4B-mxfp8"
+            ),
             dimensions=max(32, min(4096, int(value.get("dimensions", 4096)))),
             batch_size=max(1, min(64, int(value.get("batch_size", 32)))),
             timeout_seconds=max(5, min(600, int(value.get("timeout_seconds", 120)))),
             query_instruction=str(value.get("query_instruction") or DEFAULT_QUERY_INSTRUCTION),
             auto_backfill=bool(value.get("auto_backfill", True)),
+            backend=str(value.get("backend") or "openai_compatible"),
             vector_limit=max(12, min(200, int(retrieval.get("vector_limit", 60)))),
             fts_limit=max(8, min(100, int(retrieval.get("fts_limit", 30)))),
             person_limit=max(4, min(50, int(retrieval.get("person_limit", 12)))),
@@ -228,6 +235,8 @@ class EmbeddingService:
         values = [str(x).strip() for x in texts]
         if not values:
             return []
+        if self.cfg.backend == "local_hash":
+            return [self._local_hash_vector(value) for value in values]
         if query:
             values = [f"Instruct: {self.cfg.query_instruction}\nQuery:{x}" for x in values]
         obj = self._inference_request("/embeddings", {
@@ -239,6 +248,19 @@ class EmbeddingService:
         }, live=query)
         rows = sorted(obj.get("data") or [], key=lambda x: int(x.get("index", 0)))
         return [[float(v) for v in row.get("embedding") or []] for row in rows]
+
+    def _local_hash_vector(self, value: str) -> List[float]:
+        """Zero-model Chinese character n-gram vector for low-memory deployments."""
+        text = " ".join(str(value or "").lower().split())
+        tokens = [char for char in text if not char.isspace()]
+        tokens.extend(text[i:i + 2] for i in range(max(0, len(text) - 1)))
+        vector = [0.0] * self.cfg.dimensions
+        for token in tokens:
+            digest = hashlib.blake2b(token.encode("utf-8", "ignore"), digest_size=8).digest()
+            index = int.from_bytes(digest[:4], "big") % self.cfg.dimensions
+            vector[index] += -1.0 if digest[4] & 1 else 1.0
+        norm = math.sqrt(sum(item * item for item in vector)) or 1.0
+        return [item / norm for item in vector]
 
     def rerank(self, query: str, documents: List[str], top_n: int = 12) -> List[Dict[str, Any]]:
         if not documents or not self.cfg.reranker_model:

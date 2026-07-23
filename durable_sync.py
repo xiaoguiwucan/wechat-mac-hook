@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-from memory_store import MemoryStore
+from memory_store import MemoryStore, now_ts
 
 
 ROOT = Path(__file__).resolve().parent
@@ -77,7 +77,13 @@ class DurableSyncService:
             "media_uploaded": 0,
             "last_error": "",
             "last_sync_at": "",
+            "automation_runs_synced": 0,
+            "automation_events_synced": 0,
         }
+        self._last_automation_event_id = 0
+        self._last_embedding_id = 0
+        self._last_automation_sync = 0.0
+        self._last_memory_projection_sync = 0.0
 
     def start(self) -> None:
         if self.cfg.enabled and not self.worker.is_alive():
@@ -285,6 +291,122 @@ class DurableSyncService:
             canonical_payload["event_id"] = canonical_event_id
             self._archive_media(pg, canonical_payload)
 
+    def sync_automation(self) -> None:
+        """Mirror local Hermes task state into PostgreSQL without blocking replies."""
+        pg = self._connect()
+        runs = self.store.automation_runs(limit=200)
+        events = self.store.automation_events_since(self._last_automation_event_id, 1000)
+        with pg.transaction():
+            with pg.cursor() as cur:
+                for row in runs:
+                    cur.execute(
+                        """INSERT INTO automation_runs(
+                             run_id,idempotency_key,source_event_id,group_id,user_id,intent,
+                             risk_level,status,hermes_run_id,result_summary,error,created_at,updated_at)
+                           VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::timestamp,%s::timestamp)
+                           ON CONFLICT(run_id) DO UPDATE SET
+                             status=excluded.status,hermes_run_id=excluded.hermes_run_id,
+                             result_summary=excluded.result_summary,error=excluded.error,
+                             updated_at=excluded.updated_at""",
+                        (
+                            row["run_id"], row["idempotency_key"], row.get("source_event_id", ""),
+                            row["group_id"], row["user_id"], row["intent"],
+                            row.get("risk_level", "read"), row.get("status", "queued"),
+                            row.get("hermes_run_id", ""), row.get("result_summary", ""),
+                            row.get("error", ""), row.get("created_at") or now_ts(),
+                            row.get("updated_at") or now_ts(),
+                        ),
+                    )
+                for event in events:
+                    cur.execute(
+                        """INSERT INTO automation_events(
+                             local_event_id,run_id,event_type,payload,created_at)
+                           VALUES(%s,%s,%s,%s::jsonb,%s::timestamp)
+                           ON CONFLICT(local_event_id) WHERE local_event_id IS NOT NULL
+                           DO NOTHING""",
+                        (
+                            int(event["id"]), event["run_id"], event["event_type"],
+                            event.get("payload_json") or "{}", event.get("created_at") or now_ts(),
+                        ),
+                    )
+        if events:
+            self._last_automation_event_id = max(int(row["id"]) for row in events)
+        with self.lock:
+            self.state["automation_runs_synced"] = len(runs)
+            self.state["automation_events_synced"] += len(events)
+
+    def sync_memory_projection(self) -> None:
+        """Backfill lightweight local vectors, facts and summaries to the central store."""
+        pg = self._connect()
+        if self._last_embedding_id == 0:
+            with pg.cursor() as cur:
+                cur.execute("SELECT COALESCE(MAX(source_local_id),0) AS value FROM memory_embeddings")
+                row = cur.fetchone() or {}
+                self._last_embedding_id = int(row.get("value") or 0)
+        embeddings = self.store.embeddings_after(self._last_embedding_id, 100)
+        projection = self.store.memory_projection_snapshot()
+        with pg.transaction():
+            with pg.cursor() as cur:
+                for row in embeddings:
+                    # Central halfvec/HNSW has a 4000-D limit; the local 4096-D
+                    # vector remains authoritative and the derived index is truncated.
+                    vector = row["vector"][:4000]
+                    encoded = "[" + ",".join(f"{float(value):.8g}" for value in vector) + "]"
+                    cur.execute(
+                        """INSERT INTO memory_embeddings(
+                             object_type,object_id,group_id,model,source_local_id,embedding,updated_at)
+                           VALUES(%s,%s,%s,%s,%s,%s::halfvec,%s::timestamp)
+                           ON CONFLICT(object_type,object_id,model) DO UPDATE SET
+                             group_id=excluded.group_id,embedding=excluded.embedding,
+                             source_local_id=excluded.source_local_id,
+                             updated_at=excluded.updated_at""",
+                        (
+                            row["object_type"], row["object_id"], row["group_id"], row["model"],
+                            int(row["id"]), encoded, row.get("updated_at") or now_ts(),
+                        ),
+                    )
+                for fact in projection["facts"]:
+                    evidence = []
+                    try:
+                        raw = json.loads(fact.get("evidence_json") or "[]")
+                        evidence = [
+                            str(item.get("event_id") or item.get("message_id") or item)
+                            for item in raw if item
+                        ][:20]
+                    except (TypeError, ValueError):
+                        pass
+                    cur.execute(
+                        """INSERT INTO memory_facts(
+                             id,group_id,user_id,category,value,confidence,source_event_ids,updated_at)
+                           VALUES(%s,%s,%s,%s,%s,%s,%s,%s::timestamp)
+                           ON CONFLICT(id) DO UPDATE SET
+                             value=excluded.value,confidence=excluded.confidence,
+                             source_event_ids=excluded.source_event_ids,updated_at=excluded.updated_at""",
+                        (
+                            int(fact["id"]), fact["group_id"], fact["user_id"], fact["category"],
+                            fact["value"], float(fact.get("confidence") or 0), evidence,
+                            fact.get("updated_at") or now_ts(),
+                        ),
+                    )
+                for summary in projection["summaries"]:
+                    cur.execute(
+                        """INSERT INTO memory_summaries(
+                             scope_type,scope_id,group_id,summary,updated_at)
+                           VALUES(%s,%s,%s,%s,%s::timestamp)
+                           ON CONFLICT(scope_type,scope_id,group_id) DO UPDATE SET
+                             summary=excluded.summary,updated_at=excluded.updated_at""",
+                        (
+                            summary["scope_type"], summary["scope_id"], summary["group_id"],
+                            summary["summary"], summary.get("updated_at") or now_ts(),
+                        ),
+                    )
+        if embeddings:
+            self._last_embedding_id = max(int(row["id"]) for row in embeddings)
+        with self.lock:
+            self.state["central_embeddings_synced"] = self._last_embedding_id
+            self.state["central_facts_synced"] = len(projection["facts"])
+            self.state["central_summaries_synced"] = len(projection["summaries"])
+
     def _loop(self) -> None:
         try:
             self._connect()
@@ -293,6 +415,20 @@ class DurableSyncService:
                 self.state["connected"] = False
                 self.state["last_error"] = str(exc)[:1000]
         while not self.stop_event.is_set():
+            if time.monotonic() - self._last_automation_sync >= 2.0:
+                try:
+                    self.sync_automation()
+                    self._last_automation_sync = time.monotonic()
+                except Exception as exc:
+                    with self.lock:
+                        self.state["last_error"] = f"automation_sync: {str(exc)[:900]}"
+            if time.monotonic() - self._last_memory_projection_sync >= 2.0:
+                try:
+                    self.sync_memory_projection()
+                    self._last_memory_projection_sync = time.monotonic()
+                except Exception as exc:
+                    with self.lock:
+                        self.state["last_error"] = f"memory_projection: {str(exc)[:900]}"
             rows = self.store.pending_durable_outbox(self.cfg.batch_size)
             if not rows:
                 self.wake_event.wait(self.cfg.poll_seconds)

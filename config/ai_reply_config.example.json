@@ -41,11 +41,11 @@
   },
   "router": {
     "enabled": true,
-    "base_url": "http://127.0.0.1:8000/v1",
+    "base_url": "https://api.deepseek.com/v1",
     "api_key_env": "AI_REPLY_CHANNEL_PRIMARY_API_KEY",
-    "model": "grok-chat-fast",
-    "timeout_seconds": 2,
-    "max_tokens": 320
+    "model": "deepseek-v4-flash",
+    "timeout_seconds": 4,
+    "max_tokens": 384
   },
   "tools": {
     "enabled": true,
@@ -129,10 +129,11 @@
     }
   },
   "embedding": {
-    "enabled": false,
+    "enabled": true,
+    "backend": "local_hash",
     "base_url": "http://127.0.0.1:8017/v1",
-    "model": "Qwen3-Embedding-8B-mxfp8",
-    "reranker_model": "Qwen3-Reranker-4B-mxfp8",
+    "model": "local-hash-chargram-v1",
+    "reranker_model": "",
     "dimensions": 4096,
     "batch_size": 32,
     "timeout_seconds": 120,
@@ -149,7 +150,7 @@
     "adaptive_rerank": true,
     "rerank_cache_seconds": 600,
     "realtime_deadline_ms": 250,
-    "realtime_semantic_enabled": false,
+    "realtime_semantic_enabled": true,
     "realtime_rerank_enabled": false
   },
   "media_reply": {

@@ -207,6 +207,14 @@ class MemoryStore:
         self.path = Path(path).expanduser()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.init_db()
+        try:
+            self.path.chmod(0o600)
+            for sidecar in (self.path.with_name(self.path.name + "-wal"),
+                            self.path.with_name(self.path.name + "-shm")):
+                if sidecar.exists():
+                    sidecar.chmod(0o600)
+        except OSError:
+            pass
 
     def connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.path), timeout=30, check_same_thread=False, factory=ManagedConnection)
@@ -946,12 +954,13 @@ class MemoryStore:
         }
 
     def create_automation_run(self, item: Dict[str, Any]) -> tuple[bool, Dict[str, Any]]:
+        timestamp = now_ts()
         with self.connect() as db:
             cur = db.execute(
                 """INSERT OR IGNORE INTO automation_runs(
                      run_id,idempotency_key,source_event_id,group_id,user_id,intent,
-                     risk_level,purpose,queue_name,cache_key,status,updated_at)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                     risk_level,purpose,queue_name,cache_key,status,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     str(item["run_id"]), str(item["idempotency_key"]),
                     str(item.get("source_event_id") or ""), str(item["group_id"]),
@@ -961,7 +970,8 @@ class MemoryStore:
                     str(item.get("queue_name") or "ops"),
                     str(item.get("cache_key") or ""),
                     str(item.get("status") or "queued"),
-                    now_ts(),
+                    timestamp,
+                    timestamp,
                 ),
             )
             row = db.execute(
@@ -1007,6 +1017,60 @@ class MemoryStore:
         params.append(max(1, min(200, int(limit or 50))))
         with self.connect() as db:
             return [dict(row) for row in db.execute(sql, params).fetchall()]
+
+    def automation_events_since(self, event_id: int = 0, limit: int = 1000) -> List[Dict[str, Any]]:
+        with self.connect() as db:
+            rows = db.execute(
+                """SELECT id,run_id,event_type,payload_json,created_at
+                   FROM automation_events WHERE id>? ORDER BY id LIMIT ?""",
+                (max(0, int(event_id)), max(1, min(5000, int(limit)))),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def embeddings_after(self, embedding_id: int = 0, limit: int = 50) -> List[Dict[str, Any]]:
+        with self.connect() as db:
+            rows = db.execute(
+                """SELECT id,object_type,object_id,group_id,model,dimensions,vector_blob,updated_at
+                   FROM semantic_embeddings
+                   WHERE status='ready' AND id>? ORDER BY id LIMIT ?""",
+                (max(0, int(embedding_id)), max(1, min(200, int(limit)))),
+            ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["vector"] = self._unpack_vector(item.pop("vector_blob"), int(item["dimensions"]))
+            result.append(item)
+        return result
+
+    def memory_projection_snapshot(self) -> Dict[str, List[Dict[str, Any]]]:
+        with self.connect() as db:
+            facts = [
+                dict(row) for row in db.execute(
+                    """SELECT id,group_id,user_id,category,value,confidence,evidence_json,updated_at
+                       FROM persona_claims ORDER BY id"""
+                ).fetchall()
+            ]
+            summaries = [
+                {
+                    "scope_type": "person", "scope_id": str(row["user_id"]),
+                    "group_id": str(row["group_id"]), "summary": str(row["summary"] or ""),
+                    "updated_at": str(row["updated_at"] or ""),
+                }
+                for row in db.execute(
+                    "SELECT user_id,group_id,summary,updated_at FROM personas WHERE summary!=''"
+                ).fetchall()
+            ]
+            summaries.extend(
+                {
+                    "scope_type": "group", "scope_id": str(row["group_id"]),
+                    "group_id": str(row["group_id"]), "summary": str(row["summary"] or ""),
+                    "updated_at": str(row["updated_at"] or ""),
+                }
+                for row in db.execute(
+                    "SELECT group_id,summary,updated_at FROM group_memory WHERE summary!=''"
+                ).fetchall()
+            )
+        return {"facts": facts, "summaries": summaries}
 
     def cached_automation_result(
         self, group_id: str, cache_key: str, max_age_seconds: int

@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS memory_embeddings (
   object_id TEXT NOT NULL,
   group_id TEXT NOT NULL,
   model TEXT NOT NULL,
+  source_local_id BIGINT,
   -- pgvector HNSW supports halfvec up to 4000 dimensions. Existing 4096-D
   -- local vectors are truncated only in the derived central index; raw source
   -- text remains authoritative and can always rebuild the index.
@@ -65,6 +66,9 @@ CREATE TABLE IF NOT EXISTS memory_embeddings (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY(object_type, object_id, model)
 );
+ALTER TABLE memory_embeddings ADD COLUMN IF NOT EXISTS source_local_id BIGINT;
+CREATE INDEX IF NOT EXISTS idx_memory_embeddings_source_local_id
+  ON memory_embeddings(source_local_id);
 CREATE INDEX IF NOT EXISTS memory_embeddings_hnsw_idx
   ON memory_embeddings USING hnsw (embedding halfvec_cosine_ops);
 
@@ -133,11 +137,15 @@ CREATE TABLE IF NOT EXISTS automation_runs (
 
 CREATE TABLE IF NOT EXISTS automation_events (
   id BIGSERIAL PRIMARY KEY,
+  local_event_id BIGINT UNIQUE,
   run_id TEXT NOT NULL REFERENCES automation_runs(run_id) ON DELETE CASCADE,
   event_type TEXT NOT NULL,
   payload JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE automation_events ADD COLUMN IF NOT EXISTS local_event_id BIGINT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_events_local_id
+  ON automation_events(local_event_id) WHERE local_event_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS permission_bindings (
   group_id TEXT NOT NULL,

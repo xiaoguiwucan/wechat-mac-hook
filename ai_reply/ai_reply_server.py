@@ -15,6 +15,7 @@ import concurrent.futures
 import hashlib
 import hmac
 import html
+import io
 import json
 import mimetypes
 import os
@@ -39,6 +40,13 @@ from typing import Any, Deque, Dict, List, Optional, Tuple
 
 DEFAULT_CONFIG = Path(__file__).resolve().parents[1] / "config" / "ai_reply_config.json"
 DEFAULT_HOME = Path.home() / "Library" / "Application Support" / "WeChatAgent"
+_TEST_MODE = (
+    os.getenv("WECHAT_AGENT_TEST_MODE", "").lower() in {"1", "true", "yes"}
+    or "unittest" in sys.modules
+    or any("pytest" in arg for arg in sys.argv)
+)
+if _TEST_MODE:
+    DEFAULT_HOME = Path(tempfile.gettempdir()) / f"WeChatAgent-tests-{os.getpid()}"
 LOG_PATH = DEFAULT_HOME / "logs" / "ai-reply.log"
 PID_PATH = DEFAULT_HOME / "ai-reply.pid"
 SAFETY_STATE_PATH = DEFAULT_HOME / "safety-state.json"
@@ -72,12 +80,28 @@ _log_lock = threading.Lock()
 _event_lock = threading.Lock()
 
 
+def _rotate_jsonl(path: Path, max_bytes: int = 20 * 1024 * 1024, keep: int = 5) -> None:
+    try:
+        if not path.exists() or path.stat().st_size < max_bytes:
+            return
+        oldest = path.with_name(path.name + f".{keep}")
+        oldest.unlink(missing_ok=True)
+        for index in range(keep - 1, 0, -1):
+            source = path.with_name(path.name + f".{index}")
+            if source.exists():
+                source.replace(path.with_name(path.name + f".{index + 1}"))
+        path.replace(path.with_name(path.name + ".1"))
+    except OSError:
+        pass
+
+
 def log(level: str, msg: str, **fields: Any) -> None:
     ensure_dirs()
     rec = {"time": now_ts(), "level": level, "msg": msg}
     rec.update(fields)
     line = json.dumps(rec, ensure_ascii=False)
     with _log_lock:
+        _rotate_jsonl(LOG_PATH)
         with LOG_PATH.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
         print(line, flush=True)
@@ -87,6 +111,7 @@ def emit_brain_event(event: Dict[str, Any]) -> None:
     ensure_dirs()
     line = json.dumps(event, ensure_ascii=False)
     with _event_lock:
+        _rotate_jsonl(EVENTS_PATH)
         with EVENTS_PATH.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
 
@@ -1292,7 +1317,8 @@ class AIReplyService:
         )
         prompt = (
             "从微信群记录中提取可永久保存的群文化。只输出JSON，结构为"
-            '{"aliases":[{"user_id":"","alias":"","confidence":0-1,"evidence":[]}],'
+            '{"summary":"基于本批记录的简短群摘要","facts":[{"value":"","evidence":[]}],'
+            '"aliases":[{"user_id":"","alias":"","confidence":0-1,"evidence":[]}],'
             '"relations":[{"from_user_id":"","to_user_id":"","relation":"","confidence":0-1,"evidence":[]}],'
             '"memes":[{"name":"","meaning":"","triggers":[],"confidence":0-1,"evidence":[],"related_media":[]}]}。'
             "置信度仅用于排序，所有有文本证据的结果都保留；不要根据否定反馈删除或停用旧记录。\n" + transcript
@@ -1306,6 +1332,14 @@ class AIReplyService:
         cleaned = re.sub(r"^```(?:json)?|```$", "", reply.strip(), flags=re.I).strip()
         start, end = cleaned.find("{"), cleaned.rfind("}")
         obj = json.loads(cleaned[start:end + 1])
+        summary = str(obj.get("summary") or "").strip()[:2000]
+        facts = [
+            item for item in (obj.get("facts") or [])
+            if isinstance(item, dict) and str(item.get("value") or "").strip()
+            and list(item.get("evidence") or [])
+        ][:30]
+        if summary or facts:
+            self.store.save_group_memory(evt.group_id, summary, facts)
         counts = {"aliases": 0, "relations": 0, "memes": 0}
         for item in obj.get("aliases") or []:
             if item.get("user_id") and item.get("alias"):
@@ -1772,20 +1806,84 @@ class AIReplyService:
         value = str(value or "").strip()
         if not value:
             raise ValueError("图片路径为空")
-        if value.startswith(("http://", "https://", "data:image/")):
-            return value
+        if value.startswith("data:image/"):
+            try:
+                header, encoded = value.split(",", 1)
+                raw = base64.b64decode(encoded, validate=True)
+                hinted = header[5:].split(";", 1)[0]
+                raw, mime = self._normalized_image(raw, hinted)
+                return f"data:{mime};base64," + base64.b64encode(raw).decode("ascii")
+            except Exception as exc:
+                raise ValueError(f"图片 data URL 无效：{exc}") from exc
+        if value.startswith(("http://", "https://")):
+            req = urllib.request.Request(value, headers={"User-Agent": "WeChatAgent/1.0"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                raw = resp.read(10 * 1024 * 1024 + 1)
+                mime = str(resp.headers.get_content_type() or "")
+            if len(raw) > 10 * 1024 * 1024:
+                raise ValueError(f"图片超过 10MB：{len(raw)} bytes")
+            raw, mime = self._normalized_image(raw, mime)
+            return f"data:{mime};base64," + base64.b64encode(raw).decode("ascii")
         if value.startswith("file://"):
             value = urllib.parse.unquote(urllib.parse.urlparse(value).path)
         path = Path(value).expanduser()
         if not path.exists() or not path.is_file():
             raise ValueError(f"图片文件不存在：{value}")
-        mime = mimetypes.guess_type(str(path))[0] or "image/jpeg"
-        if not mime.startswith("image/"):
-            raise ValueError(f"不是图片文件：{value}")
         raw = path.read_bytes()
         if len(raw) > 10 * 1024 * 1024:
             raise ValueError(f"图片超过 10MB：{len(raw)} bytes")
+        raw, mime = self._normalized_image(
+            raw, mimetypes.guess_type(str(path))[0] or ""
+        )
         return f"data:{mime};base64," + base64.b64encode(raw).decode("ascii")
+
+    @staticmethod
+    def _normalized_image(raw: bytes, hinted: str = "") -> tuple[bytes, str]:
+        signatures = (
+            (b"\xff\xd8\xff", "image/jpeg"),
+            (b"\x89PNG\r\n\x1a\n", "image/png"),
+            (b"GIF87a", "image/gif"),
+            (b"GIF89a", "image/gif"),
+            (b"RIFF", "image/webp"),
+            (b"\x00\x00\x01\x00", "image/x-icon"),
+        )
+        for prefix, mime in signatures:
+            if raw.startswith(prefix):
+                if mime == "image/webp" and raw[8:12] != b"WEBP":
+                    continue
+                try:
+                    from PIL import Image  # type: ignore
+                    with Image.open(io.BytesIO(raw)) as image:
+                        image.seek(0)
+                        image.load()
+                        normalized = image.convert(
+                            "RGBA" if "A" in image.getbands() else "RGB"
+                        )
+                        output = io.BytesIO()
+                        normalized.save(output, format="PNG", optimize=True)
+                    return output.getvalue(), "image/png"
+                except ImportError:
+                    suffix = {
+                        "image/jpeg": ".jpg", "image/png": ".png",
+                        "image/gif": ".gif", "image/webp": ".webp",
+                        "image/x-icon": ".ico",
+                    }.get(mime, ".img")
+                    with tempfile.TemporaryDirectory(prefix="wechat-image-") as temp:
+                        source = Path(temp) / ("source" + suffix)
+                        target = Path(temp) / "normalized.png"
+                        source.write_bytes(raw)
+                        proc = subprocess.run(
+                            ["/usr/bin/sips", "-s", "format", "png", str(source),
+                             "--out", str(target)],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            timeout=15, text=True,
+                        )
+                        if proc.returncode or not target.is_file():
+                            raise ValueError(f"图片文件损坏：{proc.stdout[-300:]}")
+                        return target.read_bytes(), "image/png"
+                except Exception as exc:
+                    raise ValueError(f"图片文件损坏：{exc}") from exc
+        raise ValueError(f"图片内容格式无效（声明类型：{hinted or 'unknown'}）")
 
     def vision_api_key(self) -> str:
         return os.getenv(self.cfg.vision_ocr.api_key_env, "") or os.getenv("AI_REPLY_API_KEY", "")
@@ -3120,40 +3218,65 @@ class AIReplyService:
         if not api_key and not channel.base_url.startswith(("http://127.0.0.1", "http://localhost")):
             return "", f"missing API key: {channel.api_key_env}"
         url = channel.base_url.rstrip("/") + "/chat/completions"
-        payload = {
-            "model": channel.model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
-        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        req = urllib.request.Request(url, data=data, method="POST")
-        req.add_header("Content-Type", "application/json")
-        req.add_header("Authorization", "Bearer " + api_key)
-        # Some OpenAI-compatible relays reject urllib's default fingerprint.
-        req.add_header("User-Agent", "openai-python/1.99.0")
-        req.add_header("Accept", "application/json")
         request_started = time.monotonic()
         first_byte_ms = 0.0
-        try:
-            with urllib.request.urlopen(req, timeout=channel.timeout_seconds) as resp:
-                first_byte_ms = (time.monotonic() - request_started) * 1000
-                body = resp.read().decode("utf-8", "replace")
-        except urllib.error.HTTPError as e:
-            body = e.read().decode("utf-8", "replace") if e.fp else ""
-            return "", f"HTTP {e.code}: {body[:500]}"
-        except Exception as e:
-            return "", str(e)
-        try:
-            obj = json.loads(body)
-            reply = obj["choices"][0]["message"]["content"]
-            total_ms = (time.monotonic() - request_started) * 1000
-            log("info", "ai_reply_generated", group_id=evt.group_id, chars=len(reply),
-                model=channel.model, channel_id=channel.id, trace_id=evt.trace_id,
-                first_byte_ms=round(first_byte_ms, 1), total_ms=round(total_ms, 1))
-            return str(reply), ""
-        except Exception as e:
-            return "", f"response parse error: {e}; body={body[:500]}"
+        body = ""
+        for attempt in range(2):
+            attempt_tokens = max_tokens if attempt == 0 else min(2000, max_tokens * 2)
+            payload = {
+                "model": channel.model,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": attempt_tokens,
+            }
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                method="POST",
+            )
+            req.add_header("Content-Type", "application/json")
+            req.add_header("Authorization", "Bearer " + api_key)
+            # Some OpenAI-compatible relays reject urllib's default fingerprint.
+            req.add_header("User-Agent", "openai-python/1.99.0")
+            req.add_header("Accept", "application/json")
+            try:
+                with urllib.request.urlopen(req, timeout=channel.timeout_seconds) as resp:
+                    if not first_byte_ms:
+                        first_byte_ms = (time.monotonic() - request_started) * 1000
+                    body = resp.read().decode("utf-8", "replace")
+            except urllib.error.HTTPError as e:
+                body = e.read().decode("utf-8", "replace") if e.fp else ""
+                return "", f"HTTP {e.code}: {body[:500]}"
+            except Exception as e:
+                return "", str(e)
+            try:
+                obj = json.loads(body)
+                choice = obj["choices"][0]
+                message = choice["message"]
+                reply = str(message.get("content") or "")
+                if reply.strip():
+                    total_ms = (time.monotonic() - request_started) * 1000
+                    log("info", "ai_reply_generated", group_id=evt.group_id, chars=len(reply),
+                        model=channel.model, channel_id=channel.id, trace_id=evt.trace_id,
+                        first_byte_ms=round(first_byte_ms, 1), total_ms=round(total_ms, 1),
+                        attempts=attempt + 1)
+                    return reply, ""
+                if (
+                    attempt == 0
+                    and str(choice.get("finish_reason") or "") == "length"
+                    and str(message.get("reasoning_content") or "").strip()
+                ):
+                    log(
+                        "warning", "ai_empty_after_reasoning_retry",
+                        group_id=evt.group_id, model=channel.model,
+                        channel_id=channel.id, max_tokens=attempt_tokens,
+                        trace_id=evt.trace_id,
+                    )
+                    continue
+                return "", "model returned empty content"
+            except Exception as e:
+                return "", f"response parse error: {e}; body={body[:500]}"
+        return "", "model returned empty content after retry"
 
     def extract_voice_marker(self, reply: str) -> Optional[str]:
         """Normalize both current and legacy model voice commands."""
@@ -3480,6 +3603,23 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(404, {"status": "not_found"})
 
     def do_POST(self) -> None:
+        if self.path == "/automation/deliver":
+            try:
+                if self.client_address[0] not in {"127.0.0.1", "::1"}:
+                    raise PermissionError("仅允许本机 Hermes 调用")
+                length = int(self.headers.get("Content-Length", "0"))
+                raw = json.loads(self.rfile.read(length).decode("utf-8", "replace")) if length else {}
+                group_id = str(raw.get("group_id") or "").strip()
+                message = str(raw.get("message") or "").strip()
+                job_id = str(raw.get("job_id") or "cron")[:120]
+                if not group_id.endswith("@chatroom") or not message:
+                    raise ValueError("需要有效群 ID 和消息内容")
+                assert SERVICE is not None
+                SERVICE.send_group_msg(group_id, message[:1800], f"hermes-cron-{job_id}")
+                self._send_json(200, {"status": "ok", "archived": True})
+            except Exception as exc:
+                self._send_json(400, {"status": "failed", "error": str(exc)})
+            return
         if self.path in {"/automation/submit", "/automation/approve", "/automation/stop"}:
             try:
                 length = int(self.headers.get("Content-Length", "0"))

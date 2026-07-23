@@ -72,6 +72,8 @@ class GraphitiConfig:
     llm_api_key: str
     llm_model: str
     poll_seconds: float
+    max_coroutines: int
+    batch_size: int
 
     @classmethod
     def from_env(cls) -> "GraphitiConfig":
@@ -85,6 +87,8 @@ class GraphitiConfig:
             llm_api_key=os.getenv("GRAPHITI_LLM_API_KEY", ""),
             llm_model=os.getenv("GRAPHITI_LLM_MODEL", "grok-chat-fast"),
             poll_seconds=max(0.5, min(30.0, float(os.getenv("GRAPHITI_POLL_SECONDS", "2")))),
+            max_coroutines=max(1, min(16, int(os.getenv("GRAPHITI_MAX_COROUTINES", "6")))),
+            batch_size=max(1, min(100, int(os.getenv("GRAPHITI_BATCH_SIZE", "30")))),
         )
 
 
@@ -149,7 +153,7 @@ class GraphitiBridge:
         self.graphiti = Graphiti(
             graph_driver=driver, llm_client=llm, embedder=GraphitiHashEmbedder(),
             cross_encoder=GraphitiLexicalCrossEncoder(),
-            store_raw_episode_content=True, max_coroutines=2,
+            store_raw_episode_content=True, max_coroutines=self.cfg.max_coroutines,
         )
         await self.graphiti.build_indices_and_constraints()
         with self.lock:
@@ -175,12 +179,13 @@ class GraphitiBridge:
                               e.event_time,e.text,e.raw_message
                        FROM graph_sync_jobs j JOIN chat_events e ON e.event_id=j.event_id
                        WHERE j.status IN ('pending','retry') AND j.next_attempt_at<=now()
-                       ORDER BY j.id LIMIT 10"""
+                       ORDER BY j.id LIMIT %s""",
+                    (self.cfg.batch_size,),
                 )
                 rows = list(cur.fetchall())
-            for row in rows:
+            async def process(row: Dict[str, Any]) -> tuple[int, bool, str]:
                 if self.stop_event.is_set():
-                    return
+                    return int(row["id"]), False, "stopped"
                 try:
                     body = (
                         f"群成员：{row.get('sender_name') or row.get('user_id')}\n"
@@ -199,25 +204,35 @@ class GraphitiBridge:
                         group_id=self.graph_group_id(str(row["group_id"])),
                         update_communities=False,
                     )
-                    with pg.cursor() as cur:
-                        cur.execute(
-                            """UPDATE graph_sync_jobs SET status='synced',error='',
-                               updated_at=now() WHERE id=%s""", (row["id"],)
-                        )
-                    with self.lock:
-                        self.state["processed"] += 1
-                        self.state["last_sync_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                    return int(row["id"]), True, ""
                 except Exception as exc:
-                    with pg.cursor() as cur:
-                        cur.execute(
-                            """UPDATE graph_sync_jobs SET status='retry',attempts=attempts+1,
-                               error=%s,next_attempt_at=now()+interval '30 seconds',
-                               updated_at=now() WHERE id=%s""",
-                            (str(exc)[:1000], row["id"]),
-                        )
-                    with self.lock:
-                        self.state["failed"] += 1
-                        self.state["last_error"] = str(exc)[:1000]
+                    return int(row["id"]), False, str(exc)[:1000]
+
+            for offset in range(0, len(rows), self.cfg.max_coroutines):
+                chunk = rows[offset:offset + self.cfg.max_coroutines]
+                results = await asyncio.gather(*(process(row) for row in chunk))
+                for job_id, succeeded, error in results:
+                    if succeeded:
+                        with pg.cursor() as cur:
+                            cur.execute(
+                                """UPDATE graph_sync_jobs SET status='synced',error='',
+                                   updated_at=now() WHERE id=%s""", (job_id,)
+                            )
+                        with self.lock:
+                            self.state["processed"] += 1
+                            self.state["last_sync_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                            self.state["last_error"] = ""
+                    elif error != "stopped":
+                        with pg.cursor() as cur:
+                            cur.execute(
+                                """UPDATE graph_sync_jobs SET status='retry',attempts=attempts+1,
+                                   error=%s,next_attempt_at=now()+interval '30 seconds',
+                                   updated_at=now() WHERE id=%s""",
+                                (error, job_id),
+                            )
+                        with self.lock:
+                            self.state["failed"] += 1
+                            self.state["last_error"] = error
         finally:
             pg.close()
 
