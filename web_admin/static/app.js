@@ -1406,6 +1406,7 @@ async function loadMemoryInfrastructureConfig(silent = false) {
     if ((c.groups || []).some(group => group.id === oldGroup)) $('#infraTaskGroup').value = oldGroup;
     $('#infraMinioLink').href = c.links?.minio_console || 'http://127.0.0.1:9001';
     $('#infraFalkorLink').href = c.links?.falkordb_browser || 'http://127.0.0.1:3101';
+    $('#infraOpenHermesBtn').href = c.links?.hermes_dashboard || 'http://127.0.0.1:9119';
     $('#infraConfigState').textContent = '配置已读取';
   } catch (e) {
     $('#infraConfigState').textContent = `读取失败：${e.message}`;
@@ -2668,7 +2669,6 @@ function bind() {
   $('#refreshMemoryBtn').onclick = () => refreshMemoryStats(); $('#searchMemoryBtn').onclick = e => searchMemory(e.currentTarget); $('#vectorSearchBtn').onclick = e => vectorSearch(e.currentTarget);
   $('#refreshInfraBtn').onclick = e => refreshMemoryInfrastructure(false, e.currentTarget);
   $('#infraConfigForm').onsubmit = e => { e.preventDefault(); saveMemoryInfrastructureConfig(e.submitter || $('#infraSaveConfigBtn')); };
-  $('#infraOpenHermesBtn').onclick = () => $('#infraHermesConsole').scrollIntoView({ behavior: 'smooth', block: 'start' });
   $$('[data-infra-action]').forEach(button => button.onclick = () => runMemoryInfrastructureAction(button.dataset.infraAction, button));
   $('#infraRefreshRunsBtn').onclick = () => loadAutomationRuns();
   $('#infraHermesTaskForm').onsubmit = e => { e.preventDefault(); submitAutomationTask(e.submitter || $('#infraSubmitTaskBtn')); };

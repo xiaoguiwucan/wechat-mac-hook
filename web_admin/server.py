@@ -3374,6 +3374,7 @@ def memory_infrastructure_config() -> Dict[str, Any]:
             "max_run_seconds": int(env.get("HERMES_MAX_RUN_SECONDS", "3600")),
         },
         "links": {
+            "hermes_dashboard": "http://127.0.0.1:9119",
             "minio_console": "http://127.0.0.1:9001",
             "falkordb_browser": "http://127.0.0.1:3101",
         },

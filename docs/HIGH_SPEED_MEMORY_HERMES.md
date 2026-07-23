@@ -70,8 +70,14 @@ PYTHONPATH=tools/runtime/python python3 scripts/migrate_sqlite_to_postgres.py
 - 打开 MinIO 与 FalkorDB 管理界面。
 - 手动创建 Hermes 任务，审批高风险任务，停止排队或运行中的任务。
 
-Hermes Gateway 自身只提供 API，根路径没有独立 Web UI；项目后台中的
-“Hermes 任务控制台”是当前管理入口。
+Hermes 有两套独立入口：
+
+- API Gateway：`http://127.0.0.1:8642`，只提供程序接口，根路径返回 404。
+- 官方 Web Dashboard：`http://127.0.0.1:9119`，提供 Chat、Sessions、Models、
+  Cron、Skills、Plugins、MCP、Config、Keys 和 System 等完整管理页面。
+
+项目后台的“打开真正的 Hermes WebUI”会直接打开官方 Dashboard；页面下方的
+“Hermes 任务控制台”只负责微信机器人侧的任务创建、审批、停止和结果查看。
 
 ## 当前完成度
 
