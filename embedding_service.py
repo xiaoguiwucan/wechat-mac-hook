@@ -51,6 +51,11 @@ class EmbeddingConfig:
     fusion_limit: int = 60
     adaptive_rerank: bool = True
     rerank_cache_seconds: int = 600
+    realtime_deadline_ms: int = 250
+    # Library callers/tests retain the historical behavior. Production config
+    # loaded through from_raw() defaults both realtime model calls to false.
+    realtime_semantic_enabled: bool = True
+    realtime_rerank_enabled: bool = True
 
     @classmethod
     def from_raw(cls, raw: Dict[str, Any]) -> "EmbeddingConfig":
@@ -75,6 +80,12 @@ class EmbeddingConfig:
             fusion_limit=max(12, min(100, int(retrieval.get("fusion_limit", 60)))),
             adaptive_rerank=bool(retrieval.get("adaptive_rerank", True)),
             rerank_cache_seconds=max(0, min(3600, int(retrieval.get("rerank_cache_seconds", 600)))),
+            realtime_deadline_ms=max(50, min(2000, int(retrieval.get("realtime_deadline_ms", 250)))),
+            # Large local embedding/reranker models are background indexers by
+            # default. A deployment may opt in only after proving that the
+            # endpoint stays inside the realtime deadline.
+            realtime_semantic_enabled=bool(retrieval.get("realtime_semantic_enabled", False)),
+            realtime_rerank_enabled=bool(retrieval.get("realtime_rerank_enabled", False)),
         )
 
 
@@ -293,8 +304,13 @@ class EmbeddingService:
                stage_callback: Optional[Callable[[str], None]] = None,
                rerank_candidates: int = 12,
                context_messages: Optional[List[Dict[str, Any]]] = None,
-               sender_name: str = "") -> Dict[str, Any]:
+               sender_name: str = "",
+               deadline_ms: Optional[int] = None) -> Dict[str, Any]:
         started = time.monotonic()
+        budget_ms = max(50, min(2000, int(
+            self.cfg.realtime_deadline_ms if deadline_ms is None else deadline_ms
+        )))
+        deadline_at = started + budget_ms / 1000.0
         expanded_query = self._expanded_query(query, context_messages, sender_name)
         route_started = time.monotonic()
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=6, thread_name_prefix="memory-route")
@@ -316,33 +332,52 @@ class EmbeddingService:
         asset_candidates: List[Dict[str, Any]] = []
         error = ""
         embedding_started = time.monotonic()
-        if self.cfg.enabled and query.strip():
-            try:
+        if self.cfg.enabled and self.cfg.realtime_semantic_enabled and query.strip():
+            def semantic_route() -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
                 vectors = self.embed([expanded_query], query=True)
-                if vectors:
-                    semantic = self.store.semantic_search(vectors[0], group_id, self.cfg.model, self.cfg.vector_limit)
-                    global_rows = self.store.semantic_search(vectors[0], "__global__", self.cfg.model, 30)
-                    for row in global_rows:
-                        object_type = str(row.get("object_type") or "")
-                        if object_type == "face_asset":
-                            asset = self.store.face_asset(int(row.get("object_id") or 0)) if hasattr(self.store, "face_asset") else {}
-                        elif object_type == "voice_pack":
-                            asset = self.store.voice_item(int(row.get("object_id") or 0)) if hasattr(self.store, "voice_item") else {}
-                        else:
-                            continue
-                        if asset:
-                            asset_candidates.append({**asset, "object_type": object_type, "vector_score": row.get("score")})
+                if not vectors:
+                    return [], []
+                rows = self.store.semantic_search(vectors[0], group_id, self.cfg.model, self.cfg.vector_limit)
+                assets: List[Dict[str, Any]] = []
+                for row in self.store.semantic_search(vectors[0], "__global__", self.cfg.model, 30):
+                    object_type = str(row.get("object_type") or "")
+                    if object_type == "face_asset":
+                        asset = self.store.face_asset(int(row.get("object_id") or 0)) if hasattr(self.store, "face_asset") else {}
+                    elif object_type == "voice_pack":
+                        asset = self.store.voice_item(int(row.get("object_id") or 0)) if hasattr(self.store, "voice_item") else {}
+                    else:
+                        continue
+                    if asset:
+                        assets.append({**asset, "object_type": object_type, "vector_score": row.get("score")})
+                return rows, assets
+
+            semantic_future = executor.submit(semantic_route)
+            try:
+                remaining = max(0.001, deadline_at - time.monotonic())
+                semantic, asset_candidates = semantic_future.result(timeout=remaining)
+            except concurrent.futures.TimeoutError:
+                error = "semantic_deadline_exceeded"
+                semantic_future.cancel()
             except Exception as exc:
                 error = str(exc)
         embedding_ms = (time.monotonic() - embedding_started) * 1000
         route_results: Dict[str, Any] = {}
         for name, future in route_futures.items():
             try:
-                route_results[name] = future.result(timeout=5)
+                remaining = deadline_at - time.monotonic()
+                if remaining <= 0:
+                    future.cancel()
+                    route_results[name] = {} if name == "culture" else []
+                    error = error or "memory_deadline_exceeded"
+                    continue
+                route_results[name] = future.result(timeout=remaining)
+            except concurrent.futures.TimeoutError:
+                future.cancel()
+                route_results[name] = {} if name == "culture" else []
+                error = error or f"{name}_deadline_exceeded"
             except Exception as exc:
                 route_results[name] = {} if name == "culture" else []
                 error = error or f"{name}: {exc}"
-        executor.shutdown(wait=False, cancel_futures=True)
         culture = route_results.pop("culture", {}) or {}
         if stage_callback:
             stage_callback("reading_culture")
@@ -388,14 +423,21 @@ class EmbeddingService:
         skip_rerank_reason = "simple_social" if simple_social else "exact_structured" if exact_structured else ""
         rerank_pool_size = max(4, min(12, int(rerank_candidates or 12)))
         reranked_count = 0
-        if candidates and self.cfg.reranker_model and not skip_rerank_reason:
+        if (candidates and self.cfg.reranker_model and self.cfg.realtime_rerank_enabled
+                and not skip_rerank_reason and time.monotonic() < deadline_at):
             try:
                 if stage_callback:
                     stage_callback("reranking")
                 rerank_started = time.monotonic()
                 first = candidates[:rerank_pool_size]
                 first_ids = [":".join(self._candidate_key(row)) for row in first]
-                ranked, cached = self.cached_rerank(expanded_query, first_ids, [self._candidate_text(x) for x in first], len(first))
+                rerank_future = executor.submit(
+                    self.cached_rerank, expanded_query, first_ids,
+                    [self._candidate_text(x) for x in first], len(first),
+                )
+                ranked, cached = rerank_future.result(
+                    timeout=max(0.001, deadline_at - time.monotonic())
+                )
                 cache_hits += int(cached)
                 ranked_rows = [{**first[int(item["index"])], "rerank_score": float(item.get("relevance_score") or 0)}
                                for item in ranked if 0 <= int(item.get("index", -1)) < len(first)]
@@ -407,7 +449,13 @@ class EmbeddingService:
                 if self.cfg.adaptive_rerank and historical and (low_top or narrow_gap) and len(candidates) > rerank_pool_size:
                     second = candidates[rerank_pool_size:rerank_pool_size + 12]
                     second_ids = [":".join(self._candidate_key(row)) for row in second]
-                    second_ranked, cached = self.cached_rerank(expanded_query, second_ids, [self._candidate_text(x) for x in second], len(second))
+                    second_future = executor.submit(
+                        self.cached_rerank, expanded_query, second_ids,
+                        [self._candidate_text(x) for x in second], len(second),
+                    )
+                    second_ranked, cached = second_future.result(
+                        timeout=max(0.001, deadline_at - time.monotonic())
+                    )
                     cache_hits += int(cached)
                     ranked_rows.extend({**second[int(item["index"])], "rerank_score": float(item.get("relevance_score") or 0)}
                                        for item in second_ranked if 0 <= int(item.get("index", -1)) < len(second))
@@ -417,11 +465,15 @@ class EmbeddingService:
                 rerank_ms = (time.monotonic() - rerank_started) * 1000
                 selected = pinned + [row for row in ranked_rows if self._candidate_key(row) not in set(pinned_keys)]
                 candidates = selected[:limit]
+            except concurrent.futures.TimeoutError:
+                error = error or "rerank_deadline_exceeded"
+                candidates = candidates[:limit]
             except Exception as exc:
                 error = error or str(exc)
                 candidates = candidates[:limit]
         else:
             candidates = candidates[:limit]
+        executor.shutdown(wait=False, cancel_futures=True)
         return {
             "items": candidates, "culture": culture, "error": error, "model": self.cfg.model,
             "timings_ms": {

@@ -63,7 +63,7 @@ class MuteAndImageContextTests(unittest.TestCase):
             db.execute("UPDATE group_reply_mutes SET muted_until=? WHERE group_id=?", (time.time() - 1, self.group))
         self.assertFalse(self.store.group_reply_mute(self.group)["active"])
 
-    def test_latest_image_question_prioritizes_pending_image(self) -> None:
+    def test_latest_image_question_never_blocks_on_pending_ocr(self) -> None:
         image_path = Path(self.tmp.name) / "latest.jpg"
         image_path.write_bytes(b"fake-jpeg")
         raw = text_event(self.group, "img-1", "", "member")
@@ -74,13 +74,12 @@ class MuteAndImageContextTests(unittest.TestCase):
         self.service.persist_incoming(image_evt)
         question_evt, _ = self.service.parse_event(text_event(self.group, "q-1", "我刚发了什么图"))
         self.assertIsNotNone(question_evt)
-        with patch.object(self.service, "analyze_image_with_vision", return_value={
-            "ocr_text": "测试文字", "summary": "一只戴着帽子的橘猫", "tags": ["橘猫"],
-            "keywords": ["帽子", "猫"], "latency_ms": 8,
-        }):
+        started = time.monotonic()
+        with patch.object(self.service, "analyze_image_with_vision") as analyze:
             latest = self.service.prepare_latest_image_context(question_evt)
-        self.assertEqual(latest["status"], "ocr_done")
-        self.assertEqual(latest["image_summary"], "一只戴着帽子的橘猫")
+        self.assertLess(time.monotonic() - started, 0.1)
+        self.assertIn(latest["status"], {"indexed", "ocr_queued", "ocr_running", "ocr_failed"})
+        analyze.assert_not_called()
 
     def test_restart_recovery_uses_persisted_event_id(self) -> None:
         image_path = Path(self.tmp.name) / "recovered.jpg"

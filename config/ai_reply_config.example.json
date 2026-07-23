@@ -34,7 +34,18 @@
   "memory": {
     "enabled": true,
     "max_turns": 12,
-    "summary_enabled": true
+    "summary_enabled": true,
+    "retrieval_deadline_ms": 250,
+    "context_budget_chars": 8000,
+    "prompt_budget_chars": 24000
+  },
+  "router": {
+    "enabled": true,
+    "base_url": "http://127.0.0.1:8000/v1",
+    "api_key_env": "AI_REPLY_CHANNEL_PRIMARY_API_KEY",
+    "model": "grok-chat-fast",
+    "timeout_seconds": 2,
+    "max_tokens": 320
   },
   "tools": {
     "enabled": true,
@@ -118,7 +129,7 @@
     }
   },
   "embedding": {
-    "enabled": true,
+    "enabled": false,
     "base_url": "http://127.0.0.1:8017/v1",
     "model": "Qwen3-Embedding-8B-mxfp8",
     "reranker_model": "Qwen3-Reranker-4B-mxfp8",
@@ -136,7 +147,10 @@
     "media_limit": 16,
     "fusion_limit": 60,
     "adaptive_rerank": true,
-    "rerank_cache_seconds": 600
+    "rerank_cache_seconds": 600,
+    "realtime_deadline_ms": 250,
+    "realtime_semantic_enabled": false,
+    "realtime_rerank_enabled": false
   },
   "media_reply": {
     "automatic_enabled": true,

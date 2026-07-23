@@ -121,6 +121,9 @@ macOS 26 下安装脚本使用不带受限 entitlement 的纯 ad-hoc 签名；Ga
 | 启动 OneBot | `./scripts/start_onebot.sh` |
 | 启动 AI | `./scripts/start_ai_reply.sh` |
 | 启动 Web 后台 | `./scripts/start_web_admin.sh` |
+| 启动中央记忆服务 | `docker compose --env-file infrastructure/.env -f infrastructure/docker-compose.yml up -d` |
+| 导入微信 4.x 历史 | `PYTHONPATH=tools/runtime/python python3 scripts/import_wechat4_history.py` |
+| 备份中央记忆 | `./scripts/backup_durable_memory.sh` |
 | 查看微信 / OneBot | `./scripts/status_wechat_onebot.sh` |
 | 查看 AI | `./scripts/status_ai_reply.sh` |
 | 停止 OneBot | `./scripts/stop_onebot.sh` |
@@ -169,6 +172,10 @@ rg -n 'WeChat2|instance2|allow_multi_open|multi_open|第二微信|多开' --glob
 ai_reply/                       OneBot -> AI -> WeChat 回复服务
 config/                         示例配置
 memory_store.py                 SQLite、FTS5、向量与永久记忆
+durable_sync.py                 PostgreSQL / MinIO 可靠同步
+graphiti_bridge.py              Graphiti / FalkorDB 时序记忆投影
+hermes_automation.py            Hermes API 异步自动化与权限
+infrastructure/                 PostgreSQL、MinIO、FalkorDB 编排
 scripts/                        单实例启动、停止、状态和验证脚本
 tools/onebot/                   OneBot 与微信版本地址配置
 tools/voice_transcript_ocr/     可选本地 OCR

@@ -273,6 +273,19 @@ class MemoryStore:
                   media_json TEXT NOT NULL DEFAULT '[]',
                   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
+                CREATE TABLE IF NOT EXISTS durable_outbox (
+                  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                  event_id TEXT NOT NULL UNIQUE,
+                  payload_json TEXT NOT NULL,
+                  status TEXT NOT NULL DEFAULT 'pending',
+                  attempts INTEGER NOT NULL DEFAULT 0,
+                  next_attempt_at REAL NOT NULL DEFAULT 0,
+                  last_error TEXT NOT NULL DEFAULT '',
+                  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE INDEX IF NOT EXISTS idx_durable_outbox_pending
+                  ON durable_outbox(status,next_attempt_at,seq);
                 CREATE INDEX IF NOT EXISTS idx_messages_group_time ON messages(group_id, event_time DESC, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_messages_user_time ON messages(user_id, event_time DESC, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_messages_trace ON messages(trace_id);
@@ -331,6 +344,31 @@ class MemoryStore:
                   output_json TEXT NOT NULL DEFAULT '{}',
                   status TEXT NOT NULL DEFAULT 'ok',
                   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE IF NOT EXISTS automation_runs (
+                  run_id TEXT PRIMARY KEY,
+                  idempotency_key TEXT NOT NULL UNIQUE,
+                  source_event_id TEXT NOT NULL DEFAULT '',
+                  group_id TEXT NOT NULL,
+                  user_id TEXT NOT NULL,
+                  intent TEXT NOT NULL,
+                  risk_level TEXT NOT NULL DEFAULT 'read',
+                  status TEXT NOT NULL DEFAULT 'queued',
+                  hermes_run_id TEXT NOT NULL DEFAULT '',
+                  result_summary TEXT NOT NULL DEFAULT '',
+                  error TEXT NOT NULL DEFAULT '',
+                  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE INDEX IF NOT EXISTS idx_automation_runs_status
+                  ON automation_runs(status,created_at);
+                CREATE TABLE IF NOT EXISTS automation_events (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  run_id TEXT NOT NULL,
+                  event_type TEXT NOT NULL,
+                  payload_json TEXT NOT NULL DEFAULT '{}',
+                  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  FOREIGN KEY(run_id) REFERENCES automation_runs(run_id) ON DELETE CASCADE
                 );
                 CREATE TABLE IF NOT EXISTS media_items (
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -761,6 +799,20 @@ class MemoryStore:
             )
             inserted = cur.rowcount > 0
             if inserted:
+                durable_payload = {
+                    "event_id": row[0], "trace_id": row[1], "direction": row[2],
+                    "account_id": str(item.get("account_id") or "current-wechat"),
+                    "group_id": row[3], "group_name": row[4], "user_id": row[5],
+                    "sender_name": row[6], "message_id": row[7], "event_time": row[8],
+                    "text": row[9], "raw_message": row[10],
+                    "segments": segments or [], "raw": raw,
+                    "source": str(item.get("source") or "event"),
+                }
+                db.execute(
+                    """INSERT OR IGNORE INTO durable_outbox(event_id,payload_json,status,next_attempt_at,updated_at)
+                       VALUES(?,?,'pending',0,?)""",
+                    (event_id, json.dumps(durable_payload, ensure_ascii=False), now_ts()),
+                )
                 if row[2] == "incoming" and row[5]:
                     db.execute(
                         """INSERT INTO personas(user_id,group_id,analysis_status,new_messages_since_analysis,updated_at)
@@ -817,6 +869,120 @@ class MemoryStore:
             except Exception:
                 pass
         return inserted
+
+    def pending_durable_outbox(self, limit: int = 100) -> List[Dict[str, Any]]:
+        now = time.time()
+        with self.connect() as db:
+            rows = db.execute(
+                """SELECT * FROM durable_outbox
+                   WHERE status IN ('pending','retry') AND next_attempt_at<=?
+                   ORDER BY seq ASC LIMIT ?""",
+                (now, max(1, min(500, int(limit or 100)))),
+            ).fetchall()
+        result: List[Dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["payload"] = json.loads(str(item.get("payload_json") or "{}"))
+            except ValueError:
+                item["payload"] = {}
+            result.append(item)
+        return result
+
+    def mark_durable_outbox_synced(self, seq: int) -> None:
+        with self.connect() as db:
+            db.execute(
+                "UPDATE durable_outbox SET status='synced',last_error='',updated_at=? WHERE seq=?",
+                (now_ts(), int(seq)),
+            )
+
+    def mark_durable_outbox_retry(self, seq: int, error: str) -> None:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT attempts FROM durable_outbox WHERE seq=?", (int(seq),)
+            ).fetchone()
+            attempts = int(row["attempts"] if row else 0) + 1
+            delay = min(300.0, 2.0 ** min(attempts, 8))
+            db.execute(
+                """UPDATE durable_outbox SET status='retry',attempts=?,next_attempt_at=?,
+                   last_error=?,updated_at=? WHERE seq=?""",
+                (attempts, time.time() + delay, str(error)[:1000], now_ts(), int(seq)),
+            )
+
+    def durable_outbox_stats(self) -> Dict[str, Any]:
+        with self.connect() as db:
+            rows = db.execute(
+                "SELECT status,COUNT(*) AS count FROM durable_outbox GROUP BY status"
+            ).fetchall()
+            oldest = db.execute(
+                """SELECT created_at FROM durable_outbox
+                   WHERE status IN ('pending','retry') ORDER BY seq LIMIT 1"""
+            ).fetchone()
+        counts = {str(row["status"]): int(row["count"]) for row in rows}
+        return {
+            "pending": counts.get("pending", 0) + counts.get("retry", 0),
+            "synced": counts.get("synced", 0),
+            "failed": counts.get("failed", 0),
+            "oldest_pending": str(oldest["created_at"] if oldest else ""),
+        }
+
+    def create_automation_run(self, item: Dict[str, Any]) -> tuple[bool, Dict[str, Any]]:
+        with self.connect() as db:
+            cur = db.execute(
+                """INSERT OR IGNORE INTO automation_runs(
+                     run_id,idempotency_key,source_event_id,group_id,user_id,intent,risk_level,status,updated_at)
+                   VALUES(?,?,?,?,?,?,?,? ,?)""",
+                (
+                    str(item["run_id"]), str(item["idempotency_key"]),
+                    str(item.get("source_event_id") or ""), str(item["group_id"]),
+                    str(item["user_id"]), str(item.get("intent") or ""),
+                    str(item.get("risk_level") or "read"), str(item.get("status") or "queued"),
+                    now_ts(),
+                ),
+            )
+            row = db.execute(
+                "SELECT * FROM automation_runs WHERE idempotency_key=?",
+                (str(item["idempotency_key"]),),
+            ).fetchone()
+        return cur.rowcount > 0, dict(row) if row else {}
+
+    def update_automation_run(self, run_id: str, **values: Any) -> None:
+        allowed = {"status", "hermes_run_id", "result_summary", "error"}
+        clean = {key: str(value) for key, value in values.items() if key in allowed}
+        if not clean:
+            return
+        clean["updated_at"] = now_ts()
+        assignments = ",".join(f"{key}=?" for key in clean)
+        with self.connect() as db:
+            db.execute(
+                f"UPDATE automation_runs SET {assignments} WHERE run_id=?",
+                (*clean.values(), str(run_id)),
+            )
+
+    def add_automation_event(self, run_id: str, event_type: str, payload: Dict[str, Any]) -> None:
+        with self.connect() as db:
+            db.execute(
+                "INSERT INTO automation_events(run_id,event_type,payload_json) VALUES(?,?,?)",
+                (str(run_id), str(event_type), json.dumps(payload or {}, ensure_ascii=False)),
+            )
+
+    def automation_run(self, run_id: str) -> Dict[str, Any]:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT * FROM automation_runs WHERE run_id=?", (str(run_id),)
+            ).fetchone()
+        return dict(row) if row else {}
+
+    def automation_runs(self, group_id: str = "", limit: int = 50) -> List[Dict[str, Any]]:
+        sql = "SELECT * FROM automation_runs"
+        params: List[Any] = []
+        if group_id:
+            sql += " WHERE group_id=?"
+            params.append(str(group_id))
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(max(1, min(200, int(limit or 50))))
+        with self.connect() as db:
+            return [dict(row) for row in db.execute(sql, params).fetchall()]
 
     def search_messages(self, query: str = "", group_id: str = "", user_id: str = "", limit: int = 50) -> List[Dict[str, Any]]:
         limit = max(1, min(300, int(limit or 50)))

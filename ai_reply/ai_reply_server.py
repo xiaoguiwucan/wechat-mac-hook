@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import base64
 import collections
+import concurrent.futures
 import hashlib
 import hmac
 import html
@@ -51,6 +52,9 @@ from brain_engine import (BrainConfig, FINAL_STATES, OpportunityScorer, ReplySch
                           TaskRegistry, extract_explicit_media_kind, extract_image_generation_prompt,
                           media_suppression)  # noqa: E402
 from embedding_service import EmbeddingConfig, EmbeddingService  # noqa: E402
+from durable_sync import DurableSyncService  # noqa: E402
+from hermes_automation import HermesAutomationService  # noqa: E402
+from graphiti_bridge import GraphitiBridge  # noqa: E402
 from group_admin import GroupAdminService, is_admin_command  # noqa: E402
 
 
@@ -162,6 +166,16 @@ class AIConfig:
 
 
 @dataclass
+class RouterConfig:
+    enabled: bool = True
+    model: str = "grok-chat-fast"
+    base_url: str = ""
+    api_key_env: str = ""
+    timeout_seconds: int = 2
+    max_tokens: int = 320
+
+
+@dataclass
 class SafetyConfig:
     enabled: bool = True
     quarantine_until: int = 0
@@ -180,6 +194,9 @@ class MemoryConfig:
     enabled: bool = True
     max_turns: int = 12
     summary_enabled: bool = True
+    retrieval_deadline_ms: int = 250
+    context_budget_chars: int = 8000
+    prompt_budget_chars: int = 24000
 
 
 @dataclass
@@ -339,6 +356,7 @@ class AppConfig:
     tools: ToolsConfig = field(default_factory=ToolsConfig)
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     ai: AIConfig = field(default_factory=AIConfig)
+    router: RouterConfig = field(default_factory=RouterConfig)
     vision_ocr: VisionOCRConfig = field(default_factory=VisionOCRConfig)
     asr: ASRConfig = field(default_factory=ASRConfig)
     image_generation: ImageGenerationConfig = field(default_factory=ImageGenerationConfig)
@@ -418,6 +436,7 @@ class AppConfig:
             group_activated_at={str(k): int(v) for k, v in (raw.get("group_activated_at", {}) or {}).items()},
         )
         memory_raw = raw.get("memory", {}) or {}
+        router_raw = raw.get("router", {}) or {}
         tools_raw = raw.get("tools", {}) or {}
         vision_raw = raw.get("vision_ocr", {}) or {}
         asr_raw = raw.get("asr", {}) or {}
@@ -472,6 +491,9 @@ class AppConfig:
                 enabled=bool(memory_raw.get("enabled", True)),
                 max_turns=max(2, int(memory_raw.get("max_turns", raw.get("max_context_messages", 12)))),
                 summary_enabled=bool(memory_raw.get("summary_enabled", True)),
+                retrieval_deadline_ms=max(50, min(2000, int(memory_raw.get("retrieval_deadline_ms", 250)))),
+                context_budget_chars=max(2000, min(24000, int(memory_raw.get("context_budget_chars", 8000)))),
+                prompt_budget_chars=max(8000, min(64000, int(memory_raw.get("prompt_budget_chars", 24000)))),
             ),
             tools=ToolsConfig(
                 enabled=bool(tools_raw.get("enabled", True)),
@@ -479,6 +501,14 @@ class AppConfig:
             ),
             safety=safety,
             ai=ai,
+            router=RouterConfig(
+                enabled=bool(router_raw.get("enabled", True)),
+                model=str(router_raw.get("model") or "grok-chat-fast"),
+                base_url=str(router_raw.get("base_url") or ai.base_url).rstrip("/"),
+                api_key_env=str(router_raw.get("api_key_env") or ai.api_key_env),
+                timeout_seconds=max(1, min(5, int(router_raw.get("timeout_seconds", 2)))),
+                max_tokens=max(128, min(600, int(router_raw.get("max_tokens", 320)))),
+            ),
             vision_ocr=VisionOCRConfig(
                 enabled=bool(vision_raw.get("enabled", False)),
                 auto_analyze=bool(vision_raw.get("auto_analyze", True)),
@@ -561,6 +591,15 @@ class AIReplyService:
         )
         self.recent_errors: Deque[Dict[str, Any]] = collections.deque(maxlen=30)
         self.store = MemoryStore()
+        self.durable_sync = DurableSyncService(self.store)
+        self.hermes = HermesAutomationService(
+            self.store,
+            lambda group_id, text, trace_id: self.send_group_msg(group_id, text, trace_id),
+        )
+        self.graphiti = GraphitiBridge()
+        self.memory_route_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="realtime-memory"
+        )
         try:
             self.store.rebuild_face_assets()
         except Exception as exc:
@@ -606,6 +645,9 @@ class AIReplyService:
 
     def start(self) -> None:
         self.scheduler.start()
+        self.durable_sync.start()
+        self.hermes.start()
+        self.graphiti.start()
         self.embedding_service.start()
         self.media_worker.start()
         self.culture_worker.start()
@@ -614,6 +656,10 @@ class AIReplyService:
     def stop(self) -> None:
         self.stop_event.set()
         self.scheduler.stop()
+        self.durable_sync.stop()
+        self.hermes.stop()
+        self.graphiti.stop()
+        self.memory_route_executor.shutdown(wait=False, cancel_futures=True)
         self.embedding_service.stop()
 
     def reload_config(self, cfg: AppConfig) -> Dict[str, Any]:
@@ -659,6 +705,9 @@ class AIReplyService:
             "scheduler": scheduler,
             "tasks": tasks,
             "embedding": self.embedding_service.snapshot(),
+            "durable": self.durable_sync.snapshot(),
+            "hermes": self.hermes.snapshot(),
+            "graphiti": self.graphiti.snapshot(),
             "media_queue": self.media_events.qsize(),
             "culture_queue": self.culture_events.qsize(),
             "media_channel_waiting": max(0, sum(
@@ -945,6 +994,9 @@ class AIReplyService:
                 "selected": evt.group_id in self.cfg.target_groups,
             })
             if inserted:
+                durable_sync = getattr(self, "durable_sync", None)
+                if durable_sync is not None:
+                    durable_sync.notify()
                 log("debug", "message_persisted", group_id=evt.group_id, trace_id=evt.trace_id, message_id=evt.message_id)
                 self.schedule_culture_learning(evt)
         except Exception as exc:
@@ -1290,13 +1342,66 @@ class AIReplyService:
             return
 
         registry.update(task, "retrieving_memory")
+        retrieval_started = time.monotonic()
+        retrieval_deadline_ms = getattr(
+            getattr(self.cfg, "memory", None), "retrieval_deadline_ms", 250
+        )
+        graph_future = None
+        central_future = None
+        if getattr(self, "graphiti", None) and getattr(self, "memory_route_executor", None):
+            graph_future = self.memory_route_executor.submit(
+                self.graphiti.search, evt.text, evt.group_id, 8,
+                max(50, retrieval_deadline_ms - 30),
+            )
+        if (getattr(self, "durable_sync", None)
+                and getattr(self, "memory_route_executor", None)
+                and self.durable_sync.cfg.enabled):
+            central_future = self.memory_route_executor.submit(
+                self.durable_sync.search_messages, evt.text, evt.group_id, 8,
+            )
         memory = self.embedding_service.search(
             evt.text, evt.group_id, 12,
             stage_callback=lambda state: registry.update(task, state),
             rerank_candidates=brain_cfg.rerank_candidates,
             context_messages=recent[-4:],
             sender_name=evt.sender_name,
+            deadline_ms=retrieval_deadline_ms,
         )
+        graph_items: List[Dict[str, Any]] = []
+        remaining = retrieval_deadline_ms / 1000.0 - (time.monotonic() - retrieval_started)
+        if graph_future is not None and remaining > 0:
+            try:
+                graph_items = graph_future.result(timeout=remaining)
+            except Exception:
+                graph_future.cancel()
+        if graph_items:
+            memory = {
+                **memory,
+                "items": [*(memory.get("items") or []), *graph_items][:12],
+                "graph_count": len(graph_items),
+            }
+        central_items: List[Dict[str, Any]] = []
+        remaining = retrieval_deadline_ms / 1000.0 - (time.monotonic() - retrieval_started)
+        if central_future is not None and remaining > 0:
+            try:
+                for item in central_future.result(timeout=remaining):
+                    central_items.append({
+                        **item,
+                        "source": "postgres_pgroonga",
+                        "route_sources": ["postgres_pgroonga"],
+                        "object_type": "message",
+                        "object_id": str(item.get("event_id") or ""),
+                    })
+            except Exception:
+                central_future.cancel()
+        if central_items:
+            known = {self.memory_item_id(item) for item in memory.get("items") or []}
+            fresh = [item for item in central_items if self.memory_item_id(item) not in known]
+            memory = {
+                **memory,
+                "items": [*(memory.get("items") or []), *fresh][:12],
+                "central_count": len(fresh),
+            }
         task.details = {**task.details, "memory_count": len(memory.get("items") or []),
                         "embedding_error": memory.get("error", "")}
         scoring_started = time.monotonic()
@@ -1359,8 +1464,41 @@ class AIReplyService:
                 alias_hit=str(local.get("alias_hit") or ""), task_id=task.task_id,
                 message_id=evt.message_id, trace_id=evt.trace_id)
 
+        routing_started = time.monotonic()
+        route = self.fast_route(evt, memory, recent, mandatory_trigger)
+        routing_ms = round((time.monotonic() - routing_started) * 1000, 1)
+        timings["routing"] = routing_ms
+        task.details = {**task.details, "timings_ms": timings, "fast_route": route}
+        if not mandatory_trigger and route.get("available") and not route.get("reply_required", True):
+            self.task_registry.update(task, "skipped", result="fast_router_declined", details=task.details)
+            return
+        selected_ids = {str(x) for x in route.get("memory_ids") or [] if str(x)}
+        if selected_ids:
+            selected = [
+                item for item in memory.get("items") or []
+                if self.memory_item_id(item) in selected_ids
+            ]
+            if selected:
+                memory = {**memory, "items": selected[:12]}
+        if route.get("automation_required"):
+            result = self.hermes.submit(evt, route)
+            message = str(result.get("message") or "自动化任务未能接收。")
+            try:
+                self.send_group_msg(evt.group_id, message, evt.trace_id, evt)
+            except Exception as exc:
+                task.details = {**task.details, "automation": result, "automation_ack_error": str(exc)}
+                self.task_registry.update(task, "failed", result="automation_ack_failed", details=task.details)
+                return
+            task.details = {**task.details, "automation": result}
+            self.task_registry.update(
+                task, "completed" if result.get("accepted") else "failed",
+                result="automation_queued" if result.get("accepted") else "automation_rejected",
+                details=task.details,
+            )
+            return
         evt.raw["_brain_memory"] = memory
         evt.raw["_brain_score"] = {"score": score, "factors": factors, "reason": score_reason}
+        evt.raw["_fast_route"] = route
         evt.raw["_brain_task_id"] = task.task_id
         registry.update(task, "generating")
         self.handle_event(evt)
@@ -1401,6 +1539,103 @@ class AIReplyService:
             return factors, str(obj.get("reason") or ""), model
         except Exception:
             return defaults, "model_score_parse_fallback", model
+
+    @staticmethod
+    def memory_item_id(item: Dict[str, Any]) -> str:
+        return ":".join((
+            str(item.get("object_type") or item.get("source") or "message"),
+            str(item.get("object_id") or item.get("event_id") or item.get("id") or ""),
+        ))
+
+    def fast_route(self, evt: OneBotEvent, memory: Dict[str, Any],
+                   recent: List[Dict[str, Any]], mandatory: bool) -> Dict[str, Any]:
+        text = str(evt.text or "")
+        automation_terms = (
+            "github", "git ", "提交代码", "推送代码", "更新项目", "跑测试",
+            "运行测试", "构建", "部署", "重启服务", "恢复服务", "服务状态",
+            "健康检查", "定时任务", "监控",
+        )
+        local_automation = any(term in text.lower() for term in automation_terms)
+        high_terms = ("强制推送", "force push", "删除", "密钥", "生产部署", "回滚")
+        write_terms = (
+            "提交", "推送", "更新", "测试", "构建", "部署", "重启",
+            "恢复", "创建", "暂停", "执行",
+        )
+        local_risk = (
+            "high" if any(term in text.lower() for term in high_terms)
+            else "write" if any(term in text.lower() for term in write_terms)
+            else "read"
+        )
+        fallback = {
+            "available": False,
+            "reply_required": bool(mandatory),
+            "memory_ids": [],
+            "automation_required": local_automation,
+            "automation_intent": text[:500] if local_automation else "",
+            "risk_level": local_risk if local_automation else "read",
+            "model": "",
+            "reason": "local_fallback",
+        }
+        cfg = getattr(self.cfg, "router", None)
+        if cfg is None:
+            return fallback
+        if not cfg.enabled or not cfg.base_url or not cfg.model:
+            return fallback
+        candidates = []
+        for item in (memory.get("items") or [])[:18]:
+            candidates.append({
+                "id": self.memory_item_id(item),
+                "text": str(item.get("text") or item.get("raw_message") or item.get("searchable_text") or "")[:280],
+                "source": list(item.get("route_sources") or []),
+            })
+        recent_lines = [
+            f"{row.get('sender_name') or row.get('user_id')}: "
+            f"{str(row.get('text') or row.get('raw_message') or '')[:180]}"
+            for row in recent[-6:]
+        ]
+        prompt = (
+            "你是微信群机器人的高速路由器。只输出一个JSON对象，不要Markdown。"
+            "字段必须为 reply_required(bool), memory_ids(string数组，最多8个), "
+            "automation_required(bool), automation_intent(string), "
+            "risk_level(read|write|high), reason(string)。"
+            "明确@机器人、引用机器人、叫机器人名字或直接提问时 reply_required 必须为 true。"
+            "只有需要操作代码、GitHub、测试、部署、监控或定时任务时 automation_required 才为 true。"
+            "memory_ids只能从候选ID中选择，不相关记忆不要选。\n"
+            f"强制触发={mandatory}\n当前消息={evt.sender_name}: {evt.text[:800]}\n"
+            "最近对话=\n" + "\n".join(recent_lines) +
+            "\n候选记忆=" + json.dumps(candidates, ensure_ascii=False)
+        )
+        channel = AIChannel(
+            id="fast-router", name="fast-router", provider="openai_compatible",
+            base_url=cfg.base_url, api_key_env=cfg.api_key_env, model=cfg.model,
+            timeout_seconds=cfg.timeout_seconds, enabled=True, priority=-1,
+        )
+        reply, error = self.request_channel_messages(
+            channel,
+            [{"role": "system", "content": "只做高速路由并输出严格JSON。"},
+             {"role": "user", "content": prompt}],
+            cfg.max_tokens, 0.0, evt,
+        )
+        if not reply:
+            return {**fallback, "reason": f"router_unavailable:{error[:160]}"}
+        try:
+            clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", reply.strip(), flags=re.I | re.S)
+            parsed = json.loads(clean)
+            allowed_ids = {item["id"] for item in candidates}
+            chosen = [str(x) for x in parsed.get("memory_ids") or [] if str(x) in allowed_ids][:8]
+            return {
+                "available": True,
+                "reply_required": bool(parsed.get("reply_required", mandatory)) or bool(mandatory),
+                "memory_ids": chosen,
+                "automation_required": bool(parsed.get("automation_required", False)),
+                "automation_intent": str(parsed.get("automation_intent") or "")[:500],
+                "risk_level": str(parsed.get("risk_level") or "read")
+                    if str(parsed.get("risk_level") or "read") in {"read", "write", "high"} else "high",
+                "model": cfg.model,
+                "reason": str(parsed.get("reason") or "")[:300],
+            }
+        except Exception as exc:
+            return {**fallback, "reason": f"router_parse_fallback:{exc}"}
 
     def _media_worker_loop(self) -> None:
         while not self.stop_event.is_set():
@@ -2129,29 +2364,69 @@ class AIReplyService:
         media_id = int(latest["id"])
         status = str(latest.get("status") or "")
         if status in {"indexed", "ocr_queued", "ocr_running", "ocr_failed"} and self.cfg.vision_ocr.enabled:
-            signal = self.media_analysis_event(media_id)
-            if status != "ocr_running":
-                try:
-                    raw = json.loads(str(latest.get("raw_json") or "{}"))
-                    image_evt, _ = self.parse_event(raw)
-                    if image_evt:
-                        image_evt.event_id = str(latest.get("event_id") or image_evt.event_id)
-                        image_evt.group_id = str(latest.get("group_id") or image_evt.group_id)
-                        image_evt.message_id = str(latest.get("message_id") or image_evt.message_id)
-                        log("info", "latest_image_priority_analysis", group_id=evt.group_id,
-                            media_id=media_id, status=status, trace_id=evt.trace_id)
-                        self.analyze_event_media(image_evt)
-                except Exception as exc:
-                    log("warning", "latest_image_priority_failed", group_id=evt.group_id,
-                        media_id=media_id, error=str(exc), trace_id=evt.trace_id)
-            else:
-                wait_seconds = max(3, min(25, int(self.cfg.vision_ocr.timeout_seconds)))
-                log("info", "latest_image_waiting", group_id=evt.group_id, media_id=media_id,
-                    wait_seconds=wait_seconds, trace_id=evt.trace_id)
-                signal.wait(wait_seconds)
-            latest = self.store.media_detail(media_id) or latest
+            # OCR is a background concern. The former implementation performed
+            # analysis here or waited up to 25 seconds for another worker,
+            # making a simple group reply depend on a slow vision endpoint.
+            log("info", "latest_image_nonblocking_context", group_id=evt.group_id,
+                media_id=media_id, status=status, trace_id=evt.trace_id)
         evt.raw["_latest_image_context"] = latest
         return latest
+
+    @staticmethod
+    def _context_priority(content: str) -> int:
+        rules = (
+            ("数据库最近消息", 100), ("最近群聊上下文", 98),
+            ("当前群长期记忆摘要", 96), ("当前发言人在本群", 94),
+            ("永久群文化记忆", 90), ("当前群已解析图片", 82),
+            ("用户当前明确引用", 86), ("当前群语音泡记忆", 78),
+            ("可用收藏表情", 55), ("可用语音包素材", 55),
+        )
+        return next((score for marker, score in rules if marker in content), 60)
+
+    def apply_context_budget(self, messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        """Keep high-value memory while bounding model prefill latency."""
+        if len(messages) <= 3:
+            return messages
+        first = messages[0]
+        user = messages[-1]
+        middle = messages[1:-1]
+        control = [
+            item for item in middle
+            if "你的最终输出必须是单个 JSON 对象" in str(item.get("content") or "")
+        ]
+        contexts = [item for item in middle if item not in control]
+        ranked = sorted(
+            enumerate(contexts),
+            key=lambda pair: (-self._context_priority(str(pair[1].get("content") or "")), pair[0]),
+        )
+        selected: List[tuple[int, Dict[str, str]]] = []
+        remaining = self.cfg.memory.context_budget_chars
+        for index, item in ranked:
+            content = str(item.get("content") or "")
+            if remaining <= 0:
+                break
+            if len(content) > remaining:
+                if remaining < 240:
+                    continue
+                item = {**item, "content": content[:remaining] + "\n[记忆已按实时预算截断]"}
+                content = str(item["content"])
+            selected.append((index, item))
+            remaining -= len(content)
+        selected.sort(key=lambda pair: pair[0])
+        bounded = [first, *[item for _, item in selected], *control, user]
+        total = sum(len(str(item.get("content") or "")) for item in bounded)
+        if total > self.cfg.memory.prompt_budget_chars:
+            overflow = total - self.cfg.memory.prompt_budget_chars
+            for item in bounded[1:-2]:
+                content = str(item.get("content") or "")
+                removable = max(0, len(content) - 240)
+                cut = min(removable, overflow)
+                if cut:
+                    item["content"] = content[:len(content) - cut] + "\n[上下文已压缩]"
+                    overflow -= cut
+                if overflow <= 0:
+                    break
+        return bounded
 
     def build_messages(self, evt: OneBotEvent) -> List[Dict[str, str]]:
         with self.history_locks[evt.group_id]:
@@ -2338,7 +2613,7 @@ class AIReplyService:
         })
         user_content = f"群：{evt.group_name}({evt.group_id})\n发言人：{sender}\n最新消息：{evt.text}"
         messages.append({"role": "user", "content": user_content})
-        return messages
+        return self.apply_context_budget(messages)
 
     def _task_for_event(self, evt: OneBotEvent) -> Optional[ReplyTask]:
         task_id = str(evt.raw.get("_brain_task_id") or "") if isinstance(evt.raw, dict) else ""
@@ -2733,8 +3008,11 @@ class AIReplyService:
         # Some OpenAI-compatible relays reject urllib's default fingerprint.
         req.add_header("User-Agent", "openai-python/1.99.0")
         req.add_header("Accept", "application/json")
+        request_started = time.monotonic()
+        first_byte_ms = 0.0
         try:
             with urllib.request.urlopen(req, timeout=channel.timeout_seconds) as resp:
+                first_byte_ms = (time.monotonic() - request_started) * 1000
                 body = resp.read().decode("utf-8", "replace")
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", "replace") if e.fp else ""
@@ -2744,8 +3022,10 @@ class AIReplyService:
         try:
             obj = json.loads(body)
             reply = obj["choices"][0]["message"]["content"]
+            total_ms = (time.monotonic() - request_started) * 1000
             log("info", "ai_reply_generated", group_id=evt.group_id, chars=len(reply),
-                model=channel.model, channel_id=channel.id, trace_id=evt.trace_id)
+                model=channel.model, channel_id=channel.id, trace_id=evt.trace_id,
+                first_byte_ms=round(first_byte_ms, 1), total_ms=round(total_ms, 1))
             return str(reply), ""
         except Exception as e:
             return "", f"response parse error: {e}; body={body[:500]}"
