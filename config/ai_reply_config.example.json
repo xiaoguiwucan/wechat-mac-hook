@@ -157,7 +157,7 @@
   },
   "onebot_monitor": {
     "enabled": true,
-    "auto_recover": false
+    "auto_recover": true
   },
   "wechat_auto_login": {
     "enabled": false,

@@ -47,11 +47,11 @@ class SingleWeChatTargetTests(unittest.TestCase):
         self.assertNotIn("--entitlements", installer)
         self.assertNotIn("open -n", installer)
 
-    def test_automatic_account_actions_default_off(self):
+    def test_account_automation_off_but_onebot_recovery_on(self):
         self.assertFalse(normalize_auto_login_config({})["enabled"])
         config = json.loads((ROOT / "config" / "ai_reply_config.example.json").read_text())
         self.assertFalse(config["wechat_auto_login"]["enabled"])
-        self.assertFalse(config["onebot_monitor"]["auto_recover"])
+        self.assertTrue(config["onebot_monitor"]["auto_recover"])
 
 
 if __name__ == "__main__":

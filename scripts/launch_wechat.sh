@@ -13,6 +13,12 @@ EXPECTED_BUILD="269109"
 mkdir -p "$LOG_DIR"
 "$ROOT_DIR/scripts/verify_wechat_target.sh" --quiet
 
+# 当前 Hook 只适配固定的 4.1.11.53 / 269109。禁止 Sparkle 在后台替换
+# 已注入并重新签名的应用，否则运行中的代码页会被替换并触发
+# CODESIGNING / Invalid Page 闪退。
+/usr/bin/defaults write com.tencent.xinWeChat SUEnableAutomaticChecks -bool false
+/usr/bin/defaults write com.tencent.xinWeChat SUAutomaticallyUpdate -bool false
+
 if [[ ! -x "$EXE" ]]; then
   echo "找不到当前微信: $EXE" >&2
   exit 1
