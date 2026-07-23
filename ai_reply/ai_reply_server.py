@@ -1584,7 +1584,8 @@ class AIReplyService:
         automation_terms = (
             "github", "git ", "提交代码", "推送代码", "更新项目", "跑测试",
             "运行测试", "构建", "部署", "重启服务", "恢复服务", "服务状态",
-            "健康检查", "定时任务", "监控",
+            "健康检查", "定时任务", "定时", "提醒", "闹钟", "分钟后",
+            "小时后", "每天", "每周", "每月", "倒计时", "监控",
         )
         capability_terms = (
             "天气", "气温", "温度", "降雨", "空气质量", "台风",
@@ -1600,7 +1601,7 @@ class AIReplyService:
         high_terms = ("强制推送", "force push", "删除", "密钥", "生产部署", "回滚")
         write_terms = (
             "提交", "推送", "更新", "测试", "构建", "部署", "重启",
-            "恢复", "创建", "暂停", "执行",
+            "恢复", "创建", "暂停", "执行", "提醒", "闹钟", "定时",
         )
         local_risk = (
             "high" if any(term in text.lower() for term in high_terms)
@@ -2704,7 +2705,8 @@ class AIReplyService:
             "拿不到实时数据", "没有实时数据", "无法获取实时", "不能获取实时",
             "无法联网", "不能联网", "无法浏览网页", "不能浏览网页",
             "无法访问互联网", "不能访问互联网", "无法搜索网络", "不能搜索网络",
-            "无法确认最新", "无法得知最新",
+            "无法确认最新", "无法得知最新", "做不了定时", "不能定时",
+            "无法定时", "做不了提醒", "不能提醒", "无法提醒",
         )
         if any(marker in value for marker in direct_markers):
             return True
@@ -2712,6 +2714,7 @@ class AIReplyService:
         capability = any(marker in value for marker in (
             "获取", "查询", "搜索", "访问", "联网", "浏览", "打开", "读取",
             "执行", "确认", "实时", "最新", "外部数据", "工具",
+            "定时", "提醒", "闹钟",
         ))
         return limitation and capability
 

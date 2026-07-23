@@ -83,6 +83,24 @@ class HermesAutomationTests(unittest.TestCase):
         queued = self.service.tasks.get_nowait()
         self.assertEqual(queued["purpose"], "answer")
 
+    def test_global_owner_can_create_schedule_from_any_group(self):
+        service = HermesAutomationService(
+            self.store, lambda *_: None,
+            HermesConfig(
+                False, "http://127.0.0.1:8642", "", self.temp.name, 1, 60,
+                ("owner-user",),
+            ),
+        )
+        event = SimpleNamespace(
+            group_id="another@chatroom", user_id="owner-user", event_id="schedule-1",
+            message_id="schedule-1", text="1分钟后提醒我起床", trace_id="schedule-1",
+        )
+        result = service.submit(event, {
+            "risk_level": "write",
+            "automation_intent": event.text,
+        })
+        self.assertTrue(result["accepted"])
+
 
 if __name__ == "__main__":
     unittest.main()

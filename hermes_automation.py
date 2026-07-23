@@ -26,6 +26,7 @@ class HermesConfig:
     workspace: str
     poll_seconds: float
     max_run_seconds: int
+    owner_user_ids: tuple[str, ...] = ()
 
     @classmethod
     def from_env(cls) -> "HermesConfig":
@@ -39,6 +40,10 @@ class HermesConfig:
             ),
             poll_seconds=max(0.5, min(10.0, float(os.getenv("HERMES_POLL_SECONDS", "1")))),
             max_run_seconds=max(60, min(86400, int(os.getenv("HERMES_MAX_RUN_SECONDS", "3600")))),
+            owner_user_ids=tuple(
+                value.strip() for value in os.getenv("HERMES_OWNER_USER_IDS", "").split(",")
+                if value.strip()
+            ),
         )
 
 
@@ -139,7 +144,8 @@ class HermesAutomationService:
                trusted: bool = False, approved: bool = False) -> Dict[str, Any]:
         risk = str(route.get("risk_level") or "read")
         admin = self.store.group_admin(str(event.group_id), str(event.user_id))
-        if risk == "write" and not trusted and not admin:
+        owner = str(event.user_id) in set(self.cfg.owner_user_ids)
+        if risk == "write" and not trusted and not admin and not owner:
             return {"accepted": False, "message": "这个操作需要群管理员权限。"}
         intent = str(route.get("automation_intent") or event.text).strip()[:4000]
         key_source = f"{event.event_id}|{event.message_id}|{intent}"
@@ -236,6 +242,9 @@ class HermesAutomationService:
         local_run_id = str(task["run_id"])
         self.store.update_automation_run(local_run_id, status="starting")
         answer_mode = str(task.get("purpose") or "") == "answer"
+        schedule_mode = any(marker in str(task.get("intent") or "") for marker in (
+            "提醒", "闹钟", "定时", "分钟后", "小时后", "每天", "每周", "每月",
+        ))
         if answer_mode:
             instructions = (
                 "你是微信群机器人的工具执行层。必须按问题需要主动调用天气、网页搜索、"
@@ -251,6 +260,17 @@ class HermesAutomationService:
                 "不要输出密钥；返回简洁的中文执行总结。"
                 f"\n允许工作区：{self.cfg.workspace}"
             )
+            if schedule_mode:
+                instructions += (
+                    "\n这是一个微信定时任务请求。必须使用 cronjob 工具创建、修改、暂停、恢复、"
+                    "查询或删除真实的 Hermes Cron 任务，不得回答“做不了”。"
+                    f"\n来源群 group_id={task['group_id']}，发起人 user_id={task['user_id']}。"
+                    "\n新建任务时 deliver 必须设为 local，并在 Cron 任务 prompt 中明确要求："
+                    "任务触发后使用 Python urllib 向 http://127.0.0.1:58080/send_group_msg "
+                    "POST JSON，group_id 使用上述来源群，message 必须使用 OneBot 消息段数组，"
+                    "向群里发送最终提醒或任务结果。这样仍复用现有唯一微信 Hook，不启用 Hermes 微信通道。"
+                    "\n创建成功后返回任务名称、job_id、下次执行时间和是否重复。"
+                )
         created = self._request("POST", "/v1/runs", {
             "input": task["intent"],
             "session_id": f"wechat-{task['group_id']}",

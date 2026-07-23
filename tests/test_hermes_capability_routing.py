@@ -21,9 +21,21 @@ class HermesCapabilityRoutingTests(unittest.TestCase):
         self.assertTrue(AIReplyService.reply_needs_hermes(
             "我无法获取实时天气数据，建议查看天气应用。"
         ))
+        self.assertTrue(AIReplyService.reply_needs_hermes(
+            "做不了定时提醒，你设个手机闹钟吧。"
+        ))
         self.assertFalse(AIReplyService.reply_needs_hermes(
             "上海属于亚热带季风气候。"
         ))
+
+    def test_reminder_is_a_write_automation(self):
+        service = AIReplyService.__new__(AIReplyService)
+        service.cfg = SimpleNamespace(router=RouterConfig(enabled=False))
+        event = SimpleNamespace(text="@小风1分钟后提醒我起床", sender_name="风")
+        route = service.fast_route(event, {"items": []}, [], True)
+        self.assertTrue(route["automation_required"])
+        self.assertEqual(route["risk_level"], "write")
+        self.assertEqual(route["hermes_mode"], "automation")
 
 
 if __name__ == "__main__":
