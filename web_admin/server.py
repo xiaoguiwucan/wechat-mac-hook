@@ -3275,7 +3275,10 @@ def memory_infrastructure_status() -> Dict[str, Any]:
         bool(minio_healthy),
         not bool(durable.get("enabled")) or bool(durable.get("connected")),
         not bool(hermes.get("enabled")) or bool(hermes.get("healthy")),
-        not bool(graphiti.get("enabled")) or bool(graphiti.get("ready")),
+        not bool(graphiti.get("enabled")) or (
+            bool(graphiti.get("ready")) and not bool(graphiti.get("last_error"))
+        ),
+        not bool(router_runtime.get("enabled")) or router_runtime.get("healthy") is not False,
     ]
     return {
         "checked_at": checked_at,
