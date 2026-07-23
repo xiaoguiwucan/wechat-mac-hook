@@ -1,12 +1,22 @@
 <div align="center">
 
-# WeChat Mac Hook
+# WeChat Mac Hook Advanced
 
-### macOS 唯一微信实例 · OneBot 本地桥接 · AI 群聊大脑
+### macOS 唯一微信实例 · 高速记忆基础设施 · Hermes 自动化
 
 当前分支只适配本机唯一安装的官方微信，不再包含微信复制、Bundle ID 修改、容器重定向或多开启动流程。
 
 </div>
+
+## 版本选择
+
+| 版本 | 仓库 | 适合人群 |
+| --- | --- | --- |
+| **Advanced（当前仓库）** | `xiaoguiwucan/wechat-mac-hook` | 需要 PostgreSQL、MinIO、PGroonga、pgvector、Graphiti、FalkorDB、Hermes WebUI/工具/Cron 的完整版本 |
+| **Classic** | [`xiaoguiwucan/wechat-mac-hook-classic`](https://github.com/xiaoguiwucan/wechat-mac-hook-classic) | 只需要唯一微信、OneBot、SQLite 本地记忆和基础 AI 回复，追求轻量部署 |
+
+两个仓库从提交 `7fce3bc` 分开维护。Advanced 继续开发完整记忆与自动化；
+Classic 只接受稳定性、微信兼容性和基础回复修复，不再合入重型基础设施。
 
 ## 当前适配目标
 
