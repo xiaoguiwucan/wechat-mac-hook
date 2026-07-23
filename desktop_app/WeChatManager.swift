@@ -7,7 +7,7 @@ let cwdRoot = FileManager.default.currentDirectoryPath
 let ROOT_DIR = envRoot ?? (FileManager.default.fileExists(atPath: cwdRoot + "/web_admin/server.py") ? cwdRoot : sourceRoot)
 let CONFIG_PATH = ROOT_DIR + "/config/ai_reply_config.json"
 let ENV_PATH = ROOT_DIR + "/config/ai_reply.env"
-let LOG_DIR = NSHomeDirectory() + "/Library/Application Support/WeChatSecond/logs"
+let LOG_DIR = NSHomeDirectory() + "/Library/Application Support/WeChatAgent/logs"
 
 struct TargetGroup { var name: String; var id: String }
 
@@ -15,7 +15,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow!
     var tabView = NSTabView()
 
-    var statusWechat = NSTextField(labelWithString: "WeChat2：未知")
+    var statusWechat = NSTextField(labelWithString: "WeChat：未知")
     var statusOneBot = NSTextField(labelWithString: "OneBot：未知")
     var statusAI = NSTextField(labelWithString: "AI服务：未知")
     var commandOutput = NSTextView()
@@ -37,7 +37,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var maxReplyCharsField = NSTextField(string: "600")
     var requireKeywordCheck = NSButton(checkboxWithTitle: "必须包含关键词才回复", target: nil, action: nil)
     var dryRunCheck = NSButton(checkboxWithTitle: "Dry Run：只记录不发送", target: nil, action: nil)
-    var ignoreSelfCheck = NSButton(checkboxWithTitle: "忽略第二微信自己发出的消息", target: nil, action: nil)
+    var ignoreSelfCheck = NSButton(checkboxWithTitle: "忽略当前微信自己发出的消息", target: nil, action: nil)
     var systemPromptView = NSTextView()
 
     var groupNameField = NSTextField(string: "值班群")
@@ -48,7 +48,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     var aiTestPromptField = NSTextField(string: "请回复：AI接口测试成功")
     var callbackTextField = NSTextField(string: "值班群AI回调测试")
-    var sendTextField = NSTextField(string: "第二微信助手固定消息测试")
+    var sendTextField = NSTextField(string: "当前微信助手固定消息测试")
 
     let providers: [(String, String, String)] = [
         ("DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat"),
@@ -70,7 +70,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func buildWindow() {
         window = NSWindow(contentRect: NSRect(x: 80, y: 80, width: 1120, height: 780), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-        window.title = "第二微信 AI 助手管理器"
+        window.title = "当前微信 AI 助手管理器"
         window.minSize = NSSize(width: 980, height: 680)
         let content = NSView()
         window.contentView = content
@@ -169,10 +169,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusWechat.font = .boldSystemFont(ofSize: 14); statusOneBot.font = .boldSystemFont(ofSize: 14); statusAI.font = .boldSystemFont(ofSize: 14)
         s.addArrangedSubview(titledBox("当前状态", row([statusWechat, statusOneBot, statusAI])))
         let actions = NSStackView(); actions.orientation = .vertical; actions.spacing = 8
-        actions.addArrangedSubview(row([button("加载配置/授权", #selector(loadConfigAction(_:))), button("保存配置", #selector(saveConfigAction(_:))), button("启动第二微信", #selector(startWeChat(_:))), button("启动 OneBot", #selector(startOneBot(_:))), button("启动/复用 AI 服务", #selector(startAI(_:))), button("一键启动全部", #selector(startAll(_:)))]))
+        actions.addArrangedSubview(row([button("加载配置/授权", #selector(loadConfigAction(_:))), button("保存配置", #selector(saveConfigAction(_:))), button("启动当前微信", #selector(startWeChat(_:))), button("启动 OneBot", #selector(startOneBot(_:))), button("启动/复用 AI 服务", #selector(startAI(_:))), button("一键启动全部", #selector(startAll(_:)))]))
         actions.addArrangedSubview(row([button("停止 AI 服务", #selector(stopAI(_:))), button("停止 OneBot", #selector(stopOneBot(_:))), button("停止后台(AI+OneBot)", #selector(stopBackend(_:))), button("刷新状态", #selector(refreshStatus(_:))), button("打开日志目录", #selector(openLogDir(_:)))]))
         s.addArrangedSubview(titledBox("启动 / 管理后台", actions))
-        let note = NSTextField(labelWithString: "第二微信：\(NSHomeDirectory())/Applications/WeChat2.app\n所有脚本只识别 com.tencent.xinWeChat.instance2 和 WeChat2.app；停止后台只停止 AI/OneBot，不关闭主微信，也不关闭第二微信。")
+        let note = NSTextField(labelWithString: "当前微信：\(NSHomeDirectory())/Applications/WeChat.app\n所有脚本只识别 com.tencent.xinWeChat 和 WeChat.app；停止后台只停止 AI/OneBot，不关闭主微信，也不关闭当前微信。")
         note.lineBreakMode = .byWordWrapping
         s.addArrangedSubview(titledBox("固定约束", note))
         let outBox = titledBox("命令输出", scrollText(commandOutput, height: 300, editable: false))
@@ -229,7 +229,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         s.addArrangedSubview(row([label("AI测试提示词"), aiTestPromptField, button("测试 AI 接口(不发微信)", #selector(testAI(_:)))]))
         s.addArrangedSubview(row([label("回调测试文本"), callbackTextField, button("测试 AI 回调链路", #selector(testCallback(_:)))]))
         s.addArrangedSubview(row([label("固定发送文本"), sendTextField, button("测试 OneBot 发送", #selector(testOneBotSend(_:)))]))
-        let info = NSTextField(labelWithString: "AI接口测试只请求模型接口，不发送微信。AI回调链路会模拟值班群消息；如果AI服务已配置Key且 dry_run 关闭，会由第二微信发到目标群。OneBot发送测试会直接发送固定文本到目标群。")
+        let info = NSTextField(labelWithString: "AI接口测试只请求模型接口，不发送微信。AI回调链路会模拟值班群消息；如果AI服务已配置Key且 dry_run 关闭，会由当前微信发到目标群。OneBot发送测试会直接发送固定文本到目标群。")
         info.lineBreakMode = .byWordWrapping
         s.addArrangedSubview(info)
         s.addArrangedSubview(titledBox("测试输出", scrollText(testOutput, height: 420, editable: false)))
@@ -354,7 +354,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let data = try JSONSerialization.data(withJSONObject: raw, options: [.prettyPrinted, .sortedKeys])
             try data.write(to: URL(fileURLWithPath: CONFIG_PATH))
             let env = """
-            # 由 第二微信 AI 助手管理器 生成。
+            # 由 当前微信 AI 助手管理器 生成。
             export AI_REPLY_PROVIDER='openai_compatible'
             export AI_REPLY_API_KEY='\(apiKeyField.stringValue.replacingOccurrences(of: "'", with: "'\\''"))'
             export AI_REPLY_BASE_URL='\(baseURLField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines))'
@@ -399,24 +399,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func loadConfigAction(_ s: Any?) { loadConfig(); refreshStatus(nil) }
     @objc func saveConfigAction(_ s: Any?) { _ = saveConfig(showAlert: true) }
     @objc func saveRestartAI(_ s: Any?) { if saveConfig(showAlert: false) { runCommand("保存并重启 AI", ["/bin/bash", "-lc", "\(script("stop_ai_reply.sh")); \(script("start_ai_reply.sh"))"]) } }
-    @objc func startWeChat(_ s: Any?) { runCommand("启动第二微信", [script("launch_wechat2_4_1_11_53.sh")]) }
-    @objc func startOneBot(_ s: Any?) { runCommand("启动 OneBot", [script("start_onebot_wechat2.sh")]) }
+    @objc func startWeChat(_ s: Any?) { runCommand("启动当前微信", [script("launch_wechat.sh")]) }
+    @objc func startOneBot(_ s: Any?) { runCommand("启动 OneBot", [script("start_onebot.sh")]) }
     @objc func startAI(_ s: Any?) { _ = saveConfig(showAlert: false); runCommand("启动/复用 AI 服务", [script("start_ai_reply.sh")]) }
-    @objc func startAll(_ s: Any?) { _ = saveConfig(showAlert: false); runCommand("一键启动全部", [script("run_wechat2_ai_reply.sh")]) }
+    @objc func startAll(_ s: Any?) { _ = saveConfig(showAlert: false); runCommand("一键启动全部", [script("run_wechat_ai_reply.sh")]) }
     @objc func stopAI(_ s: Any?) { runCommand("停止 AI 服务", [script("stop_ai_reply.sh")]) }
-    @objc func stopOneBot(_ s: Any?) { runCommand("停止 OneBot", [script("stop_onebot_wechat2.sh")]) }
-    @objc func stopBackend(_ s: Any?) { runCommand("停止后台", [script("stop_backend_wechat2.sh")]) }
+    @objc func stopOneBot(_ s: Any?) { runCommand("停止 OneBot", [script("stop_onebot.sh")]) }
+    @objc func stopBackend(_ s: Any?) { runCommand("停止后台", [script("stop_backend.sh")]) }
     @objc func openLogDir(_ s: Any?) { NSWorkspace.shared.open(URL(fileURLWithPath: LOG_DIR)) }
 
     @objc func refreshStatus(_ s: Any?) {
         DispatchQueue.global().async {
-            let out1 = self.capture([self.script("status_wechat2_onebot.sh")])
+            let out1 = self.capture([self.script("status_wechat_onebot.sh")])
             let out2 = self.capture([self.script("status_ai_reply.sh")])
-            let wp = self.match(out1, "WeChat2 PID=([0-9]+)") ?? ""
+            let wp = self.match(out1, "WeChat PID=([0-9]+)") ?? ""
             let op = self.match(out1, "OneBot PID=([0-9]+)") ?? ""
             let ap = self.match(out2, "AI reply PID=([0-9]+)") ?? ""
             DispatchQueue.main.async {
-                self.statusWechat.stringValue = wp.isEmpty ? "WeChat2：未运行" : "WeChat2：运行 PID=\(wp)"
+                self.statusWechat.stringValue = wp.isEmpty ? "WeChat：未运行" : "WeChat：运行 PID=\(wp)"
                 self.statusOneBot.stringValue = op.isEmpty ? "OneBot：未运行" : "OneBot：运行 PID=\(op)"
                 self.statusAI.stringValue = ap.isEmpty ? "AI服务：未运行" : "AI服务：运行 PID=\(ap)"
                 self.commandOutput.string = (out1 + "\n--- AI ---\n" + out2).suffix(20000).description
@@ -488,7 +488,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func loadAILog(_ s: Any?) { loadLog(LOG_DIR + "/ai-reply.log") }
-    @objc func loadOneBotLog(_ s: Any?) { loadLog(LOG_DIR + "/onebot-wechat2.log") }
+    @objc func loadOneBotLog(_ s: Any?) { loadLog(LOG_DIR + "/onebot-wechat.log") }
     func loadLog(_ path: String) { logOutput.string = (try? String(contentsOfFile: path, encoding: .utf8).suffix(100000).description) ?? "日志不存在：\(path)" }
 
     func capture(_ args: [String]) -> String {

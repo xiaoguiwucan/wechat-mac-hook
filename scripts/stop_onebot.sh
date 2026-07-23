@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-SECOND_HOME="$HOME/Library/Application Support/WeChatSecond"
-PID_FILE="$SECOND_HOME/onebot-wechat2.pid"
+AGENT_HOME="$HOME/Library/Application Support/WeChatAgent"
+PID_FILE="$AGENT_HOME/onebot-wechat.pid"
 ONEBOT_BIN="$ROOT_DIR/tools/onebot/onebot/onebot"
 PORT="${ONEBOT_RECEIVE_HOST:-127.0.0.1:58080}"
 PORT="${PORT##*:}"

@@ -2,6 +2,22 @@
 
 本项目遵循 `VMAJOR.MINOR.PATCH` 版本号。当前版本为 `V0.0.4`。
 
+## Unreleased - 2026-07-23
+
+### 只适配唯一安装的微信
+
+- 运行目标改为固定的 `/Applications/WeChat.app`，Bundle ID 为 `com.tencent.xinWeChat`，版本锁定 `4.1.11.53` / build `269109`。
+- 删除微信 App 复制、Bundle ID 改写、HOME/容器重定向、第二实例 Hook 和多开安装脚本。
+- 启动逻辑不再使用 `open -n`、`--allow_multi_open` 或 `--multi_open`；检测到来自其他 App 路径的 WeChat 主进程时直接停止。
+- 启动、停止、状态、桌面管理器和 Web 后台全部改为通用单实例命名，运行状态目录改为 `~/Library/Application Support/WeChatAgent`。
+- OneBot 绑定账号改为从当前微信 PID 已打开的 `xwechat_files` 目录推导，避免多账号历史目录造成误绑定。
+- 使用 `4_1_11_53_mac.json` 版本入口，构建脚本统一输出到实际运行路径 `tools/onebot/onebot/onebot`。
+- SIP 保持开启时改用当前唯一微信内的 Frida Gadget `17.8.0`，OneBot 使用 `type=gadget` 连接 `127.0.0.1:27042`，不再尝试本地 PID attach。
+- 新增 `install_frida_gadget.sh`：修改前校验唯一安装路径、版本和官方摘要，压缩备份原 App，注入 Gadget、重签并验证；不复制可运行微信或创建第二实例。
+- 修复 macOS 26 `POSIX 163`：Gadget 重签不再携带无 provisioning profile 的 `get-task-allow` / JIT 受限 entitlement，并拒绝在微信运行中改签。
+- Gadget 配置改为 `Resources` 实体加 `Frameworks` 相对符号链接，既满足 Frida 固定查找路径，也通过完整资源封印校验。
+- Gadget 模式回填唯一微信 PID，当前账号在 lsof 不可见时仅从最近十分钟唯一活跃数据库目录推导；Web 健康状态区分文字发送就绪与媒体 StartTask 就绪。
+
 ## V0.0.4 - 2026-07-15
 
 本版本重点完成拍一拍自动回复的完整产品链路和微信原生动态表情快速发送，同时加入第二微信自动登录守护、强制触发阈值修正、账号身份自校正及更严格的 OneBot 收发健康判定。

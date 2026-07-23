@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""OneBot -> AI -> WeChat group reply bridge for the second WeChat only.
+"""OneBot -> AI -> WeChat group reply bridge for the installed WeChat only.
 
 - Listens on 127.0.0.1:36060/onebot (the send_url configured for wechat_chatter OneBot).
 - Filters target chatrooms, calls an OpenAI-compatible chat completion API, then sends reply
@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional, Tuple
 
 DEFAULT_CONFIG = Path(__file__).resolve().parents[1] / "config" / "ai_reply_config.json"
-DEFAULT_HOME = Path.home() / "Library" / "Application Support" / "WeChatSecond"
+DEFAULT_HOME = Path.home() / "Library" / "Application Support" / "WeChatAgent"
 LOG_PATH = DEFAULT_HOME / "logs" / "ai-reply.log"
 PID_PATH = DEFAULT_HOME / "ai-reply.pid"
 SAFETY_STATE_PATH = DEFAULT_HOME / "safety-state.json"
@@ -1584,7 +1584,7 @@ class AIReplyService:
 
     def multipart_post(self, url: str, fields: Dict[str, str], file_field: str, file_path: Path,
                        timeout: int, api_key: str = "") -> Dict[str, Any]:
-        boundary = "----WeChatSecondASR" + hashlib.sha1(str(time.time_ns()).encode()).hexdigest()
+        boundary = "----WeChatAgentASR" + hashlib.sha1(str(time.time_ns()).encode()).hexdigest()
         chunks: List[bytes] = []
         for name, value in fields.items():
             if value is None or str(value) == "":
@@ -2558,7 +2558,7 @@ class AIReplyService:
             source = "b64_json"
         elif item.get("url"):
             source = str(item["url"])
-            with urllib.request.urlopen(urllib.request.Request(source, headers={"User-Agent": "WeChatSecond/0.0.4"}), timeout=min(60, cfg.timeout_seconds)) as resp:
+            with urllib.request.urlopen(urllib.request.Request(source, headers={"User-Agent": "WeChatAgent/0.0.4"}), timeout=min(60, cfg.timeout_seconds)) as resp:
                 image_bytes = resp.read(25 * 1024 * 1024 + 1)
         if not image_bytes or len(image_bytes) > 25 * 1024 * 1024:
             raise RuntimeError("生图响应未包含可用图片，或图片超过 25MB")
@@ -3041,7 +3041,7 @@ CONFIG: Optional[AppConfig] = None
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "WeChatSecondAIReply/1.0"
+    server_version = "WeChatAgentAIReply/1.0"
 
     def _send_json(self, code: int, obj: Dict[str, Any]) -> None:
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")

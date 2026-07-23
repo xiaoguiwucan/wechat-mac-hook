@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
-SECOND_HOME="$HOME/Library/Application Support/WeChatSecond"
-PID_FILE="$SECOND_HOME/ai-reply.pid"
-LOG_FILE="$SECOND_HOME/logs/ai-reply.log"
+AGENT_HOME="$HOME/Library/Application Support/WeChatAgent"
+PID_FILE="$AGENT_HOME/ai-reply.pid"
+LOG_FILE="$AGENT_HOME/logs/ai-reply.log"
 PID=$(cat "$PID_FILE" 2>/dev/null || true)
 echo "AI reply PID=${PID:-not running}"
 if [[ -n "$PID" ]] && kill -0 "$PID" 2>/dev/null; then

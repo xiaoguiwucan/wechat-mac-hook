@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-SECOND_HOME="$HOME/Library/Application Support/WeChatSecond"
-PID_FILE="$SECOND_HOME/web-admin.pid"
-LOG_FILE="$SECOND_HOME/logs/web-admin.log"
-PORT="${WECHAT_SECOND_ADMIN_PORT:-8765}"
-PYTHON_BIN="${WECHAT_SECOND_PYTHON:-}"
+AGENT_HOME="$HOME/Library/Application Support/WeChatAgent"
+PID_FILE="$AGENT_HOME/web-admin.pid"
+LOG_FILE="$AGENT_HOME/logs/web-admin.log"
+PORT="${WECHAT_AGENT_ADMIN_PORT:-8765}"
+PYTHON_BIN="${WECHAT_AGENT_PYTHON:-}"
 if [[ -z "$PYTHON_BIN" ]]; then
   PYTHON_BIN=$(find "$HOME/.local/share/uv/python" -type f -path '*/bin/python3.*' ! -name '*-config' -perm -111 2>/dev/null | sort -V | tail -n 1 || true)
 fi
 if [[ -z "$PYTHON_BIN" ]]; then
   PYTHON_BIN=$(command -v python3)
 fi
-mkdir -p "$SECOND_HOME/logs"
+mkdir -p "$AGENT_HOME/logs"
 
 OLD="$(cat "$PID_FILE" 2>/dev/null || true)"
 if [[ -n "$OLD" ]] && kill -0 "$OLD" 2>/dev/null; then

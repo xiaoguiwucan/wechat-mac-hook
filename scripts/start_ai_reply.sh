@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-SECOND_HOME="$HOME/Library/Application Support/WeChatSecond"
-PID_FILE="$SECOND_HOME/ai-reply.pid"
-LOG_DIR="$SECOND_HOME/logs"
+AGENT_HOME="$HOME/Library/Application Support/WeChatAgent"
+PID_FILE="$AGENT_HOME/ai-reply.pid"
+LOG_DIR="$AGENT_HOME/logs"
 LOG_FILE="$LOG_DIR/ai-reply.log"
 STDOUT_LOG="$LOG_DIR/ai-reply.stdout.log"
 CONFIG="${AI_REPLY_CONFIG:-$ROOT_DIR/config/ai_reply_config.json}"
 ENV_FILE="${AI_REPLY_ENV_FILE:-$ROOT_DIR/config/ai_reply.env}"
-PYTHON_BIN="${WECHAT_SECOND_PYTHON:-}"
+PYTHON_BIN="${WECHAT_AGENT_PYTHON:-}"
 if [[ -z "$PYTHON_BIN" ]]; then
   PYTHON_BIN=$(find "$HOME/.local/share/uv/python" -type f -path '*/bin/python3.*' ! -name '*-config' -perm -111 2>/dev/null | sort -V | tail -n 1 || true)
 fi

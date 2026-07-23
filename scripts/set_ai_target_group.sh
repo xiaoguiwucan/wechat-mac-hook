@@ -27,7 +27,7 @@ path.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + '\n', encoding='
 print(f'已设置 AI 回复目标群：{name} => {gid}')
 PY
 # 只重启 AI 回复服务，不重启/不杀任何微信进程。
-if [[ -f "$HOME/Library/Application Support/WeChatSecond/ai-reply.pid" ]]; then
+if [[ -f "$HOME/Library/Application Support/WeChatAgent/ai-reply.pid" ]]; then
   "$ROOT_DIR/scripts/stop_ai_reply.sh" || true
 fi
 "$ROOT_DIR/scripts/start_ai_reply.sh"

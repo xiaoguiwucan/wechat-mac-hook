@@ -22,10 +22,10 @@ import (
 )
 
 var (
-	wechatPID    = flag.Int("wechat-pid", 0, "second WeChat main process PID")
-	uiPID        = flag.Int("ui-pid", 0, "optional WeChatAppEx child PID owned by the second WeChat")
-	rendererPIDs = flag.String("renderer-pids", "", "comma-separated WeChatAppEx renderer PIDs owned by the second WeChat")
-	ocrBin       = flag.String("ocr-bin", "", "local second-WeChat window OCR observer")
+	wechatPID    = flag.Int("wechat-pid", 0, "installed WeChat main process PID")
+	uiPID        = flag.Int("ui-pid", 0, "optional WeChatAppEx child PID owned by the installed WeChat")
+	rendererPIDs = flag.String("renderer-pids", "", "comma-separated WeChatAppEx renderer PIDs owned by the installed WeChat")
+	ocrBin       = flag.String("ocr-bin", "", "local installed-WeChat window OCR observer")
 	callback     = flag.String("callback", "http://127.0.0.1:36060/onebot", "AI reply callback URL")
 	logPath      = flag.String("onebot-log", "", "OneBot runtime log used for record correlation")
 )
@@ -144,7 +144,7 @@ function boot() {
       var imagePath = image && !image.isNull() ? image.readUtf8String() : '';
       var name = runtime.name(klass);
       var nameText = name && !name.isNull() ? name.readUtf8String() : '';
-      if (imagePath.indexOf('/WeChat2.app/') < 0 && !/(WX|WC|MM|Chat|Message|Voice)/.test(nameText)) continue;
+      if (imagePath.indexOf('/WeChat.app/') < 0 && !/(WX|WC|MM|Chat|Message|Voice)/.test(nameText)) continue;
       for (var s = 0; s < selectors.length; s++) if (install(runtime, klass, nameText, selectors[s])) total++;
     } catch (_) {}
   }
@@ -318,7 +318,7 @@ func main() {
 	}
 	if *logPath == "" {
 		home, _ := os.UserHomeDir()
-		*logPath = filepath.Join(home, "Library", "Application Support", "WeChatSecond", "logs", "onebot-wechat2.log")
+		*logPath = filepath.Join(home, "Library", "Application Support", "WeChatAgent", "logs", "onebot-wechat.log")
 	}
 	mgr := frida.NewDeviceManager()
 	device, err := mgr.DeviceByType(frida.DeviceTypeLocal)
@@ -384,10 +384,10 @@ func main() {
 		}
 		sessions = append(sessions, session)
 		scripts = append(scripts, script)
-		fmt.Printf("voice transcript sidecar attached to WeChat2 PID=%d\n", targetPID)
+		fmt.Printf("voice transcript sidecar attached to WeChat PID=%d\n", targetPID)
 	}
 	if len(scripts) == 0 {
-		panic("voice transcript sidecar could not attach to any second-WeChat process")
+		panic("voice transcript sidecar could not attach to any installed-WeChat process")
 	}
 	ocr := startOCRMonitor(*ocrBin, *wechatPID)
 	stop := make(chan os.Signal, 1)

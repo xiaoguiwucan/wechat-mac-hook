@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
-APP="${WECHAT2_APP:-$HOME/Applications/WeChat2.app}"
+APP="${WECHAT_APP:-/Applications/WeChat.app}"
 EXE="$APP/Contents/MacOS/WeChat"
 if [[ ! -x "$EXE" ]]; then
-  echo "找不到第二微信可执行文件: $EXE" >&2
+  echo "找不到当前微信可执行文件: $EXE" >&2
   exit 1
 fi
 /usr/bin/python3 - "$EXE" <<'PY'

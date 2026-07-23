@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""Add one LC_LOAD_DYLIB command to every 64-bit slice of a Mach-O file."""
+
 import pathlib
 import struct
 import sys
@@ -10,8 +12,8 @@ LC_LOAD_DYLIB = 0xC
 LC_SEGMENT_64 = 0x19
 
 
-def align8(n: int) -> int:
-    return (n + 7) & ~7
+def align8(value: int) -> int:
+    return (value + 7) & ~7
 
 
 def arch_slices(data: bytes):
@@ -21,98 +23,101 @@ def arch_slices(data: bytes):
     magic_le = struct.unpack_from("<I", data, 0)[0]
     if magic_be in (FAT_MAGIC, FAT_MAGIC_64):
         nfat = struct.unpack_from(">I", data, 4)[0]
-        off = 8
-        out = []
+        cursor = 8
+        result = []
         for _ in range(nfat):
             if magic_be == FAT_MAGIC:
-                cputype, cpusubtype, offset, size, align = struct.unpack_from(">iiIII", data, off)
-                off += 20
+                _, _, offset, size, _ = struct.unpack_from(">iiIII", data, cursor)
+                cursor += 20
             else:
-                cputype, cpusubtype, offset, size, align, reserved1, reserved2 = struct.unpack_from(">iiQQIII", data, off)
-                off += 32
-            out.append((offset, size, cputype))
-        return out
+                _, _, offset, size, _, _, _ = struct.unpack_from(
+                    ">iiQQIII", data, cursor
+                )
+                cursor += 32
+            result.append((offset, size))
+        return result
     if magic_le == MH_MAGIC_64:
-        return [(0, len(data), None)]
+        return [(0, len(data))]
     raise SystemExit("unsupported Mach-O magic")
 
 
 def min_section_offset(data: bytes, base: int, ncmds: int):
-    cur = base + 32
-    min_off = None
+    cursor = base + 32
+    minimum = None
     for _ in range(ncmds):
-        cmd, cmdsize = struct.unpack_from("<II", data, cur)
-        if cmd == LC_SEGMENT_64:
-            nsects = struct.unpack_from("<I", data, cur + 64)[0]
-            sec = cur + 72
-            for _ in range(nsects):
-                off = struct.unpack_from("<I", data, sec + 48)[0]
-                if off and (min_off is None or off < min_off):
-                    min_off = off
-                sec += 80
-        cur += cmdsize
-    return min_off
+        command, command_size = struct.unpack_from("<II", data, cursor)
+        if command == LC_SEGMENT_64:
+            section_count = struct.unpack_from("<I", data, cursor + 64)[0]
+            section = cursor + 72
+            for _ in range(section_count):
+                offset = struct.unpack_from("<I", data, section + 48)[0]
+                if offset and (minimum is None or offset < minimum):
+                    minimum = offset
+                section += 80
+        cursor += command_size
+    return minimum
 
 
 def has_load(data: bytes, base: int, ncmds: int, dylib: str) -> bool:
-    cur = base + 32
-    needle = dylib.encode() + b"\0"
+    cursor = base + 32
     for _ in range(ncmds):
-        cmd, cmdsize = struct.unpack_from("<II", data, cur)
-        if cmd == LC_LOAD_DYLIB:
-            name_off = struct.unpack_from("<I", data, cur + 8)[0]
-            raw = data[cur + name_off:cur + cmdsize]
-            name = raw.split(b"\0", 1)[0]
-            if name == dylib.encode():
+        command, command_size = struct.unpack_from("<II", data, cursor)
+        if command == LC_LOAD_DYLIB:
+            name_offset = struct.unpack_from("<I", data, cursor + 8)[0]
+            raw = data[cursor + name_offset : cursor + command_size]
+            if raw.split(b"\0", 1)[0] == dylib.encode():
                 return True
-        cur += cmdsize
+        cursor += command_size
     return False
 
 
-def inject_one(buf: bytearray, base: int, size: int, dylib: str) -> bool:
-    magic = struct.unpack_from("<I", buf, base)[0]
-    if magic != MH_MAGIC_64:
-        raise SystemExit(f"slice at {base} is not MH_MAGIC_64")
-    magic, cputype, cpusubtype, filetype, ncmds, sizeofcmds, flags, reserved = struct.unpack_from("<IiiIIIII", buf, base)
-    if has_load(buf, base, ncmds, dylib):
+def inject_one(buffer: bytearray, base: int, dylib: str) -> bool:
+    if struct.unpack_from("<I", buffer, base)[0] != MH_MAGIC_64:
+        raise SystemExit(f"slice at {base} is not a 64-bit Mach-O")
+    _, _, _, _, ncmds, sizeofcmds, _, _ = struct.unpack_from(
+        "<IiiIIIII", buffer, base
+    )
+    if has_load(buffer, base, ncmds, dylib):
         return False
-    name = dylib.encode("utf-8") + b"\0"
-    cmdsize = align8(24 + len(name))
-    cmd = struct.pack("<IIIIII", LC_LOAD_DYLIB, cmdsize, 24, 2, 0, 0) + name
-    cmd += b"\0" * (cmdsize - len(cmd))
+    name = dylib.encode() + b"\0"
+    command_size = align8(24 + len(name))
+    command = struct.pack("<IIIIII", LC_LOAD_DYLIB, command_size, 24, 2, 0, 0)
+    command += name
+    command += b"\0" * (command_size - len(command))
     insert_at = base + 32 + sizeofcmds
-    min_off = min_section_offset(buf, base, ncmds)
-    if min_off is None:
-        raise SystemExit(f"cannot find section offset for slice at {base}")
-    slack = base + min_off - insert_at
-    if slack < cmdsize:
-        raise SystemExit(f"not enough Mach-O header padding in slice at {base}: need {cmdsize}, have {slack}")
-    if any(b != 0 for b in buf[insert_at:insert_at + cmdsize]):
-        raise SystemExit(f"header padding is not zero at slice {base}")
-    buf[insert_at:insert_at + cmdsize] = cmd
-    struct.pack_into("<II", buf, base + 16, ncmds + 1, sizeofcmds + cmdsize)
+    minimum = min_section_offset(buffer, base, ncmds)
+    if minimum is None:
+        raise SystemExit(f"cannot find a section offset for slice at {base}")
+    slack = base + minimum - insert_at
+    if slack < command_size:
+        raise SystemExit(
+            f"not enough Mach-O header padding at slice {base}: "
+            f"need {command_size}, have {slack}"
+        )
+    if any(buffer[insert_at : insert_at + command_size]):
+        raise SystemExit(f"Mach-O header padding is not empty at slice {base}")
+    buffer[insert_at : insert_at + command_size] = command
+    struct.pack_into("<II", buffer, base + 16, ncmds + 1, sizeofcmds + command_size)
     return True
 
 
 def main():
     if len(sys.argv) != 3:
         print(f"Usage: {sys.argv[0]} MACHO DYLIB_LOAD_PATH", file=sys.stderr)
-        sys.exit(2)
+        raise SystemExit(2)
     path = pathlib.Path(sys.argv[1])
     dylib = sys.argv[2]
-    data = path.read_bytes()
-    buf = bytearray(data)
+    original = path.read_bytes()
+    buffer = bytearray(original)
     changed = False
-    for base, size, cputype in arch_slices(data):
-        changed |= inject_one(buf, base, size, dylib)
+    for base, _ in arch_slices(original):
+        changed |= inject_one(buffer, base, dylib)
     if changed:
-        backup = path.with_suffix(path.suffix + ".before-wechat-second-hook")
-        if not backup.exists():
-            backup.write_bytes(data)
-        path.write_bytes(buf)
+        path.write_bytes(buffer)
         print(f"Injected {dylib} into {path}")
     else:
         print(f"Already injected: {dylib}")
+
 
 if __name__ == "__main__":
     main()

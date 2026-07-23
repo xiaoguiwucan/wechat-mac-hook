@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Local long-term memory store for the isolated WeChat2 AI assistant.
+"""Local long-term memory store for the single-instance WeChat AI assistant.
 
-This module only stores data observed by the current isolated OneBot/AI pipeline
+This module only stores data observed by the current single-instance OneBot/AI pipeline
 or imported by the user. It does not read or decrypt WeChat's private databases.
 """
 from __future__ import annotations
@@ -22,7 +22,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-DEFAULT_HOME = Path.home() / "Library" / "Application Support" / "WeChatSecond"
+DEFAULT_HOME = Path.home() / "Library" / "Application Support" / "WeChatAgent"
 DEFAULT_DB = DEFAULT_HOME / "memory" / "wechat-memory.sqlite3"
 ROOT = Path(__file__).resolve().parent
 RUNTIME_PYTHON = ROOT / "tools" / "runtime" / "python"

@@ -1,0 +1,20 @@
+{
+  "app": "/Applications/WeChat.app",
+  "bundle_id": "com.tencent.xinWeChat",
+  "team_id": "5A4RE8SF68",
+  "version": "4.1.11.53",
+  "build": "269109",
+  "main_sha256": "b583a21419f798ff55e3a53560c508bde507365898db12a33028a8718f9f5352",
+  "main_unsigned_sha256": "854af89d88fa39c4093b380ee3782f4c3b77c11410682aa21369300319e81dfd",
+  "main_gadget_unsigned_sha256": "97b18e7217c3834df113d738247cfa7c0508908b36c9ea8bdb06d4e1ab087487",
+  "core_arm64_sha256": "ca241e81235fde5ab37b985f6189afa3c2a8c092b1e54aeebeecec8f51508432",
+  "core_arm64_unsigned_sha256": "d11f247be59a0b2c7b936cb83ffdff884a2db26a14f8c739307afb9370fce398",
+  "core_arm64_gadget_sha256": "4f5efe875cf29d4bcbfaff6690721cb402d00a5c06edcbb79a1a776a6e2d45e3",
+  "core_module_size": 158180992,
+  "frida_mode": "gadget",
+  "frida_gadget_version": "17.8.0",
+  "frida_gadget_addr": "127.0.0.1:27042",
+  "frida_gadget_sha256": "fa67242fa0cee16e80a803703991e81381cd05f7823a4151515460339c942f9f",
+  "frida_gadget_signed_sha256": "30042c0089cccf2461f242ab068f714c4621f545cdc994e3402563df606c48c8",
+  "onebot_conf": "tools/onebot/wechat_version/4_1_11_53_mac.json"
+}

@@ -1,8 +1,10 @@
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
 const state = { config: null, status: null, brainConfig: null, replyTasks: [], faceItems: [], pokeFaceIds: new Set(), channels: [], selectedChannelId: '', channelHealth: {}, groupCatalog: [], groupMemberCatalog: {}, groupMemberCatalogMeta: {}, ignoredGroupMembers: {}, groupPersonalities: {}, groupAdmins: {}, groupAdminRoles: {}, groupAdminPermissions: [], groupAdminPreviewUserId: '', persona: { members: [], selectedUserId: '', detail: null, tab: 'overview', refreshTimer: null }, dirty: false, logs: [], source: 'all', miniSource: 'all', paused: false, eventSource: null, traceDiagnostic: null };
+let voiceImportFiles = [];
+let voiceImportUploadedPaths = [];
 const pageMeta = {
-  overview: ['运行总览', '第二微信、OneBot 与 AI 服务'], ai: ['模型配置', '对话、生图、OCR 与 ASR 模型配置'],
+  overview: ['运行总览', '当前微信、OneBot 与 AI 服务'], ai: ['模型配置', '对话、生图、OCR 与 ASR 模型配置'],
   groups: ['群聊策略', '目标群与自动回复规则'], brain: ['群聊大脑', '接话门槛、七维评分与并发策略'],
   personas: ['USR 用户画像', '永久档案、行为统计、关系与原话证据'],
   'reply-tasks': ['实时对话', '回复线程、任务阶段与耗时'], vector: ['本地向量', 'oMLX 模型、检索与永久记忆回填'],
@@ -32,7 +34,7 @@ const orbitNodeDetails = {
   face: { title: '表情匹配', icon: 'ph-smiley', confidence: .66, source: 'OCR / 别名 / 情绪与意图', recalled: 18, injected: 4, similarity: .66, evidence: [['哈', '熊猫头憋笑', '情绪标签与搞笑反应吻合', .78], ['走', '走开啊别拍我', 'OCR 与别名精确匹配', .74], ['看', '白色小人惊讶', '适合对新地点建议作反应', .66]], timeline: [['23:33:32', '媒介决策', '表情适配分 66，低于语音候选。'], ['23:33:32', '素材索引', '已检查文件可用性和历史发送成功率。']] }
 };
 const orbitalPageDesigns = {
-  overview: { tone: 'cyan', icon: 'ph-gauge', code: 'RUNTIME ORBIT', title: '运行轨道总控', description: '把微信、OneBot、AI 与消息链路放在同一条实时运行轨道中。', state: '核心服务同步中', nodes: [['ph-wechat-logo', '第二微信', 'INSTANCE 2', '隔离运行'], ['ph-plugs-connected', 'OneBot', '58080', '消息与媒体'], ['ph-brain', 'AI 网关', '36060', '生成与调度']] },
+  overview: { tone: 'cyan', icon: 'ph-gauge', code: 'RUNTIME ORBIT', title: '运行轨道总控', description: '把微信、OneBot、AI 与消息链路放在同一条实时运行轨道中。', state: '核心服务同步中', nodes: [['ph-wechat-logo', '当前微信', 'INSTANCE 1', '官方安装'], ['ph-plugs-connected', 'OneBot', '58080', '消息与媒体'], ['ph-brain', 'AI 网关', '36060', '生成与调度']] },
   ai: { tone: 'violet', icon: 'ph-cpu', code: 'MODEL ORBIT', title: '多模型神经中枢', description: '统一编排对话、生图、OCR 与 ASR 渠道，保存后实时切换运行链路。', state: '配置热加载', nodes: [['ph-arrows-clockwise', '故障切换', 'AUTO', '渠道健康'], ['ph-image-square', 'AI 生图', 'IMAGE', '图片生成'], ['ph-eye', '视觉理解', 'OCR', '图片解析'], ['ph-waveform', '语音理解', 'ASR', '实时转写']] },
   vector: { tone: 'cyan', icon: 'ph-vector-three', code: 'VECTOR ORBIT', title: '本地向量引擎', description: 'Embedding 召回与 Reranker 精排共同驱动永久记忆检索。', state: 'oMLX 本地推理', nodes: [['ph-cube', '向量维度', '4096D', '完整精度'], ['ph-magnifying-glass', '初始召回', 'TOP 60', '多路融合'], ['ph-arrows-down-up', '精排注入', '12–24', '自适应扩批']] },
   'reply-tasks': { tone: 'mint', icon: 'ph-chats-circle', code: 'THREAD ORBIT', title: '多线程回复调度', description: '跨群并行、同线程串行，每个问题都绑定原消息和完整阶段。', state: '实时任务流', nodes: [['ph-stack', '全局工作池', '8', '并行任务'], ['ph-users-three', '单群并发', '3', '线程隔离'], ['ph-broadcast', '状态刷新', '<1s', '统一事件流']] },
@@ -282,7 +284,9 @@ function showPage(name) {
   if (name === 'personas') { $('#page-personas').dataset.mobilePane = 'directory'; requestAnimationFrame(() => loadPersonaMembers(true)); }
   if (name === 'brain') requestAnimationFrame(runOrbitSequence);
   else requestAnimationFrame(() => animatePageSignal(name));
-  if (name === 'memory' && $('#memoryResults')?.textContent?.includes('选择左侧操作')) requestAnimationFrame(() => loadMedia($('#loadMediaBtn'), true));
+  if (name === 'memory' && $('#memoryResults')?.textContent?.includes('选择左侧操作')) {
+    requestAnimationFrame(() => searchMemory($('#searchMemoryBtn')));
+  }
   if (name === 'reply-tasks' || name === 'vector') requestAnimationFrame(() => refreshReplyTasks(true));
 }
 
@@ -481,7 +485,7 @@ async function testEmbedding(button) {
 
 function renderStatus(data) {
   state.status = data;
-  for (const name of ['wechat2', 'onebot', 'ai']) {
+  for (const name of ['wechat', 'onebot', 'ai']) {
     const item = data[name], card = $(`.status-card[data-service="${name}"]`);
     const degraded = item.running && item.port && !item.port_open;
     card.classList.toggle('running', item.running && !degraded); card.classList.toggle('degraded', degraded); card.classList.toggle('stopped', !item.running);
@@ -493,21 +497,21 @@ function renderStatus(data) {
   const mediaHook = $('.media-hook', $('[data-service="onebot"]'));
   if (mediaHook) {
     const media = data.onebot.media_upload || {};
-    mediaHook.textContent = data.onebot.media_upload_ready ? '图片/视频/语音就绪' : '待真实上传';
-    mediaHook.title = media.message || '当前微信进程还没有捕获真实 UploadMedia';
+    mediaHook.textContent = !data.onebot.attach_permission ? '缺少调试权限' : (data.onebot.media_upload_ready ? '图片/视频/语音就绪' : '待真实上传');
+    mediaHook.title = !data.onebot.attach_permission ? '需要开启 macOS Developer Tools 调试权限' : (media.message || '当前微信进程还没有捕获真实 UploadMedia');
   }
   $('.configured', $('[data-service="ai"]')).textContent = data.ai.configured ? '已配置' : '缺少 Key';
-  const all = data.wechat2.running && data.onebot.running && data.onebot.port_open && data.ai.running && data.ai.port_open;
+  const all = data.wechat.running && data.onebot.running && data.onebot.port_open && data.ai.running && data.ai.port_open;
   const chip = $('#healthChip'); chip.textContent = all ? '全部在线' : '需要处理'; chip.className = `health-chip ${all ? 'good' : 'warn'}`;
   $('#testHealth').textContent = all ? '服务链路在线' : '部分服务离线'; $('#testHealth').className = `health-chip ${all ? 'good' : 'warn'}`;
   $('#syncTime').textContent = `${data.time} 已同步`;
-  $('#isolationPath').textContent = `${data.isolation.app} · ${data.isolation.bundle_id}`;
-  renderAutoLogin(data.wechat2_auto_login || {});
+  $('#targetPath').textContent = `${data.target.app} · ${data.target.bundle_id} · ${data.target.version}`;
+  renderAutoLogin(data.wechat_auto_login || {});
 }
 
 function renderAutoLogin(item) {
   const labels = {
-    starting: '启动中', disabled: '已关闭', wechat_not_running: '第二微信未运行',
+    starting: '启动中', disabled: '已关闭', wechat_not_running: '当前微信未运行',
     logged_in: '已登录 · 不会点击', login_confirmed: '已进入微信', waiting_window: '等待登录窗口', watching: '监控中', login_detected: '已识别登录页',
     clicked_login: '已点击登录', attempt_limit: '已达尝试上限', error: '检测异常'
   };
@@ -517,7 +521,7 @@ function renderAutoLogin(item) {
   $('#autoLoginPulse').className = `auto-login-pulse ${status}`;
   if ($('#autoLoginEnabled') && document.activeElement !== $('#autoLoginEnabled')) $('#autoLoginEnabled').checked = item.enabled !== false;
   const count = Number(item.consecutive_detections || 0);
-  $('#autoLoginDetail').textContent = item.last_error || (status === 'login_detected' ? `安全确认 ${count}/2；连续识别后才点击` : `仅检查 WeChat2.app · ${item.checked_at || '等待首次检测'}`);
+  $('#autoLoginDetail').textContent = item.last_error || (status === 'login_detected' ? `安全确认 ${count}/2；连续识别后才点击` : `仅检查 WeChat.app · ${item.checked_at || '等待首次检测'}`);
 }
 
 async function saveAutoLogin(enabled) {
@@ -673,12 +677,29 @@ function renderGroupPermissions() {
   $('#groupQuickSelect').innerHTML = state.groupCatalog.map(x => `<option value="${escapeHtml(x.id)}">${escapeHtml(groupSelectLabel(x))}</option>`).join('');
   updateGroupCount(); updateTestGroups();
 }
+let groupDiscoveryRequest = 0;
 async function loadDiscoveredGroups(silent = false) {
-  $('#groupDiscoveryState').textContent = '正在读取第二微信群目录…';
-  try {
-    const data = await api('/api/groups/discover'); mergeGroupCatalog(data.groups); renderGroupPermissions();
-    $('#groupDiscoveryState').textContent = `已发现 ${data.count} 个群聊`;
-  } catch (e) { $('#groupDiscoveryState').textContent = '群目录获取失败'; if (!silent) toast(`群列表获取失败：${e.message}`, 'error'); }
+  const requestId = ++groupDiscoveryRequest;
+  $('#groupDiscoveryState').textContent = '正在读取当前微信群目录…';
+  let lastError;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const data = await api('/api/groups/discover');
+      if (requestId !== groupDiscoveryRequest) return;
+      mergeGroupCatalog(data.groups);
+      renderGroupPermissions();
+      $('#groupDiscoveryState').textContent = `已发现 ${data.count} 个群聊`;
+      return;
+    } catch (e) {
+      lastError = e;
+      if (attempt === 0) await new Promise(resolve => setTimeout(resolve, 450));
+    }
+  }
+  if (requestId !== groupDiscoveryRequest) return;
+  $('#groupDiscoveryState').textContent = state.groupCatalog.length
+    ? `刷新失败，已保留现有 ${state.groupCatalog.length} 个群聊`
+    : '群目录获取失败';
+  if (!silent) toast(`群列表获取失败：${lastError?.message || '未知错误'}`, 'error');
 }
 function enableQuickSelectedGroup() {
   const group = state.groupCatalog.find(x => x.id === $('#groupQuickSelect').value); if (!group) return;
@@ -1101,7 +1122,7 @@ async function saveAliases(button) {
 }
 
 async function syncUiGroups(button) {
-  setBusy(button, true, '同步中…'); $('#groupDiscoveryState').textContent = '正在通过辅助功能只读扫描第二微信…';
+  setBusy(button, true, '同步中…'); $('#groupDiscoveryState').textContent = '正在通过辅助功能只读扫描当前微信…';
   try {
     const r = await api('/api/groups/sync-ui', { method: 'POST', body: '{}' });
     $('#groupDiscoveryState').textContent = `UI 同步完成：读取 ${r.count} 条文本`;
@@ -1224,8 +1245,8 @@ async function runTest(type, button) {
     onebot: ['/api/test/onebot', { group_id, text: baseText }],
     callback: ['/api/test/callback', { group_id, text: $('#testCallbackText').value }],
     probe: ['/api/onebot/send-probe', { group_id }],
-    recover: ['/api/onebot/recover', { restart_wechat2: false }],
-    wechat2: ['/api/onebot/recover', { restart_wechat2: true }],
+    recover: ['/api/onebot/recover', { restart_wechat: false }],
+    wechat: ['/api/onebot/recover', { restart_wechat: true }],
     at: ['/api/messages/send', { group_id, type: 'at', user_id: $('#atUserId').value, text: baseText }],
     reply: ['/api/messages/send', { group_id, type: 'reply', message_id: $('#replyMessageId').value, text: baseText }],
     image: ['/api/messages/send', { group_id, type: 'image', file: $('#mediaPath').value }],
@@ -1247,7 +1268,7 @@ async function runTest(type, button) {
 function appendTestConsole(type, status, headline, payload) {
   const consoleEl = $('#testConsole'); const empty = $('.muted', consoleEl); if (empty) empty.remove();
   const entry = document.createElement('div'); entry.className = 'console-entry';
-  const label = { ai: 'AI MODEL', onebot: 'ONEBOT SEND', callback: 'FULL CALLBACK', probe: 'SEND PROBE', recover: 'RECOVER ONEBOT', wechat2: 'RESTART WECHAT2', at: 'SEND AT', reply: 'SEND REPLY', image: 'SEND IMAGE', file: 'SEND FILE', video: 'SEND VIDEO', record: 'SEND RECORD', sync: 'UI SYNC' }[type] || String(type).toUpperCase();
+  const label = { ai: 'AI MODEL', onebot: 'ONEBOT SEND', callback: 'FULL CALLBACK', probe: 'SEND PROBE', recover: 'RECOVER ONEBOT', wechat: 'RESTART WECHAT', at: 'SEND AT', reply: 'SEND REPLY', image: 'SEND IMAGE', file: 'SEND FILE', video: 'SEND VIDEO', record: 'SEND RECORD', sync: 'UI SYNC' }[type] || String(type).toUpperCase();
   entry.innerHTML = `<div class="command">$ ${label}</div><div class="${status === 'error' ? 'error' : status === 'success' ? 'success' : 'latency'}">${escapeHtml(headline)}</div><pre>${escapeHtml(JSON.stringify(payload, null, 2))}</pre>`;
   consoleEl.append(entry); consoleEl.scrollTop = consoleEl.scrollHeight;
 }
@@ -1781,6 +1802,55 @@ function syncVoiceImportTarget() {
   $('#voiceImportCategory').disabled = appending;
 }
 
+function renderVoiceImportSelection() {
+  const root = $('#voiceImportSelection');
+  const clear = $('#voiceImportClearBtn');
+  if (!voiceImportFiles.length) {
+    root.innerHTML = '<strong>尚未选择文件</strong><span>可一次选择多个 zip / zip1 压缩包或音频文件</span>';
+    clear.hidden = true;
+    return;
+  }
+  const total = voiceImportFiles.reduce((sum, file) => sum + file.size, 0);
+  const names = voiceImportFiles.slice(0, 4).map(file => escapeHtml(file.name)).join('、');
+  root.innerHTML = `<strong>已选择 ${voiceImportFiles.length} 个文件 · ${(total / 1024 / 1024).toFixed(1)} MB</strong><span>${names}${voiceImportFiles.length > 4 ? ` 等 ${voiceImportFiles.length} 个文件` : ''}</span>`;
+  clear.hidden = false;
+}
+
+function chooseVoiceImportFiles(files) {
+  voiceImportFiles = [...files];
+  voiceImportUploadedPaths = [];
+  renderVoiceImportSelection();
+}
+
+function clearVoiceImportFiles() {
+  voiceImportFiles = [];
+  voiceImportUploadedPaths = [];
+  $('#voiceImportFiles').value = '';
+  renderVoiceImportSelection();
+}
+
+async function uploadSelectedVoicepacks() {
+  if (!voiceImportFiles.length) return [];
+  if (voiceImportUploadedPaths.length === voiceImportFiles.length) return voiceImportUploadedPaths;
+  voiceImportUploadedPaths = [];
+  for (let index = 0; index < voiceImportFiles.length; index += 1) {
+    const file = voiceImportFiles[index];
+    $('#voiceImportSelection').innerHTML = `<strong>正在上传 ${index + 1} / ${voiceImportFiles.length}</strong><span>${escapeHtml(file.name)} · ${(file.size / 1024 / 1024).toFixed(1)} MB</span>`;
+    const result = await api('/api/voicepacks/upload', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'X-Voicepack-Filename': encodeURIComponent(file.name),
+      },
+      body: file,
+    });
+    voiceImportUploadedPaths.push(result.path);
+  }
+  $('#voiceImportPaths').value = voiceImportUploadedPaths.join('\n');
+  renderVoiceImportSelection();
+  return voiceImportUploadedPaths;
+}
+
 async function loadVoicepacks(button, silent = false) {
   if (button) setBusy(button, true, '读取中…');
   const chip = $('#voiceStatusChip');
@@ -1819,8 +1889,9 @@ async function recommendVoicepacks(button) {
 async function planVoicepacks(button) {
   setBusy(button, true, '扫描中…');
   try {
+    await uploadSelectedVoicepacks();
     const paths = $('#voiceImportPaths').value.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
-    if (!paths.length) throw new Error('请先填写来源路径');
+    if (!paths.length) throw new Error('请先选择压缩包/音频文件，或填写来源路径');
     const r = await api('/api/voicepacks/plan', { method: 'POST', body: JSON.stringify({ paths, category: $('#voiceImportCategory').value.trim(), target_pack_id: $('#voiceImportTargetPack').value || 0 }) });
     const errors = (r.errors || []).map(x => '<div class="voice-plan-error">' + escapeHtml(x.path) + '：' + escapeHtml(x.error) + '</div>').join('');
     const groups = (r.groups || []).map(x => '<li><strong>' + escapeHtml(x.pack_name) + '</strong><span>' + escapeHtml(x.category) + ' · ' + x.count + ' 条</span><small>' + x.samples.map(escapeHtml).join('、') + '</small></li>').join('');
@@ -1833,11 +1904,14 @@ async function planVoicepacks(button) {
 async function importVoicepacks(button) {
   setBusy(button, true, '导入中…');
   try {
+    await uploadSelectedVoicepacks();
     const paths = $('#voiceImportPaths').value.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
-    if (!paths.length) throw new Error('请先填写来源路径');
+    if (!paths.length) throw new Error('请先选择压缩包/音频文件，或填写来源路径');
     const r = await api('/api/voicepacks/import', { method: 'POST', body: JSON.stringify({ paths, category: $('#voiceImportCategory').value.trim(), target_pack_id: $('#voiceImportTargetPack').value || 0 }) });
     toast(`导入完成：新增 ${r.imported} 条，跳过 ${r.skipped} 条，错误 ${r.errors?.length || 0} 个`, r.errors?.length ? 'error' : 'success', 9000);
     if (r.pack_summary?.length) $('#voiceImportPlan').innerHTML = '<strong>最近一次导入</strong><ul>' + r.pack_summary.map(x => '<li><strong>' + escapeHtml(x.pack_name) + '</strong><span>新增 ' + x.imported + ' · 跳过 ' + x.skipped + '</span></li>').join('') + '</ul>';
+    clearVoiceImportFiles();
+    $('#voiceImportPaths').value = '';
     await loadVoicepacks($('#voiceRefreshBtn'), true);
   } catch (e) { toast(`导入语音包失败：${e.message}`, 'error', 12000); }
   finally { setBusy(button, false); }
@@ -2277,7 +2351,7 @@ function bind() {
     const requested = location.hash.replace(/^#/, '');
     if (pageMeta[requested] && !$('#page-' + requested).classList.contains('active')) showPage(requested);
   });
-  $('#refreshBtn').onclick = () => { refreshStatus(); refreshTraces(); }; $('#refreshTraceBtn').onclick = () => refreshTraces(); $('#startAllBtn').onclick = e => { if (confirm('确认启动第二微信、OneBot 与 AI 服务？')) action('start_all', e.currentTarget); }; $$('.action-btn').forEach(x => x.onclick = () => action(x.dataset.action, x));
+  $('#refreshBtn').onclick = () => { refreshStatus(); refreshTraces(); }; $('#refreshTraceBtn').onclick = () => refreshTraces(); $('#startAllBtn').onclick = e => { if (confirm('确认启动当前微信、OneBot 与 AI 服务？')) action('start_all', e.currentTarget); }; $$('.action-btn').forEach(x => x.onclick = () => action(x.dataset.action, x));
   $('#autoLoginEnabled').onchange = e => saveAutoLogin(e.target.checked);
   $('#autoLoginCheckBtn').onclick = e => checkAutoLogin(e.currentTarget);
   $('#channelSelect').onchange = e => selectChannel(e.target.value); $('#addChannelBtn').onclick = openChannelDialog; $('#deleteChannelBtn').onclick = deleteCurrentChannel;
@@ -2357,6 +2431,8 @@ function bind() {
   $('#voiceRecordsQuery').addEventListener('keydown', e => { if (e.key === 'Enter') loadVoiceRecords($('#voiceRecordsSearchBtn')); });
   $('#voiceRefreshBtn').onclick = e => loadVoicepacks(e.currentTarget); $('#voiceSearchBtn').onclick = e => loadVoicepacks(e.currentTarget); $('#voiceRecommendBtn').onclick = e => recommendVoicepacks(e.currentTarget);
   $('#voicePlanBtn').onclick = e => planVoicepacks(e.currentTarget); $('#voiceImportBtn').onclick = e => importVoicepacks(e.currentTarget);
+  $('#voiceImportFiles').onchange = e => chooseVoiceImportFiles(e.target.files);
+  $('#voiceImportClearBtn').onclick = clearVoiceImportFiles;
   $('#voiceDeletePackBtn').onclick = e => deleteCurrentVoicePack(e.currentTarget);
   $('#voiceImportTargetPack').onchange = syncVoiceImportTarget;
   $('#voiceReplyProbability').oninput = e => { $('#voiceReplyProbabilityValue').value = `${e.target.value}%`; };

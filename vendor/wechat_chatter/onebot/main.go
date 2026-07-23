@@ -73,7 +73,7 @@ func initFlag() {
 	flag.StringVar(&config.OnebotToken, "token", "MuseBot", "OneBot Token: MuseBot")
 	flag.StringVar(&config.ImagePath, "image_path", "", "图片路径: /Users/xxx/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files/xxx/temp/xxx/2026-01/Img/")
 	flag.StringVar(&myWechatId, "self_id", "", "当前微信账号 wxid；媒体和原生表情发送必须提供")
-	flag.StringVar(&config.WechatConf, "wechat_conf", "../wechat_version/4_1_11_53_mac.json", "微信配置文件路径: ../wechat_version/4_1_6_12_mac.json")
+	flag.StringVar(&config.WechatConf, "wechat_conf", "../wechat_version/4_1_11_53_mac.json", "微信配置文件路径: ../wechat_version/4_1_11_53_mac.json")
 	flag.StringVar(&config.ConnType, "conn_type", "http", "连接类型: http | websocket")
 	flag.IntVar(&config.SendInterval, "send_interval", 1000, "发送间隔: ms")
 	flag.IntVar(&config.WechatPid, "wechat_pid", 0, "微信进程 PID，不设置则自动查找")
@@ -140,6 +140,11 @@ func initFridaGadget() {
 		Fatal("❌ 附加失败", err)
 	}
 
+	if config.WechatPid > 0 {
+		currentWechatPid = config.WechatPid
+		Info("Gadget 已绑定唯一微信进程", "PID", currentWechatPid)
+		MonitorProcess(currentWechatPid)
+	}
 	loadJs()
 
 }
@@ -192,7 +197,7 @@ func uploadX0CacheFile() string {
 	if err != nil || home == "" {
 		return ""
 	}
-	return filepath.Join(home, "Library", "Application Support", "WeChatSecond", "state", "upload_x0.json")
+	return filepath.Join(home, "Library", "Application Support", "WeChatAgent", "state", "upload_x0.json")
 }
 
 func validUploadX0(v string) bool {

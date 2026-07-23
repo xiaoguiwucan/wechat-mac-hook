@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-LOG_FILE="${ONEBOT_LOG:-$HOME/Library/Application Support/WeChatSecond/logs/onebot-wechat2.log}"
+LOG_FILE="${ONEBOT_LOG:-$HOME/Library/Application Support/WeChatAgent/logs/onebot-wechat.log}"
 LIMIT="${1:-20}"
 if [[ ! -f "$LOG_FILE" ]]; then
   echo "找不到 OneBot 日志: $LOG_FILE" >&2

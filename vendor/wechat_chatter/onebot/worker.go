@@ -409,7 +409,7 @@ func HandleMsg(jsonData []byte) ([]byte, error) {
 
 	if strings.HasPrefix(m.SelfID, "wxid_") && m.SelfID != myWechatId {
 		if myWechatId != "" {
-			Warn("检测到当前第二微信账号变化，已更新发送账号", "old_self_id", myWechatId, "new_self_id", m.SelfID)
+			Warn("检测到当前当前微信账号变化，已更新发送账号", "old_self_id", myWechatId, "new_self_id", m.SelfID)
 		}
 		myWechatId = m.SelfID
 	}

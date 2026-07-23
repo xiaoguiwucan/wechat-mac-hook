@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-SECOND_HOME="$HOME/Library/Application Support/WeChatSecond"
-PID_FILE="$SECOND_HOME/voice-transcript-sidecar.pid"
+AGENT_HOME="$HOME/Library/Application Support/WeChatAgent"
+PID_FILE="$AGENT_HOME/voice-transcript-sidecar.pid"
 SIDECAR_BIN="$ROOT_DIR/tools/voice_transcript_sidecar/voice-transcript-sidecar"
 PID="$(cat "$PID_FILE" 2>/dev/null || true)"
 

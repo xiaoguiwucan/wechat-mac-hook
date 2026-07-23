@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-PID_FILE="$HOME/Library/Application Support/WeChatSecond/web-admin.pid"
+PID_FILE="$HOME/Library/Application Support/WeChatAgent/web-admin.pid"
 PID="$(cat "$PID_FILE" 2>/dev/null || true)"
 if [[ -n "$PID" ]] && kill -0 "$PID" 2>/dev/null; then
   CMD="$(ps -p "$PID" -o command= 2>/dev/null || true)"

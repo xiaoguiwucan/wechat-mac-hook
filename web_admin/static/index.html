@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>轨道神经网络 · 第二微信 AI 控制台</title>
+  <title>轨道神经网络 · 当前微信 AI 控制台</title>
   <link rel="stylesheet" href="/static/vendor/phosphor/phosphor.css">
   <link rel="stylesheet" href="/static/styles.css">
   <link rel="stylesheet" href="/static/design-system.css">
@@ -80,7 +80,7 @@
         <span id="syncTime" class="sync-time">正在同步</span>
         <div class="theme-switch" role="group" aria-label="界面主题"><button type="button" data-theme-value="light" title="白色主题"><i class="ph ph-sun"></i></button><button type="button" data-theme-value="dark" title="深色主题"><i class="ph ph-moon"></i></button></div>
         <button class="icon-btn" id="refreshBtn" title="刷新状态"><i class="ph ph-arrow-clockwise"></i></button>
-        <button class="btn primary" id="startAllBtn" title="启动第二微信、OneBot 与 AI 服务"><i class="ph ph-play"></i><span>启动全部</span></button>
+        <button class="btn primary" id="startAllBtn" title="启动当前微信、OneBot 与 AI 服务"><i class="ph ph-play"></i><span>启动全部</span></button>
       </div>
     </header>
 
@@ -88,12 +88,12 @@
       <section class="page active" id="page-overview">
         <div class="dashboard-layout">
           <div class="dashboard-main">
-            <div class="section-bar"><div><h2>核心服务</h2><p>第二微信专用运行环境</p></div><span class="health-chip" id="healthChip">检查中</span></div>
+            <div class="section-bar"><div><h2>核心服务</h2><p>当前微信专用运行环境</p></div><span class="health-chip" id="healthChip">检查中</span></div>
             <div class="service-matrix">
-              <article class="status-card" data-service="wechat2">
-                <div class="card-top"><div class="service-name"><span class="service-mark wx">微</span><div><h3>第二微信</h3><small>WeChat2.app · 4.1.11.53</small></div></div><span class="status-badge state-text">检查中</span></div>
-                <dl><div><dt>PID</dt><dd class="pid">--</dd></div><div><dt>运行时长</dt><dd class="uptime">--</dd></div><div><dt>容器</dt><dd>instance2</dd></div></dl>
-                <div class="card-actions"><button class="btn subtle action-btn" data-action="launch_wechat2">启动 / 前置</button></div>
+              <article class="status-card" data-service="wechat">
+                <div class="card-top"><div class="service-name"><span class="service-mark wx">微</span><div><h3>当前微信</h3><small>WeChat.app · 4.1.11.53</small></div></div><span class="status-badge state-text">检查中</span></div>
+                <dl><div><dt>PID</dt><dd class="pid">--</dd></div><div><dt>运行时长</dt><dd class="uptime">--</dd></div><div><dt>实例</dt><dd>唯一</dd></div></dl>
+                <div class="card-actions"><button class="btn subtle action-btn" data-action="launch_wechat">启动 / 前置</button></div>
               </article>
               <article class="status-card" data-service="onebot">
                 <div class="card-top"><div class="service-name"><span class="service-mark ob">OB</span><div><h3>OneBot 核心</h3><small>Frida 本地控制通道</small></div></div><span class="status-badge state-text">检查中</span></div>
@@ -107,10 +107,10 @@
               </article>
             </div>
 
-            <div class="isolation-panel"><div class="isolation-icon">✓</div><div><strong>主微信隔离环境</strong><small id="isolationPath">读取隔离路径中</small></div><span>强制保护</span></div>
+            <div class="isolation-panel"><div class="isolation-icon">✓</div><div><strong>唯一微信安装目标</strong><small id="targetPath">读取官方安装路径中</small></div><span>单实例锁定</span></div>
 
             <div class="auto-login-panel panel">
-              <div class="auto-login-copy"><span class="auto-login-pulse" id="autoLoginPulse"></span><div><strong>第二微信自动登录</strong><small id="autoLoginDetail">正在检查守护状态</small></div></div>
+              <div class="auto-login-copy"><span class="auto-login-pulse" id="autoLoginPulse"></span><div><strong>当前微信自动登录</strong><small id="autoLoginDetail">正在检查守护状态</small></div></div>
               <div class="auto-login-actions"><span class="auto-login-state" id="autoLoginState">检查中</span><button class="btn ghost" id="autoLoginCheckBtn" type="button">立即检测</button><label class="switch" title="仅在连续两次识别到登录页时点击"><input id="autoLoginEnabled" type="checkbox" checked><i></i></label></div>
             </div>
 
@@ -128,12 +128,12 @@
             </div>
 
             <div class="panel operations">
-              <div class="panel-head"><div><h2>后台操作</h2><p>仅作用于第二微信实例</p></div></div>
+              <div class="panel-head"><div><h2>后台操作</h2><p>仅作用于当前微信实例</p></div></div>
               <div class="operation-grid">
-                <button class="operation action-btn" data-action="launch_wechat2"><span>01</span><strong>启动第二微信</strong><small>复用已登录实例</small></button>
+                <button class="operation action-btn" data-action="launch_wechat"><span>01</span><strong>启动当前微信</strong><small>复用已登录实例</small></button>
                 <button class="operation action-btn" data-action="start_onebot"><span>02</span><strong>挂载 OneBot</strong><small>Attach 当前 PID</small></button>
                 <button class="operation action-btn" data-action="restart_ai"><span>03</span><strong>重载 AI 服务</strong><small>应用最新配置</small></button>
-                <button class="operation danger action-btn" data-action="stop_backend"><span>×</span><strong>停止后台</strong><small>保留第二微信运行</small></button>
+                <button class="operation danger action-btn" data-action="stop_backend"><span>×</span><strong>停止后台</strong><small>保留当前微信运行</small></button>
               </div>
             </div>
           </div>
@@ -458,7 +458,7 @@
             <div class="rules-grid panel-body">
               <label class="toggle-row"><span><strong>启用 AI 回复</strong><small>接收目标群文本事件</small></span><span class="switch"><input id="enabled" type="checkbox"><i></i></span></label>
               <label class="toggle-row"><span><strong>仅关键词触发</strong><small>不匹配关键词时忽略</small></span><span class="switch"><input id="requireKeyword" type="checkbox"><i></i></span></label>
-              <label class="toggle-row"><span><strong>忽略自身消息</strong><small>过滤第二微信发言</small></span><span class="switch"><input id="ignoreSelf" type="checkbox"><i></i></span></label>
+              <label class="toggle-row"><span><strong>忽略自身消息</strong><small>过滤当前微信发言</small></span><span class="switch"><input id="ignoreSelf" type="checkbox"><i></i></span></label>
               <label class="toggle-row"><span><strong>演练模式</strong><small>生成但不发送</small></span><span class="switch"><input id="dryRun" type="checkbox"><i></i></span></label>
               <div class="field"><label for="replyPrefix">回复前缀</label><input id="replyPrefix" placeholder="留空则不添加前缀"></div>
               <div class="field"><label for="keywords">触发关键词</label><input id="keywords" placeholder="多个关键词用逗号分隔"></div>
@@ -478,7 +478,7 @@
             <div class="panel-body test-fields">
               <div class="field"><label for="testGroup">目标群</label><select id="testGroup"></select></div>
               <div class="field"><label for="testAiPrompt">AI 独立测试消息</label><textarea id="testAiPrompt" rows="3">只回复：AI 接口正常</textarea></div>
-              <div class="field"><label for="testOnebotText">OneBot 发送消息</label><textarea id="testOnebotText" rows="3">第二微信 OneBot 通道测试</textarea></div>
+              <div class="field"><label for="testOnebotText">OneBot 发送消息</label><textarea id="testOnebotText" rows="3">当前微信 OneBot 通道测试</textarea></div>
               <div class="field"><label for="testCallbackText">完整回调模拟消息</label><textarea id="testCallbackText" rows="3">请简短回复本次值班测试</textarea></div>
               <div class="field"><label for="mediaPath">图片/文件路径或 URL</label><input id="mediaPath" placeholder="/tmp/test.png 或 https://..."></div>
               <div class="field"><label for="videoPath">视频路径或 URL</label><input id="videoPath" placeholder="/tmp/test.mp4 或 https://..."></div>
@@ -493,7 +493,7 @@
             <button class="pipeline-step test-run" data-test="callback"><span>03</span><div><strong>FULL CALLBACK</strong><small>Event → AI → ACK</small></div><b>运行</b></button><i></i>
             <button class="pipeline-step test-run" data-test="probe"><span>04</span><div><strong>SEND PROBE</strong><small>诊断探针</small></div><b>发送</b></button><i></i>
             <button class="pipeline-step test-run" data-test="recover"><span>05</span><div><strong>修复 OneBot</strong><small>仅重启 OneBot</small></div><b>修复</b></button><i></i>
-            <button class="pipeline-step test-run" data-test="wechat2"><span>06</span><div><strong>重启第二微信</strong><small>只操作 WeChat2.app</small></div><b>重启</b></button><i></i>
+            <button class="pipeline-step test-run" data-test="wechat"><span>06</span><div><strong>重启当前微信</strong><small>只操作 WeChat.app</small></div><b>重启</b></button><i></i>
             <button class="pipeline-step test-run" data-test="at"><span>07</span><div><strong>@ 群成员</strong><small>at 消息</small></div><b>发送</b></button><i></i>
             <button class="pipeline-step test-run" data-test="reply"><span>08</span><div><strong>引用回复</strong><small>reply 消息</small></div><b>发送</b></button><i></i>
             <button class="pipeline-step test-run" data-test="image"><span>09</span><div><strong>发送图片</strong><small>image 消息</small></div><b>发送</b></button><i></i>
@@ -504,7 +504,7 @@
           <div class="panel test-console">
             <div class="console-head"><div><span></span><span></span><span></span><strong>test-session.log</strong></div><button class="link-btn" id="clearTestConsole">CLEAR</button></div>
             <div class="console-body" id="testConsole"><p class="muted">// 测试控制台就绪</p></div>
-            <div class="hidden-results"><div id="result-ai"></div><div id="result-onebot"></div><div id="result-callback"></div><div id="result-probe"></div><div id="result-recover"></div><div id="result-wechat2"></div><div id="result-at"></div><div id="result-reply"></div><div id="result-image"></div><div id="result-file"></div><div id="result-video"></div><div id="result-record"></div></div>
+            <div class="hidden-results"><div id="result-ai"></div><div id="result-onebot"></div><div id="result-callback"></div><div id="result-probe"></div><div id="result-recover"></div><div id="result-wechat"></div><div id="result-at"></div><div id="result-reply"></div><div id="result-image"></div><div id="result-file"></div><div id="result-video"></div><div id="result-record"></div></div>
           </div>
         </div>
       </section>
@@ -574,7 +574,16 @@
           <aside class="panel voice-control-panel">
             <div class="panel-head"><div><h2>导入语音包</h2><p>支持总目录、zip、zip1 和单个 silk</p></div><span class="route-status">IMPORT</span></div>
             <div class="panel-body memory-controls">
-              <div class="field"><label for="voiceImportPaths">来源路径</label><textarea id="voiceImportPaths" rows="3" placeholder="~/Downloads/voice-packs"></textarea><small class="field-note">一行一个路径。选总目录会自动识别里面的每个 zip / zip1 / 子目录。</small></div>
+              <div class="field">
+                <label for="voiceImportFiles">浏览选择压缩包 / 音频</label>
+                <div class="voice-file-picker">
+                  <label class="btn primary wide" for="voiceImportFiles"><i class="ph ph-folder-open"></i>选择文件</label>
+                  <input id="voiceImportFiles" type="file" accept=".zip,.zip1,.silk,.wav,.mp3,.m4a,.amr" multiple hidden>
+                  <button class="btn ghost" id="voiceImportClearBtn" type="button" hidden>清空</button>
+                </div>
+                <div class="voice-file-selection" id="voiceImportSelection"><strong>尚未选择文件</strong><span>可一次选择多个 zip / zip1 压缩包或音频文件</span></div>
+              </div>
+              <div class="field"><label for="voiceImportPaths">或手动填写来源路径</label><textarea id="voiceImportPaths" rows="3" placeholder="~/Downloads/voice-packs"></textarea><small class="field-note">仍支持一行一个路径；总目录会自动识别里面的每个 zip / zip1 / 子目录。</small></div>
               <div class="field"><label for="voiceImportCategory">统一分类（可选）</label><input id="voiceImportCategory" placeholder="留空则使用目录名称"></div>
               <div class="field"><label for="voiceImportTargetPack">追加到语音包</label><select id="voiceImportTargetPack"><option value="">自动创建新语音包</option></select></div>
               <div class="voice-import-actions"><button class="btn subtle wide" id="voicePlanBtn">扫描来源</button><button class="btn primary wide" id="voiceImportBtn">确认导入</button></div>

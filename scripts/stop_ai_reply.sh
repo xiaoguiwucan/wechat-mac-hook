@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-SECOND_HOME="$HOME/Library/Application Support/WeChatSecond"
-PID_FILE="$SECOND_HOME/ai-reply.pid"
+AGENT_HOME="$HOME/Library/Application Support/WeChatAgent"
+PID_FILE="$AGENT_HOME/ai-reply.pid"
 PID=$(cat "$PID_FILE" 2>/dev/null || true)
 if [[ -z "$PID" ]]; then
   echo "AI reply server not running (no pid file)"

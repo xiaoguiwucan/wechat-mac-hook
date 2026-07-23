@@ -18,7 +18,7 @@ static CGImageRef CaptureWindow(CGWindowID window) {
   // A detached helper may not inherit the WindowServer capture attribution used by
   // an interactive terminal. The system capture utility keeps the same target
   // window restriction while avoiding that process-identity difference.
-  NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"wechat2-ocr-%u.png", window]];
+  NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"wechat-ocr-%u.png", window]];
   [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
   NSTask *task = [[NSTask alloc] init];
   task.launchPath = @"/usr/sbin/screencapture";
@@ -120,11 +120,11 @@ int main(int argc, const char *argv[]) {
         CGRect windowBounds = CGRectZero;
         CGWindowID window = FindWindow(pid, &windowBounds);
         if (window == kCGNullWindowID) {
-          fprintf(stderr, "second WeChat window not found for pid=%d\n", pid);
+          fprintf(stderr, "installed WeChat window not found for pid=%d\n", pid);
         } else {
           CGImageRef image = CaptureWindow(window);
           if (!image) {
-            fprintf(stderr, "second WeChat window capture failed\n");
+            fprintf(stderr, "installed WeChat window capture failed\n");
           } else {
             NSError *error = nil;
             NSArray<NSDictionary *> *rows = Recognize(image, &error);

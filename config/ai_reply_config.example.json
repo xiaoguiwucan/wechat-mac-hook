@@ -86,7 +86,9 @@
     "threshold": 52,
     "scoring_mode": "local_fast",
     "rerank_candidates": 12,
-    "bot_aliases": ["小风"],
+    "bot_aliases": [
+      "小风"
+    ],
     "followup_window_seconds": 120,
     "merge_window_ms": 2500,
     "global_workers": 8,
@@ -155,10 +157,10 @@
   },
   "onebot_monitor": {
     "enabled": true,
-    "auto_recover": true
+    "auto_recover": false
   },
-  "wechat2_auto_login": {
-    "enabled": true,
+  "wechat_auto_login": {
+    "enabled": false,
     "check_interval_seconds": 20,
     "cooldown_seconds": 60,
     "required_consecutive_detections": 2,
@@ -168,7 +170,10 @@
     "enabled": false,
     "text_enabled": true,
     "image_enabled": false,
-    "texts": ["拍我干嘛～", "在呢，别拍了。"],
+    "texts": [
+      "拍我干嘛～",
+      "在呢，别拍了。"
+    ],
     "face_ids": [],
     "bot_target_ids": [],
     "cooldown_seconds": 0

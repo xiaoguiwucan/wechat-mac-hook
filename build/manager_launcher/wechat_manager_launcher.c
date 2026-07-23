@@ -5,6 +5,8 @@
 #include <limits.h>
 
 int main(int argc, char **argv) {
+    (void)argc;
+    (void)argv;
     const char *env_root = getenv("WECHAT_MAC_HOOK_ROOT");
     char cwd[PATH_MAX];
     const char *root = env_root;
@@ -17,7 +19,7 @@ int main(int argc, char **argv) {
     }
 
     char script[PATH_MAX];
-    snprintf(script, sizeof(script), "%s/desktop_app/wechat_second_manager.py", root);
+    snprintf(script, sizeof(script), "%s/desktop_app/wechat_manager.py", root);
     chdir(root);
     setenv("PYTHONUNBUFFERED", "1", 1);
     execl("/usr/bin/python3", "python3", script, (char *)NULL);

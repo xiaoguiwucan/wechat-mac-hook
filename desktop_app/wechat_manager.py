@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""macOS 第二微信 / OneBot / AI 回复桌面管理器。"""
+"""macOS 当前微信 / OneBot / AI 回复桌面管理器。"""
 from __future__ import annotations
 
 import json
@@ -24,11 +24,11 @@ from tkinter.scrolledtext import ScrolledText
 ROOT_DIR = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT_DIR / "config" / "ai_reply_config.json"
 ENV_PATH = ROOT_DIR / "config" / "ai_reply.env"
-SECOND_HOME = Path.home() / "Library" / "Application Support" / "WeChatSecond"
-LOG_DIR = SECOND_HOME / "logs"
+AGENT_HOME = Path.home() / "Library" / "Application Support" / "WeChatAgent"
+LOG_DIR = AGENT_HOME / "logs"
 AI_LOG = LOG_DIR / "ai-reply.log"
-ONEBOT_LOG = LOG_DIR / "onebot-wechat2.log"
-WECHAT2_APP = Path.home() / "Applications" / "WeChat2.app"
+ONEBOT_LOG = LOG_DIR / "onebot-wechat.log"
+WECHAT_APP = Path("/Applications/WeChat.app")
 
 SCRIPT = lambda name: str(ROOT_DIR / "scripts" / name)
 
@@ -103,7 +103,7 @@ def infer_provider(base_url: str) -> str:
 class ManagerApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("第二微信 AI 助手管理器")
+        self.title("当前微信 AI 助手管理器")
         self.geometry("1080x760")
         self.minsize(980, 680)
         self._setup_style()
@@ -183,10 +183,10 @@ class ManagerApp(tk.Tk):
         self.group_name_var = tk.StringVar(value="值班群")
         self.test_prompt_var = tk.StringVar(value="请回复：AI接口测试成功")
         self.callback_test_text_var = tk.StringVar(value="值班群AI回调测试")
-        self.send_test_text_var = tk.StringVar(value="第二微信助手固定消息测试")
+        self.send_test_text_var = tk.StringVar(value="当前微信助手固定消息测试")
 
         self.status_summary_var = tk.StringVar(value="状态加载中…")
-        self.wechat2_status_var = tk.StringVar(value="WeChat2：未知")
+        self.wechat_status_var = tk.StringVar(value="WeChat：未知")
         self.onebot_status_var = tk.StringVar(value="OneBot：未知")
         self.ai_status_var = tk.StringVar(value="AI服务：未知")
 
@@ -225,7 +225,7 @@ class ManagerApp(tk.Tk):
         top.grid(row=0, column=0, sticky="ew", padx=8, pady=8)
         for i in range(3):
             top.columnconfigure(i, weight=1)
-        ttk.Label(top, textvariable=self.wechat2_status_var, font=("Menlo", 13)).grid(row=0, column=0, sticky="w", padx=10, pady=8)
+        ttk.Label(top, textvariable=self.wechat_status_var, font=("Menlo", 13)).grid(row=0, column=0, sticky="w", padx=10, pady=8)
         ttk.Label(top, textvariable=self.onebot_status_var, font=("Menlo", 13)).grid(row=0, column=1, sticky="w", padx=10, pady=8)
         ttk.Label(top, textvariable=self.ai_status_var, font=("Menlo", 13)).grid(row=0, column=2, sticky="w", padx=10, pady=8)
         ttk.Label(top, textvariable=self.status_summary_var, foreground="#555").grid(row=1, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 8))
@@ -235,14 +235,14 @@ class ManagerApp(tk.Tk):
         for i in range(5):
             actions.columnconfigure(i, weight=1)
         self._button(actions, "保存配置", self.save_config).grid(row=0, column=0, sticky="ew", padx=6, pady=6)
-        self._button(actions, "启动第二微信", lambda: self.run_script("启动第二微信", "launch_wechat2_4_1_11_53.sh")).grid(row=0, column=1, sticky="ew", padx=6, pady=6)
-        self._button(actions, "启动 OneBot", lambda: self.run_script("启动 OneBot", "start_onebot_wechat2.sh")).grid(row=0, column=2, sticky="ew", padx=6, pady=6)
+        self._button(actions, "启动当前微信", lambda: self.run_script("启动当前微信", "launch_wechat.sh")).grid(row=0, column=1, sticky="ew", padx=6, pady=6)
+        self._button(actions, "启动 OneBot", lambda: self.run_script("启动 OneBot", "start_onebot.sh")).grid(row=0, column=2, sticky="ew", padx=6, pady=6)
         self._button(actions, "启动/复用 AI 服务", self.start_ai_after_save).grid(row=0, column=3, sticky="ew", padx=6, pady=6)
         self._button(actions, "一键启动全部", self.start_all_after_save).grid(row=0, column=4, sticky="ew", padx=6, pady=6)
 
         self._button(actions, "停止 AI 服务", lambda: self.run_script("停止 AI 服务", "stop_ai_reply.sh")).grid(row=1, column=0, sticky="ew", padx=6, pady=6)
-        self._button(actions, "停止 OneBot", lambda: self.run_script("停止 OneBot", "stop_onebot_wechat2.sh")).grid(row=1, column=1, sticky="ew", padx=6, pady=6)
-        self._button(actions, "停止后台(AI+OneBot)", lambda: self.run_script("停止后台", "stop_backend_wechat2.sh")).grid(row=1, column=2, sticky="ew", padx=6, pady=6)
+        self._button(actions, "停止 OneBot", lambda: self.run_script("停止 OneBot", "stop_onebot.sh")).grid(row=1, column=1, sticky="ew", padx=6, pady=6)
+        self._button(actions, "停止后台(AI+OneBot)", lambda: self.run_script("停止后台", "stop_backend.sh")).grid(row=1, column=2, sticky="ew", padx=6, pady=6)
         self._button(actions, "刷新状态", self.refresh_status).grid(row=1, column=3, sticky="ew", padx=6, pady=6)
         self._button(actions, "打开日志目录", lambda: self.open_path(LOG_DIR)).grid(row=1, column=4, sticky="ew", padx=6, pady=6)
 
@@ -251,9 +251,9 @@ class ManagerApp(tk.Tk):
         ttk.Label(
             note,
             text=(
-                f"第二微信：{WECHAT2_APP}\n"
-                "所有启动/附加脚本都只识别 com.tencent.xinWeChat.instance2 和 WeChat2.app；"
-                "停止后台只停止 AI/OneBot，不关闭主微信，也不关闭第二微信。"
+                f"当前微信：{WECHAT_APP}\n"
+                "所有启动/附加脚本都只识别 com.tencent.xinWeChat 和 WeChat.app；"
+                "停止后台只停止 AI/OneBot，不关闭主微信，也不关闭当前微信。"
             ),
             foreground="#555",
             justify="left",
@@ -314,7 +314,7 @@ class ManagerApp(tk.Tk):
         opts.grid(row=8, column=1, sticky="ew", **pad)
         ttk.Checkbutton(opts, text="必须包含关键词才回复", variable=self.require_keyword_var).grid(row=0, column=0, sticky="w", padx=(0, 16))
         ttk.Checkbutton(opts, text="Dry Run：只记录不发送", variable=self.dry_run_var).grid(row=0, column=1, sticky="w", padx=(0, 16))
-        ttk.Checkbutton(opts, text="忽略第二微信自己发出的消息", variable=self.ignore_self_var).grid(row=0, column=2, sticky="w")
+        ttk.Checkbutton(opts, text="忽略当前微信自己发出的消息", variable=self.ignore_self_var).grid(row=0, column=2, sticky="w")
 
         more = ttk.Frame(f)
         more.grid(row=9, column=1, sticky="ew", **pad)
@@ -418,7 +418,7 @@ class ManagerApp(tk.Tk):
         ttk.Label(f, text="说明", foreground="#555").grid(row=3, column=0, sticky="ne", **pad)
         ttk.Label(
             f,
-            text="AI接口测试只请求模型接口，不发送微信。AI回调链路会模拟值班群消息；如果AI服务已配置Key且dry_run关闭，会由第二微信发到目标群。OneBot发送测试会直接发送固定文本到目标群。",
+            text="AI接口测试只请求模型接口，不发送微信。AI回调链路会模拟值班群消息；如果AI服务已配置Key且dry_run关闭，会由当前微信发到目标群。OneBot发送测试会直接发送固定文本到目标群。",
             foreground="#555",
             wraplength=760,
             justify="left",
@@ -563,7 +563,7 @@ class ManagerApp(tk.Tk):
 
             ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
             env_lines = [
-                "# 由 第二微信 AI 助手管理器 生成。",
+                "# 由 当前微信 AI 助手管理器 生成。",
                 "# OpenAI-compatible：DeepSeek / OpenAI / 第三方中转站 / OpenRouter / 本地服务均可。",
                 f"export AI_REPLY_PROVIDER={shell_quote('openai_compatible')}",
                 f"export AI_REPLY_API_KEY={shell_quote(self.api_key_var.get().strip())}",
@@ -766,7 +766,7 @@ class ManagerApp(tk.Tk):
         if not gid:
             messagebox.showerror("没有目标群", "请先在“群配置”里添加目标群并保存")
             return
-        text = self.send_test_text_var.get().strip() or "第二微信助手固定消息测试"
+        text = self.send_test_text_var.get().strip() or "当前微信助手固定消息测试"
         url = self.onebot_api_var.get().strip().rstrip("/") + "/send_group_msg"
         self.append_test(f"[{time.strftime('%H:%M:%S')}] POST {url} group_id={gid}\n")
         def work():
@@ -818,23 +818,23 @@ class ManagerApp(tk.Tk):
 
     def start_all_after_save(self) -> None:
         if self.save_config(show_message=False):
-            self.run_script("一键启动第二微信 + OneBot + AI", "run_wechat2_ai_reply.sh")
+            self.run_script("一键启动当前微信 + OneBot + AI", "run_wechat_ai_reply.sh")
 
     def refresh_status(self) -> None:
         def work():
             out_parts = []
             wechat_pid = onebot_pid = ai_pid = ""
             try:
-                p = subprocess.run([SCRIPT("status_wechat2_onebot.sh")], cwd=str(ROOT_DIR), text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=12)
+                p = subprocess.run([SCRIPT("status_wechat_onebot.sh")], cwd=str(ROOT_DIR), text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=12)
                 out_parts.append(p.stdout)
-                m = re.search(r"WeChat2 PID=(\d+)", p.stdout)
+                m = re.search(r"WeChat PID=(\d+)", p.stdout)
                 if m:
                     wechat_pid = m.group(1)
                 m = re.search(r"OneBot PID=(\d+)", p.stdout)
                 if m:
                     onebot_pid = m.group(1)
             except Exception as e:
-                out_parts.append(f"status_wechat2_onebot.sh failed: {e}\n")
+                out_parts.append(f"status_wechat_onebot.sh failed: {e}\n")
             try:
                 p = subprocess.run([SCRIPT("status_ai_reply.sh")], cwd=str(ROOT_DIR), text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=8)
                 out_parts.append("\n--- AI ---\n" + p.stdout)
@@ -845,7 +845,7 @@ class ManagerApp(tk.Tk):
                 out_parts.append(f"status_ai_reply.sh failed: {e}\n")
             summary = f"配置：{CONFIG_PATH} | env：{ENV_PATH} | 日志：{LOG_DIR}"
             def update():
-                self.wechat2_status_var.set(f"WeChat2：{'运行 PID=' + wechat_pid if wechat_pid else '未运行'}")
+                self.wechat_status_var.set(f"WeChat：{'运行 PID=' + wechat_pid if wechat_pid else '未运行'}")
                 self.onebot_status_var.set(f"OneBot：{'运行 PID=' + onebot_pid if onebot_pid else '未运行'}")
                 self.ai_status_var.set(f"AI服务：{'运行 PID=' + ai_pid if ai_pid else '未运行'}")
                 self.status_summary_var.set(summary)
@@ -859,13 +859,13 @@ class ManagerApp(tk.Tk):
         # 只轻量刷新标签，不清空输出。避免用户看日志时被打断。
         def work():
             try:
-                out1 = subprocess.run([SCRIPT("status_wechat2_onebot.sh")], cwd=str(ROOT_DIR), text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=8).stdout
+                out1 = subprocess.run([SCRIPT("status_wechat_onebot.sh")], cwd=str(ROOT_DIR), text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=8).stdout
                 out2 = subprocess.run([SCRIPT("status_ai_reply.sh")], cwd=str(ROOT_DIR), text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5).stdout
-                wechat = re.search(r"WeChat2 PID=(\d+)", out1)
+                wechat = re.search(r"WeChat PID=(\d+)", out1)
                 onebot = re.search(r"OneBot PID=(\d+)", out1)
                 ai = re.search(r"AI reply PID=(\d+)", out2)
                 self.after(0, lambda: (
-                    self.wechat2_status_var.set(f"WeChat2：{'运行 PID=' + wechat.group(1) if wechat else '未运行'}"),
+                    self.wechat_status_var.set(f"WeChat：{'运行 PID=' + wechat.group(1) if wechat else '未运行'}"),
                     self.onebot_status_var.set(f"OneBot：{'运行 PID=' + onebot.group(1) if onebot else '未运行'}"),
                     self.ai_status_var.set(f"AI服务：{'运行 PID=' + ai.group(1) if ai else '未运行'}"),
                 ))
