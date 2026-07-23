@@ -47,6 +47,29 @@ class HermesAutomationTests(unittest.TestCase):
         })
         self.assertFalse(result["accepted"])
         self.assertTrue(result["approval_required"])
+        self.assertEqual(
+            self.store.automation_run(result["run_id"])["status"],
+            "awaiting_approval",
+        )
+
+    def test_high_risk_can_be_approved_from_owner_console(self):
+        pending = self.service.submit_manual("g@chatroom", "生产部署", "high")
+        approved = self.service.approve(pending["run_id"])
+        self.assertTrue(approved["accepted"])
+        self.assertEqual(
+            self.store.automation_run(pending["run_id"])["status"],
+            "queued",
+        )
+
+    def test_owner_console_can_submit_and_stop_write_task(self):
+        submitted = self.service.submit_manual("g@chatroom", "运行全部测试", "write")
+        self.assertTrue(submitted["accepted"])
+        stopped = self.service.stop_run(submitted["run_id"])
+        self.assertTrue(stopped["stopped"])
+        self.assertEqual(
+            self.store.automation_run(submitted["run_id"])["status"],
+            "cancelled",
+        )
 
 
 if __name__ == "__main__":

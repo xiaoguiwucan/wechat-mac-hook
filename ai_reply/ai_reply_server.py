@@ -34,6 +34,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Deque, Dict, List, Optional, Tuple
 
 DEFAULT_CONFIG = Path(__file__).resolve().parents[1] / "config" / "ai_reply_config.json"
@@ -575,6 +576,14 @@ class AIReplyService:
         self.state_lock = threading.RLock()
         self.memory_file_lock = threading.RLock()
         self.channel_state_lock = threading.RLock()
+        self.router_state: Dict[str, Any] = {
+            "enabled": cfg.router.enabled,
+            "configured": bool(cfg.router.base_url and cfg.router.model),
+            "healthy": None,
+            "model": cfg.router.model,
+            "last_checked_at": "",
+            "last_error": "",
+        }
         self.culture_state_lock = threading.RLock()
         self.culture_pending: set[str] = set()
         self.culture_message_counts: Dict[str, int] = collections.defaultdict(int)
@@ -667,6 +676,11 @@ class AIReplyService:
         with self.state_lock:
             old_brain = self.cfg.brain
             self.cfg = cfg
+            self._update_router_state({
+                "enabled": cfg.router.enabled,
+                "configured": bool(cfg.router.base_url and cfg.router.model),
+                "model": cfg.router.model,
+            })
             self.scorer.cfg = cfg.brain
             self.scheduler.reconfigure(cfg.brain)
             self.embedding_service.cfg = cfg.embedding
@@ -682,6 +696,22 @@ class AIReplyService:
             return {"applied": True, **result}
         except Exception as exc:
             return {"applied": False, "error": str(exc)}
+
+    def _update_router_state(self, values: Dict[str, Any]) -> None:
+        """Keep router telemetry safe for lightweight test/service instances."""
+        state = getattr(self, "router_state", None)
+        if not isinstance(state, dict):
+            cfg = getattr(getattr(self, "cfg", None), "router", None)
+            state = {
+                "enabled": bool(getattr(cfg, "enabled", False)),
+                "configured": bool(getattr(cfg, "base_url", "") and getattr(cfg, "model", "")),
+                "healthy": None,
+                "model": str(getattr(cfg, "model", "") or ""),
+                "last_checked_at": "",
+                "last_error": "",
+            }
+            self.router_state = state
+        state.update(values)
 
     def _admin_runtime(self, group_id: str) -> Dict[str, Any]:
         tasks = self.store.reply_tasks(group_id, 20)
@@ -708,6 +738,7 @@ class AIReplyService:
             "durable": self.durable_sync.snapshot(),
             "hermes": self.hermes.snapshot(),
             "graphiti": self.graphiti.snapshot(),
+            "router": dict(getattr(self, "router_state", {})),
             "media_queue": self.media_events.qsize(),
             "culture_queue": self.culture_events.qsize(),
             "media_channel_waiting": max(0, sum(
@@ -1578,8 +1609,14 @@ class AIReplyService:
         }
         cfg = getattr(self.cfg, "router", None)
         if cfg is None:
+            self._update_router_state({"enabled": False, "configured": False, "healthy": None})
             return fallback
         if not cfg.enabled or not cfg.base_url or not cfg.model:
+            self._update_router_state({
+                "enabled": cfg.enabled, "configured": bool(cfg.base_url and cfg.model),
+                "healthy": None, "model": cfg.model, "last_checked_at": now_ts(),
+                "last_error": "disabled_or_incomplete",
+            })
             return fallback
         candidates = []
         for item in (memory.get("items") or [])[:18]:
@@ -1617,13 +1654,17 @@ class AIReplyService:
             cfg.max_tokens, 0.0, evt,
         )
         if not reply:
+            self._update_router_state({
+                "enabled": True, "configured": True, "healthy": False,
+                "model": cfg.model, "last_checked_at": now_ts(), "last_error": error[:500],
+            })
             return {**fallback, "reason": f"router_unavailable:{error[:160]}"}
         try:
             clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", reply.strip(), flags=re.I | re.S)
             parsed = json.loads(clean)
             allowed_ids = {item["id"] for item in candidates}
             chosen = [str(x) for x in parsed.get("memory_ids") or [] if str(x) in allowed_ids][:8]
-            return {
+            result = {
                 "available": True,
                 "reply_required": bool(parsed.get("reply_required", mandatory)) or bool(mandatory),
                 "memory_ids": chosen,
@@ -1634,7 +1675,16 @@ class AIReplyService:
                 "model": cfg.model,
                 "reason": str(parsed.get("reason") or "")[:300],
             }
+            self._update_router_state({
+                "enabled": True, "configured": True, "healthy": True,
+                "model": cfg.model, "last_checked_at": now_ts(), "last_error": "",
+            })
+            return result
         except Exception as exc:
+            self._update_router_state({
+                "enabled": True, "configured": True, "healthy": False,
+                "model": cfg.model, "last_checked_at": now_ts(), "last_error": str(exc)[:500],
+            })
             return {**fallback, "reason": f"router_parse_fallback:{exc}"}
 
     def _media_worker_loop(self) -> None:
@@ -3355,6 +3405,45 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(404, {"status": "not_found"})
 
     def do_POST(self) -> None:
+        if self.path in {"/automation/submit", "/automation/approve", "/automation/stop"}:
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                raw = json.loads(self.rfile.read(length).decode("utf-8", "replace")) if length else {}
+                assert SERVICE is not None
+                if self.path == "/automation/submit":
+                    group_id = str(raw.get("group_id") or "").strip()
+                    intent = str(raw.get("intent") or "").strip()
+                    risk_level = str(raw.get("risk_level") or "write")
+                    if not group_id.endswith("@chatroom") or not intent:
+                        raise ValueError("需要有效群 ID 和任务内容")
+                    if risk_level not in {"read", "write", "high"}:
+                        raise ValueError("risk_level 必须是 read、write 或 high")
+                    result = SERVICE.hermes.submit_manual(group_id, intent, risk_level)
+                elif self.path == "/automation/approve":
+                    result = SERVICE.hermes.approve(str(raw.get("run_id") or ""))
+                else:
+                    result = SERVICE.hermes.stop_run(str(raw.get("run_id") or ""))
+                self._send_json(200, {"status": "ok", "data": result})
+            except Exception as exc:
+                self._send_json(400, {"status": "failed", "error": str(exc)})
+            return
+        if self.path == "/router/test":
+            try:
+                assert SERVICE is not None
+                event_id = f"router-test-{time.time_ns()}"
+                event = SimpleNamespace(
+                    group_id="web-admin@chatroom", user_id="web-admin",
+                    sender_name="后台检查", text="检查快速路由是否可用",
+                    trace_id=event_id, message_id=event_id,
+                )
+                result = SERVICE.fast_route(event, {"items": []}, [], True)
+                self._send_json(200, {
+                    "status": "ok",
+                    "data": {"result": result, "runtime": dict(SERVICE.router_state)},
+                })
+            except Exception as exc:
+                self._send_json(400, {"status": "failed", "error": str(exc)})
+            return
         if self.path in {"/embedding/pause", "/embedding/resume"}:
             assert SERVICE is not None
             paused = self.path.endswith("/pause")

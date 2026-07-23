@@ -12,6 +12,7 @@ import urllib.error
 import urllib.request
 import uuid
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any, Callable, Dict, Optional
 
 from memory_store import MemoryStore
@@ -107,14 +108,32 @@ class HermesAutomationService:
                 self.state["last_error"] = str(exc)[:500]
             return False
 
-    def submit(self, event: Any, route: Dict[str, Any]) -> Dict[str, Any]:
+    def _queue_run(self, row: Dict[str, Any], trace_id: str = "") -> Dict[str, Any]:
+        run_id = str(row["run_id"])
+        task = {
+            "run_id": run_id, "group_id": str(row.get("group_id") or ""),
+            "user_id": str(row.get("user_id") or ""), "trace_id": trace_id or run_id,
+            "intent": str(row.get("intent") or ""), "risk_level": str(row.get("risk_level") or "read"),
+            "source_event_id": str(row.get("source_event_id") or ""),
+        }
+        try:
+            self.tasks.put_nowait(task)
+        except queue.Full:
+            self.store.update_automation_run(run_id, status="failed", error="automation_queue_full")
+            return {"accepted": False, "run_id": run_id, "message": "自动化队列已满，请稍后重试。"}
+        with self.lock:
+            self.state["queued"] += 1
+        return {
+            "accepted": True, "run_id": run_id,
+            "message": f"任务已接收（{run_id[-8:]}），完成后我会把结果发回群里。",
+        }
+
+    def submit(self, event: Any, route: Dict[str, Any],
+               trusted: bool = False, approved: bool = False) -> Dict[str, Any]:
         risk = str(route.get("risk_level") or "read")
         admin = self.store.group_admin(str(event.group_id), str(event.user_id))
-        if risk == "write" and not admin:
+        if risk == "write" and not trusted and not admin:
             return {"accepted": False, "message": "这个操作需要群管理员权限。"}
-        if risk == "high":
-            return {"accepted": False, "approval_required": True,
-                    "message": "这个操作风险较高，已暂停，等待项目所有者确认。"}
         intent = str(route.get("automation_intent") or event.text).strip()[:4000]
         key_source = f"{event.event_id}|{event.message_id}|{intent}"
         idempotency_key = hashlib.sha256(key_source.encode("utf-8", "ignore")).hexdigest()
@@ -123,29 +142,56 @@ class HermesAutomationService:
             "run_id": run_id, "idempotency_key": idempotency_key,
             "source_event_id": event.event_id, "group_id": event.group_id,
             "user_id": event.user_id, "intent": intent, "risk_level": risk,
-            "status": "queued",
+            "status": "queued" if risk != "high" or approved else "awaiting_approval",
         })
         if not created:
             return {
-                "accepted": True, "duplicate": True,
+                "accepted": str(row.get("status") or "") != "awaiting_approval",
+                "duplicate": True, "approval_required": str(row.get("status") or "") == "awaiting_approval",
                 "run_id": row.get("run_id"), "message": "这个自动化任务已经接收，正在处理。",
             }
-        task = {
-            "run_id": run_id, "group_id": event.group_id, "user_id": event.user_id,
-            "trace_id": event.trace_id, "intent": intent, "risk_level": risk,
-            "source_event_id": event.event_id,
-        }
-        try:
-            self.tasks.put_nowait(task)
-        except queue.Full:
-            self.store.update_automation_run(run_id, status="failed", error="automation_queue_full")
-            return {"accepted": False, "message": "自动化队列已满，请稍后重试。"}
-        with self.lock:
-            self.state["queued"] += 1
-        return {
-            "accepted": True, "run_id": run_id,
-            "message": f"任务已接收（{run_id[-8:]}），完成后我会把结果发回群里。",
-        }
+        if risk == "high" and not approved:
+            self.store.add_automation_event(run_id, "approval_required", {
+                "source": "web_admin" if trusted else "group", "intent": intent,
+            })
+            return {"accepted": False, "approval_required": True, "run_id": run_id,
+                    "message": "这个操作风险较高，已暂停，等待项目所有者确认。"}
+        return self._queue_run(row, str(getattr(event, "trace_id", "") or run_id))
+
+    def submit_manual(self, group_id: str, intent: str, risk_level: str = "write") -> Dict[str, Any]:
+        event_id = f"web-admin|{time.time_ns()}"
+        event = SimpleNamespace(
+            group_id=str(group_id), user_id="web-admin-owner", event_id=event_id,
+            message_id=event_id, text=str(intent), trace_id=event_id,
+        )
+        return self.submit(event, {
+            "automation_intent": str(intent), "risk_level": str(risk_level),
+        }, trusted=True)
+
+    def approve(self, run_id: str) -> Dict[str, Any]:
+        row = self.store.automation_run(str(run_id))
+        if not row:
+            return {"accepted": False, "message": "没有找到这个任务。"}
+        if str(row.get("status") or "") != "awaiting_approval":
+            return {"accepted": False, "message": f"任务当前状态为 {row.get('status') or 'unknown'}，无需审批。"}
+        self.store.update_automation_run(str(run_id), status="queued", error="")
+        row = self.store.automation_run(str(run_id))
+        self.store.add_automation_event(str(run_id), "approved", {"source": "web_admin"})
+        return self._queue_run(row, f"approval-{run_id}")
+
+    def stop_run(self, run_id: str) -> Dict[str, Any]:
+        row = self.store.automation_run(str(run_id))
+        if not row:
+            return {"stopped": False, "message": "没有找到这个任务。"}
+        status = str(row.get("status") or "")
+        if status in {"completed", "failed", "cancelled"}:
+            return {"stopped": False, "message": f"任务已经是 {status} 状态。"}
+        hermes_run_id = str(row.get("hermes_run_id") or "")
+        if hermes_run_id:
+            self._request("POST", f"/v1/runs/{hermes_run_id}/stop", {}, timeout=10)
+        self.store.update_automation_run(str(run_id), status="cancelled", error="")
+        self.store.add_automation_event(str(run_id), "cancelled", {"source": "web_admin"})
+        return {"stopped": True, "run_id": str(run_id), "message": "任务已停止。"}
 
     def _consume_sse(self, local_run_id: str, hermes_run_id: str) -> None:
         req = urllib.request.Request(
@@ -232,7 +278,14 @@ class HermesAutomationService:
                 continue
             if not task:
                 continue
+            row = self.store.automation_run(str(task.get("run_id") or ""))
+            if str(row.get("status") or "") == "cancelled":
+                with self.lock:
+                    self.state["queued"] = max(0, self.state["queued"] - 1)
+                self.tasks.task_done()
+                continue
             with self.lock:
+                self.state["queued"] = max(0, self.state["queued"] - 1)
                 self.state["running"] += 1
             try:
                 self._execute(task)

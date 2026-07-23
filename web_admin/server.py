@@ -466,6 +466,15 @@ def parse_env(path: Path) -> Dict[str, str]:
     return values
 
 
+def update_env_file(path: Path, updates: Dict[str, Any]) -> None:
+    """Update selected env keys without dropping unrelated credentials/settings."""
+    existing = parse_env(path)
+    existing.update({str(key): str(value) for key, value in updates.items()})
+    lines = ["# 由当前微信 Web 管理后台生成；未修改的配置会原样保留。"]
+    lines.extend(f"export {key}={shell_value(value)}" for key, value in sorted(existing.items()))
+    atomic_write(path, "\n".join(lines) + "\n")
+
+
 def shell_value(value: Any) -> str:
     return shlex.quote(str(value))
 
@@ -794,8 +803,7 @@ def save_config(data: Dict[str, Any]) -> Dict[str, Any]:
     env_values["AI_REPLY_VISION_OCR_API_KEY"] = str(vision_in.get("api_key", ""))
     env_values["AI_REPLY_ASR_API_KEY"] = str(asr_in.get("api_key", ""))
     env_values["AI_REPLY_IMAGE_GENERATION_API_KEY"] = str(image_gen_in.get("api_key", ""))
-    lines = ["# 由当前微信 Web 管理后台生成。"] + [f"export {k}={shell_value(v)}" for k, v in env_values.items()]
-    atomic_write(ENV_PATH, "\n".join(lines) + "\n")
+    update_env_file(ENV_PATH, env_values)
     return read_config()
 
 
@@ -3197,6 +3205,7 @@ def memory_infrastructure_status() -> Dict[str, Any]:
     hermes = brain.get("hermes") if isinstance(brain.get("hermes"), dict) else {}
     graphiti = brain.get("graphiti") if isinstance(brain.get("graphiti"), dict) else {}
     embedding = brain.get("embedding") if isinstance(brain.get("embedding"), dict) else {}
+    router_runtime = brain.get("router") if isinstance(brain.get("router"), dict) else {}
 
     local_stats = MEMORY.stats()
     outbox = MEMORY.durable_outbox_stats()
@@ -3264,9 +3273,9 @@ def memory_infrastructure_status() -> Dict[str, Any]:
         bool(ai_health.get("status") == "ok"),
         bool(postgres.get("healthy")),
         bool(minio_healthy),
-        bool(durable.get("connected")),
-        bool(hermes.get("healthy")),
-        bool(graphiti.get("ready")),
+        not bool(durable.get("enabled")) or bool(durable.get("connected")),
+        not bool(hermes.get("enabled")) or bool(hermes.get("healthy")),
+        not bool(graphiti.get("enabled")) or bool(graphiti.get("ready")),
     ]
     return {
         "checked_at": checked_at,
@@ -3305,11 +3314,15 @@ def memory_infrastructure_status() -> Dict[str, Any]:
             "central_vectors": int(postgres.get("embeddings") or 0),
         },
         "router": {
-            "healthy": bool(ai_health.get("status") == "ok"),
+            "healthy": router_runtime.get("healthy"),
+            "enabled": bool(router_cfg.get("enabled", True)),
+            "configured": bool(router_cfg.get("base_url") and router_cfg.get("model")),
             "model": str(router_cfg.get("model") or "grok-chat-fast"),
             "final_model": final_model or "grok-4.5",
             "retrieval_deadline_ms": int(memory_cfg.get("retrieval_deadline_ms") or 250),
             "fallback": "本地规则 + 最近消息/人物缓存/群摘要",
+            "last_checked_at": str(router_runtime.get("last_checked_at") or ""),
+            "last_error": str(router_runtime.get("last_error") or ""),
         },
         "services": {
             "ai": bool(ai_health.get("status") == "ok"),
@@ -3319,6 +3332,194 @@ def memory_infrastructure_status() -> Dict[str, Any]:
             "hermes": bool(hermes.get("healthy")),
         },
     }
+
+
+def memory_infrastructure_config() -> Dict[str, Any]:
+    config = json_read(CONFIG_PATH, {})
+    env = parse_env(ENV_PATH)
+    memory = config.get("memory") if isinstance(config.get("memory"), dict) else {}
+    router = config.get("router") if isinstance(config.get("router"), dict) else {}
+    groups = config.get("target_groups") if isinstance(config.get("target_groups"), list) else []
+    return {
+        "memory": {
+            "enabled": bool(memory.get("enabled", True)),
+            "max_turns": int(memory.get("max_turns", 12)),
+            "retrieval_deadline_ms": int(memory.get("retrieval_deadline_ms", 250)),
+            "context_budget_chars": int(memory.get("context_budget_chars", 8000)),
+            "prompt_budget_chars": int(memory.get("prompt_budget_chars", 24000)),
+        },
+        "router": {
+            "enabled": bool(router.get("enabled", True)),
+            "model": str(router.get("model") or "grok-chat-fast"),
+            "timeout_seconds": int(router.get("timeout_seconds", 2)),
+        },
+        "durable": {
+            "enabled": str(env.get("WECHAT_DURABLE_ENABLED", "1")).lower() in {"1", "true", "yes", "on"},
+            "batch_size": int(env.get("WECHAT_DURABLE_BATCH_SIZE", "100")),
+            "poll_seconds": float(env.get("WECHAT_DURABLE_POLL_SECONDS", "0.5")),
+        },
+        "graphiti": {
+            "enabled": str(env.get("GRAPHITI_ENABLED", "0")).lower() in {"1", "true", "yes", "on"},
+            "model": str(env.get("GRAPHITI_LLM_MODEL") or "grok-4.5"),
+            "poll_seconds": float(env.get("GRAPHITI_POLL_SECONDS", "2")),
+        },
+        "hermes": {
+            "enabled": str(env.get("HERMES_ENABLED", "0")).lower() in {"1", "true", "yes", "on"},
+            "api_url": str(env.get("HERMES_API_URL") or "http://127.0.0.1:8642"),
+            "workspace": str(env.get("HERMES_WORKSPACE") or ROOT),
+            "poll_seconds": float(env.get("HERMES_POLL_SECONDS", "1")),
+            "max_run_seconds": int(env.get("HERMES_MAX_RUN_SECONDS", "3600")),
+        },
+        "links": {
+            "minio_console": "http://127.0.0.1:9001",
+            "falkordb_browser": "http://127.0.0.1:3101",
+        },
+        "groups": [
+            {"id": str(item.get("id") or ""), "name": str(item.get("name") or item.get("id") or "")}
+            for item in groups if isinstance(item, dict) and str(item.get("id") or "").endswith("@chatroom")
+        ],
+    }
+
+
+def save_memory_infrastructure_config(data: Dict[str, Any]) -> Dict[str, Any]:
+    memory_in = data.get("memory") if isinstance(data.get("memory"), dict) else {}
+    router_in = data.get("router") if isinstance(data.get("router"), dict) else {}
+    durable_in = data.get("durable") if isinstance(data.get("durable"), dict) else {}
+    graphiti_in = data.get("graphiti") if isinstance(data.get("graphiti"), dict) else {}
+    hermes_in = data.get("hermes") if isinstance(data.get("hermes"), dict) else {}
+    api_url = str(hermes_in.get("api_url") or "http://127.0.0.1:8642").strip().rstrip("/")
+    if not api_url.startswith(("http://", "https://")):
+        raise ValueError("Hermes API 地址必须以 http:// 或 https:// 开头")
+    workspace = Path(str(hermes_in.get("workspace") or ROOT)).expanduser()
+    if not workspace.is_dir():
+        raise ValueError("Hermes 工作目录不存在")
+    router_model = str(router_in.get("model") or "grok-chat-fast").strip()
+    graphiti_model = str(graphiti_in.get("model") or "grok-4.5").strip()
+    if not router_model or not graphiti_model:
+        raise ValueError("路由模型和 Graphiti 模型不能为空")
+    with CONFIG_WRITE_LOCK:
+        current = json_read(CONFIG_PATH, {})
+        current_memory = current.get("memory") if isinstance(current.get("memory"), dict) else {}
+        current_memory.update({
+            "enabled": bool(memory_in.get("enabled", True)),
+            "max_turns": max(2, min(50, int(memory_in.get("max_turns", 12)))),
+            "retrieval_deadline_ms": max(50, min(2000, int(memory_in.get("retrieval_deadline_ms", 250)))),
+            "context_budget_chars": max(1000, min(30000, int(memory_in.get("context_budget_chars", 8000)))),
+            "prompt_budget_chars": max(4000, min(100000, int(memory_in.get("prompt_budget_chars", 24000)))),
+        })
+        current["memory"] = current_memory
+        current_router = current.get("router") if isinstance(current.get("router"), dict) else {}
+        current_router.update({
+            "enabled": bool(router_in.get("enabled", True)),
+            "model": router_model,
+            "timeout_seconds": max(1, min(10, int(router_in.get("timeout_seconds", 2)))),
+        })
+        current["router"] = current_router
+        atomic_write(CONFIG_PATH, json.dumps(current, ensure_ascii=False, indent=2) + "\n")
+        update_env_file(ENV_PATH, {
+            "WECHAT_DURABLE_ENABLED": "1" if bool(durable_in.get("enabled", True)) else "0",
+            "WECHAT_DURABLE_BATCH_SIZE": max(1, min(500, int(durable_in.get("batch_size", 100)))),
+            "WECHAT_DURABLE_POLL_SECONDS": max(0.1, min(30.0, float(durable_in.get("poll_seconds", 0.5)))),
+            "GRAPHITI_ENABLED": "1" if bool(graphiti_in.get("enabled", True)) else "0",
+            "GRAPHITI_LLM_MODEL": graphiti_model,
+            "GRAPHITI_POLL_SECONDS": max(0.5, min(30.0, float(graphiti_in.get("poll_seconds", 2)))),
+            "HERMES_ENABLED": "1" if bool(hermes_in.get("enabled", True)) else "0",
+            "HERMES_API_URL": api_url,
+            "HERMES_WORKSPACE": str(workspace.resolve()),
+            "HERMES_POLL_SECONDS": max(0.5, min(10.0, float(hermes_in.get("poll_seconds", 1)))),
+            "HERMES_MAX_RUN_SECONDS": max(60, min(86400, int(hermes_in.get("max_run_seconds", 3600)))),
+        })
+    restart = run_action("restart_ai")
+    return {
+        "config": memory_infrastructure_config(),
+        "restart": {"applied": True, "output": str(restart.get("output") or "")[-2000:]},
+        "revision": config_revision(),
+    }
+
+
+def memory_infrastructure_action(data: Dict[str, Any]) -> Dict[str, Any]:
+    action = str(data.get("action") or "").strip()
+    if action == "retry_sync":
+        with MEMORY.connect() as db:
+            cur = db.execute(
+                """UPDATE durable_outbox SET next_attempt_at=0,updated_at=?
+                   WHERE status IN ('pending','retry')""",
+                (time.strftime("%Y-%m-%d %H:%M:%S"),),
+            )
+        return {"action": action, "updated": int(cur.rowcount), "message": "已唤醒全部同步积压"}
+    if action == "retry_graph":
+        env = parse_env(ENV_PATH)
+        dsn = str(env.get("WECHAT_POSTGRES_DSN") or "")
+        if not dsn:
+            raise RuntimeError("PostgreSQL 未配置")
+        import psycopg  # type: ignore
+        with psycopg.connect(dsn, connect_timeout=2) as db:
+            with db.cursor() as cur:
+                cur.execute(
+                    """UPDATE graph_sync_jobs SET status='retry',next_attempt_at=now(),updated_at=now()
+                       WHERE status IN ('pending','retry','failed')"""
+                )
+                count = int(cur.rowcount)
+            db.commit()
+        return {"action": action, "updated": count, "message": "已重新排队全部关系图任务"}
+    if action == "backup":
+        proc = subprocess.run(
+            [str(ROOT / "scripts" / "backup_durable_memory.sh")],
+            cwd=str(ROOT), text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            timeout=300, check=False,
+        )
+        if proc.returncode:
+            raise RuntimeError(proc.stdout[-3000:])
+        return {"action": action, "message": "中央记忆备份完成", "output": proc.stdout[-3000:]}
+    if action == "hermes_health":
+        env = parse_env(ENV_PATH)
+        url = str(env.get("HERMES_API_URL") or "http://127.0.0.1:8642").rstrip("/")
+        req = urllib.request.Request(url + "/health/detailed", headers={
+            "Accept": "application/json",
+            "Authorization": "Bearer " + str(env.get("HERMES_API_KEY") or ""),
+        })
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            payload = json.loads(resp.read().decode("utf-8", "replace") or "{}")
+        return {"action": action, "message": "Hermes API 连接正常", "health": payload}
+    if action == "router_health":
+        payload = ai_json("/router/test", "POST", {}, 15).get("data") or {}
+        runtime = payload.get("runtime") or {}
+        available = bool((payload.get("result") or {}).get("available"))
+        return {
+            "action": action, "available": available, "runtime": runtime,
+            "message": "快速路由连接正常" if available else
+                f"快速路由当前不可用，机器人已自动使用本地规则降级：{runtime.get('last_error') or 'unknown'}",
+        }
+    raise ValueError("未知的记忆基础设施操作")
+
+
+def automation_runs_payload(limit: int = 50) -> Dict[str, Any]:
+    items = MEMORY.automation_runs(limit=max(1, min(100, int(limit))))
+    with MEMORY.connect() as db:
+        for item in items:
+            row = db.execute(
+                """SELECT event_type,created_at FROM automation_events
+                   WHERE run_id=? ORDER BY id DESC LIMIT 1""",
+                (str(item.get("run_id") or ""),),
+            ).fetchone()
+            item["last_event"] = dict(row) if row else {}
+    return {"items": items, "count": len(items)}
+
+
+def submit_automation_task(data: Dict[str, Any]) -> Dict[str, Any]:
+    result = ai_json("/automation/submit", "POST", {
+        "group_id": str(data.get("group_id") or ""),
+        "intent": str(data.get("intent") or ""),
+        "risk_level": str(data.get("risk_level") or "write"),
+    }, 15)
+    return result.get("data") or result
+
+
+def control_automation_task(data: Dict[str, Any], action: str) -> Dict[str, Any]:
+    result = ai_json(f"/automation/{action}", "POST", {
+        "run_id": str(data.get("run_id") or ""),
+    }, 15)
+    return result.get("data") or result
 
 
 def memory_search(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -4115,6 +4316,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json_response(200, {"ok": True, "data": memory_infrastructure_status()})
             except Exception as exc:
                 return self.json_response(500, {"ok": False, "error": str(exc)})
+        if path == "/api/memory/infrastructure/config":
+            return self.json_response(200, {"ok": True, "data": memory_infrastructure_config()})
+        if path == "/api/automation/runs":
+            try:
+                qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                return self.json_response(200, {"ok": True, "data": automation_runs_payload(
+                    int((qs.get("limit") or ["50"])[0])
+                )})
+            except Exception as exc:
+                return self.json_response(400, {"ok": False, "error": str(exc)})
         if path in {"/api/personas/list", "/api/personas/detail", "/api/personas/jobs"}:
             try:
                 qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -4321,6 +4532,16 @@ class Handler(BaseHTTPRequestHandler):
                 result = memory_group_save(data)
             elif path == "/api/memory/import":
                 result = memory_import(data)
+            elif path == "/api/memory/infrastructure/config":
+                result = save_memory_infrastructure_config(data)
+            elif path == "/api/memory/infrastructure/action":
+                result = memory_infrastructure_action(data)
+            elif path == "/api/automation/submit":
+                result = submit_automation_task(data)
+            elif path == "/api/automation/approve":
+                result = control_automation_task(data, "approve")
+            elif path == "/api/automation/stop":
+                result = control_automation_task(data, "stop")
             elif path.startswith("/api/action/"):
                 result = run_action(path.rsplit("/", 1)[-1])
             else:

@@ -59,3 +59,34 @@ PYTHONPATH=tools/runtime/python python3 scripts/migrate_sqlite_to_postgres.py
 
 每个自动化任务在 SQLite 中保存发起群、成员、原消息、Hermes run ID、工具事件
 和最终结果。创建任务后立即回执，最终结果异步回群。
+
+## 后台控制台
+
+打开 `http://127.0.0.1:8765/#memory-infra` 可以直接：
+
+- 调整 250ms 检索截止、上下文预算、快速路由模型和超时。
+- 启停可靠同步、Graphiti 与 Hermes，并设置批量、轮询和任务超时。
+- 重试同步/关系图任务，执行中央记忆备份。
+- 打开 MinIO 与 FalkorDB 管理界面。
+- 手动创建 Hermes 任务，审批高风险任务，停止排队或运行中的任务。
+
+Hermes Gateway 自身只提供 API，根路径没有独立 Web UI；项目后台中的
+“Hermes 任务控制台”是当前管理入口。
+
+## 当前完成度
+
+已完成：可靠 SQLite outbox、PostgreSQL/PGroonga/pgvector 结构、MinIO 归档、
+250ms 降级链路、Graphiti/FalkorDB 后台桥接、Hermes API/权限/审批/停止、
+备份脚本和可操作后台。
+
+仍需继续验收：
+
+- 当前微信账号的完整历史范围尚未证明全部导入，必须按群核对最早/最晚时间和媒体完整度。
+- PostgreSQL `memory_embeddings`、`memory_facts`、`memory_summaries` 仍需异步回填。
+- Graphiti 历史任务需要清完积压并解决上游模型偶发 502。
+- `grok-chat-fast` 需恢复真实可用后再作为主路由；不可用期间使用本地规则降级。
+- 2026-07-24 的 37 条真实回复样本为 P50 20.893 秒、P95 28.145 秒，尚未达到
+  P50 2.5 秒/P95 5 秒目标，需继续定位模型首包和最终回复耗时。
+- 备份已执行，仍需做一次隔离恢复演练并记录恢复结果。
+- Hermes 只读任务和高风险审批/停止已实测；定时任务创建/暂停/删除、真实代码
+  写入、GitHub 推送和生产部署仍需分别验收。

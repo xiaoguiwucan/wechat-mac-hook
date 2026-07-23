@@ -46,7 +46,6 @@
         <div class="context-title"><span>长期记忆</span><small>BRAIN</small></div>
         <button class="nav-item" data-page="personas"><i class="ph ph-user-focus"></i><span>用户画像</span></button>
         <button class="nav-item" data-page="memory-infra"><i class="ph ph-share-network"></i><span>记忆与自动化</span></button>
-        <button class="nav-item" data-page="vector"><i class="ph ph-vector-three"></i><span>本地向量</span></button>
         <button class="nav-item" data-page="memory"><i class="ph ph-database"></i><span>记忆数据库</span></button>
       </section>
       <section class="context-group" data-workspace-group="assets">
@@ -292,6 +291,7 @@
             <div class="card-top"><div class="service-name"><span class="service-mark wx">H</span><div><h3>Hermes Agent</h3><small>GitHub、测试、部署与监控</small></div></div><span class="status-badge">检测中</span></div>
             <dl><div><dt>排队</dt><dd data-field="queued">--</dd></div><div><dt>运行</dt><dd data-field="running">--</dd></div><div><dt>完成</dt><dd data-field="completed">--</dd></div></dl>
             <p class="infra-card-note" data-field="note">异步任务独立于实时回复线程</p>
+            <div class="card-actions"><button class="btn subtle" type="button" id="infraOpenHermesBtn">打开 Hermes 控制台</button></div>
           </article>
           <article class="status-card degraded" data-infra-service="router">
             <div class="card-top"><div class="service-name"><span class="service-mark ai">AI</span><div><h3>双模型快速路由</h3><small>筛选记忆后交给最终模型</small></div></div><span class="status-badge">检测中</span></div>
@@ -308,31 +308,72 @@
             <article><header><strong>回复降级策略</strong><span class="good">不阻塞</span></header><div id="infraFallbackDetails" class="infra-detail-lines"><p>正在读取…</p></div></article>
           </div>
         </section>
-      </section>
-
-      <section class="page" id="page-vector">
-        <div class="page-bar"><div><h2>本地向量模型</h2><p>独立管理 oMLX Embedding、Reranker 与永久记忆回填</p></div><span class="health-chip" id="embeddingState">读取中</span></div>
-        <form id="embeddingForm" class="panel embedding-panel">
-            <div class="panel-head"><div><h2>本地 Embedding / Reranker</h2><p>oMLX 本地向量检索与永久记忆重排</p></div><span class="route-status">LOCAL OMLX</span></div>
-            <div class="embedding-grid panel-body">
-              <div class="field"><label for="embeddingBaseUrl">oMLX API</label><input id="embeddingBaseUrl" value="http://127.0.0.1:8017/v1"></div>
-              <div class="field"><label for="embeddingModel">Embedding 模型</label><input id="embeddingModel" value="Qwen3-Embedding-8B-mxfp8"></div>
-              <div class="field"><label for="rerankerModel">Reranker 模型</label><input id="rerankerModel" value="Qwen3-Reranker-4B-mxfp8"></div>
-              <div class="field"><label>向量维度</label><input value="4096" disabled></div>
-              <div class="embedding-metric"><strong id="embeddingVectors">0</strong><span>已完成向量</span></div>
-              <div class="embedding-metric"><strong id="embeddingPending">0</strong><span>待处理</span></div>
-              <div class="embedding-metric"><strong id="embeddingLoaded">--</strong><span>模型状态</span></div>
-              <div class="embedding-metric"><strong id="embeddingMemory">--</strong><span>模型内存</span></div>
-              <div class="embedding-metric"><strong id="embeddingP50">--</strong><span>Embedding P50</span></div>
-              <div class="embedding-metric"><strong id="embeddingP95">--</strong><span>Embedding P95</span></div>
-              <div class="embedding-metric"><strong id="rerankerP50">--</strong><span>Reranker P50</span></div>
-              <div class="embedding-metric"><strong id="rerankerP95">--</strong><span>Reranker P95</span></div>
-              <div class="field span-2"><label for="embeddingTestQuery">真实检索测试</label><input id="embeddingTestQuery" value="群里大家最近在聊什么"></div>
-              <div class="embedding-test-result" id="embeddingTestResult">等待测试</div>
-              <button type="button" class="btn subtle" id="embeddingTestBtn">运行测试</button>
-              <div class="bar-actions"><button type="button" class="btn ghost" id="saveEmbeddingBtn">保存模型配置</button><button type="button" class="btn subtle" id="backfillPauseBtn">暂停回填</button><button type="button" class="btn primary" id="backfillStartBtn">回填所有历史</button></div>
-            </div>
-        </form>
+        <section class="panel infra-control-panel" id="infraSettings">
+          <div class="panel-head"><div><h2>记忆与服务配置</h2><p>保存后自动重启 AI 服务应用配置，不会启动第二个微信</p></div><span class="route-status">可编辑</span></div>
+          <form id="infraConfigForm" class="infra-config-form">
+            <fieldset>
+              <legend>回复记忆预算</legend>
+              <label class="toggle-row"><span><strong>启用长期记忆</strong><small>关闭后只保留当前会话上下文</small></span><span class="switch"><input id="infraMemoryEnabled" type="checkbox"><i></i></span></label>
+              <div class="field"><label for="infraMemoryTurns">最近对话条数</label><input id="infraMemoryTurns" type="number" min="2" max="50"></div>
+              <div class="field"><label for="infraMemoryDeadline">检索总截止</label><div class="unit-input"><input id="infraMemoryDeadline" type="number" min="50" max="2000"><span>MS</span></div></div>
+              <div class="field"><label for="infraContextBudget">记忆字符预算</label><input id="infraContextBudget" type="number" min="1000" max="30000"></div>
+              <div class="field"><label for="infraPromptBudget">完整提示词预算</label><input id="infraPromptBudget" type="number" min="4000" max="100000"></div>
+            </fieldset>
+            <fieldset>
+              <legend>快速路由</legend>
+              <label class="toggle-row"><span><strong>启用快速路由</strong><small>失败时自动退回本地规则</small></span><span class="switch"><input id="infraRouterEnabled" type="checkbox"><i></i></span></label>
+              <div class="field"><label for="infraRouterModel">路由模型</label><input id="infraRouterModel"></div>
+              <div class="field"><label for="infraRouterTimeout">路由超时</label><div class="unit-input"><input id="infraRouterTimeout" type="number" min="1" max="10"><span>SEC</span></div></div>
+            </fieldset>
+            <fieldset>
+              <legend>可靠入库</legend>
+              <label class="toggle-row"><span><strong>启用 PostgreSQL / MinIO 同步</strong><small>关闭后消息仍先保存在 SQLite 缓冲</small></span><span class="switch"><input id="infraDurableEnabled" type="checkbox"><i></i></span></label>
+              <div class="field"><label for="infraDurableBatch">每批同步数量</label><input id="infraDurableBatch" type="number" min="1" max="500"></div>
+              <div class="field"><label for="infraDurablePoll">同步轮询</label><div class="unit-input"><input id="infraDurablePoll" type="number" min="0.1" max="30" step="0.1"><span>SEC</span></div></div>
+            </fieldset>
+            <fieldset>
+              <legend>Graphiti 关系记忆</legend>
+              <label class="toggle-row"><span><strong>启用 Graphiti / FalkorDB</strong><small>后台构建，不占用回复等待时间</small></span><span class="switch"><input id="infraGraphEnabled" type="checkbox"><i></i></span></label>
+              <div class="field"><label for="infraGraphModel">提取模型</label><input id="infraGraphModel"></div>
+              <div class="field"><label for="infraGraphPoll">任务轮询</label><div class="unit-input"><input id="infraGraphPoll" type="number" min="0.5" max="30" step="0.5"><span>SEC</span></div></div>
+            </fieldset>
+            <fieldset class="infra-hermes-settings">
+              <legend>Hermes 自动化</legend>
+              <label class="toggle-row"><span><strong>启用 Hermes</strong><small>仅使用 API，不接管微信通道</small></span><span class="switch"><input id="infraHermesEnabled" type="checkbox"><i></i></span></label>
+              <div class="field"><label for="infraHermesUrl">Hermes API</label><input id="infraHermesUrl" type="url"></div>
+              <div class="field"><label for="infraHermesWorkspace">允许工作目录</label><input id="infraHermesWorkspace"></div>
+              <div class="field"><label for="infraHermesPoll">状态轮询</label><div class="unit-input"><input id="infraHermesPoll" type="number" min="0.5" max="10" step="0.5"><span>SEC</span></div></div>
+              <div class="field"><label for="infraHermesMaxRun">最长任务时间</label><div class="unit-input"><input id="infraHermesMaxRun" type="number" min="60" max="86400"><span>SEC</span></div></div>
+            </fieldset>
+            <div class="infra-config-actions"><span id="infraConfigState">读取配置中</span><button class="btn primary" id="infraSaveConfigBtn" type="submit">保存并应用配置</button></div>
+          </form>
+        </section>
+        <section class="panel infra-operations-panel">
+          <div class="panel-head"><div><h2>维护操作</h2><p>手动处理同步积压、关系图重试和真实备份</p></div><span class="route-status">OWNER</span></div>
+          <div class="infra-operation-grid">
+            <button type="button" class="operation" data-infra-action="retry_sync"><span>01</span><strong>重试同步积压</strong><small>立即唤醒 SQLite → PostgreSQL</small></button>
+            <button type="button" class="operation" data-infra-action="retry_graph"><span>02</span><strong>重试关系图任务</strong><small>重新排队 Graphiti 失败任务</small></button>
+            <button type="button" class="operation" data-infra-action="backup"><span>03</span><strong>立即备份</strong><small>SQLite、PostgreSQL、MinIO 清单</small></button>
+            <button type="button" class="operation" data-infra-action="hermes_health"><span>04</span><strong>测试 Hermes</strong><small>使用当前密钥检查 API</small></button>
+            <a class="operation" id="infraMinioLink" href="http://127.0.0.1:9001" target="_blank" rel="noreferrer"><span>05</span><strong>打开 MinIO</strong><small>媒体对象管理界面</small></a>
+            <a class="operation" id="infraFalkorLink" href="http://127.0.0.1:3101" target="_blank" rel="noreferrer"><span>06</span><strong>打开 FalkorDB</strong><small>关系图浏览器</small></a>
+            <button type="button" class="operation" data-infra-action="router_health"><span>07</span><strong>测试快速路由</strong><small>验证 grok-chat-fast 当前是否可用</small></button>
+          </div>
+          <pre class="infra-operation-output" id="infraOperationOutput">等待操作</pre>
+        </section>
+        <section class="panel hermes-console-panel" id="infraHermesConsole">
+          <div class="panel-head"><div><h2>Hermes 任务控制台</h2><p>手动创建、审批和停止任务；群聊自动识别仍继续工作</p></div><div class="bar-actions"><button type="button" class="btn subtle" id="infraRefreshRunsBtn">刷新任务</button></div></div>
+          <div class="hermes-console-layout">
+            <form id="infraHermesTaskForm" class="hermes-task-form">
+              <div class="field"><label for="infraTaskGroup">结果回传群</label><select id="infraTaskGroup"></select></div>
+              <div class="field"><label for="infraTaskRisk">风险级别</label><select id="infraTaskRisk"><option value="read">只读</option><option value="write" selected>写操作</option><option value="high">高风险（需审批）</option></select></div>
+              <div class="field"><label for="infraTaskIntent">任务内容</label><textarea id="infraTaskIntent" rows="9" placeholder="例如：运行全部测试，成功后提交并推送到 GitHub，再把结果发到 LightAgent 群"></textarea></div>
+              <button class="btn primary wide" id="infraSubmitTaskBtn" type="submit">创建 Hermes 任务</button>
+              <p class="field-note">高风险任务会先进入“等待审批”，不会直接执行。</p>
+            </form>
+            <div class="hermes-run-list" id="infraHermesRuns"><div class="terminal-empty">暂无任务</div></div>
+          </div>
+        </section>
       </section>
 
       <section class="page" id="page-brain" data-brain-view="orbit">
@@ -418,10 +459,10 @@
                   <div class="field"><label for="brainGroupWorkers">单群并发</label><input id="brainGroupWorkers" type="number" min="1" max="6" value="3"></div>
                   <div class="field"><label for="brainModelWorkers">模型并发</label><input id="brainModelWorkers" type="number" min="1" max="16" value="6"></div>
                   <div class="field"><label for="brainRerankCandidates">首批重排</label><input id="brainRerankCandidates" type="number" min="4" max="24" value="12"></div>
-                  <div class="field"><label for="brainVectorLimit">向量召回</label><input id="brainVectorLimit" type="number" min="12" max="200" value="60"></div>
+                  <div class="field"><label for="brainVectorLimit">语义候选上限</label><input id="brainVectorLimit" type="number" min="12" max="200" value="60"></div>
                   <div class="field"><label for="brainFtsLimit">全文召回</label><input id="brainFtsLimit" type="number" min="8" max="100" value="30"></div>
                 </div>
-                <div class="retrieval-route-list"><h4>永久记忆路线</h4><div><i class="ph ph-vector-three"></i><span>向量语义召回</span><b>Top 60</b></div><div><i class="ph ph-text-columns"></i><span>FTS5 全文检索</span><b>Top 30</b></div><div><i class="ph ph-users-three"></i><span>人物 · 外号 · 群梗 · 时间</span><b>结构化</b></div><div><i class="ph ph-arrows-down-up"></i><span>Reranker 精排</span><b>12–24</b></div></div>
+                <div class="retrieval-route-list"><h4>永久记忆路线</h4><div><i class="ph ph-vector-three"></i><span>pgvector 语义索引（存在时）</span><b>Top 60</b></div><div><i class="ph ph-text-columns"></i><span>PGroonga / FTS 全文检索</span><b>Top 30</b></div><div><i class="ph ph-users-three"></i><span>人物 · 外号 · 群梗 · 时间</span><b>结构化</b></div><div><i class="ph ph-share-network"></i><span>Graphiti 关系记忆</span><b>异步</b></div></div>
                 <button class="btn subtle wide brain-inline-preview" type="button" data-brain-preview-clone>回放最近 24 小时</button>
               </section>
             </div>
@@ -435,7 +476,6 @@
           <div><strong id="replyQueuedCount">0</strong><span>排队</span></div>
           <div><strong id="replyDoneCount">0</strong><span>回复完毕</span></div>
           <div><strong id="workerUsage">0 / 8</strong><span>并发 worker</span></div>
-          <div><strong id="backfillProgress">0</strong><span>待向量化</span></div>
         </div>
           <section class="panel reply-task-panel">
             <div class="panel-head"><div><h2>任务时间线</h2><p>不同话题并行，同一线程严格保持顺序</p></div><span class="route-status">LIVE TASKS</span></div>

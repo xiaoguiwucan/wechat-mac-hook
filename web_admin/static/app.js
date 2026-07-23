@@ -1,6 +1,6 @@
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
-const state = { config: null, status: null, brainConfig: null, replyTasks: [], faceItems: [], pokeFaceIds: new Set(), channels: [], selectedChannelId: '', channelHealth: {}, groupCatalog: [], groupMemberCatalog: {}, groupMemberCatalogMeta: {}, ignoredGroupMembers: {}, groupPersonalities: {}, groupAdmins: {}, groupAdminRoles: {}, groupAdminPermissions: [], groupAdminPreviewUserId: '', persona: { members: [], selectedUserId: '', detail: null, tab: 'overview', refreshTimer: null }, dirty: false, logs: [], source: 'all', miniSource: 'all', paused: false, eventSource: null, traceDiagnostic: null };
+const state = { config: null, status: null, brainConfig: null, infraConfig: null, automationRuns: [], replyTasks: [], faceItems: [], pokeFaceIds: new Set(), channels: [], selectedChannelId: '', channelHealth: {}, groupCatalog: [], groupMemberCatalog: {}, groupMemberCatalogMeta: {}, ignoredGroupMembers: {}, groupPersonalities: {}, groupAdmins: {}, groupAdminRoles: {}, groupAdminPermissions: [], groupAdminPreviewUserId: '', persona: { members: [], selectedUserId: '', detail: null, tab: 'overview', refreshTimer: null }, dirty: false, logs: [], source: 'all', miniSource: 'all', paused: false, eventSource: null, traceDiagnostic: null };
 let voiceImportFiles = [];
 let voiceImportUploadedPaths = [];
 const pageMeta = {
@@ -8,7 +8,7 @@ const pageMeta = {
   groups: ['群聊策略', '目标群与自动回复规则'], brain: ['群聊大脑', '接话门槛、七维评分与并发策略'],
   personas: ['USR 用户画像', '永久档案、行为统计、关系与原话证据'],
   'memory-infra': ['记忆与自动化', '中央主库、媒体归档、关系图与 Hermes 状态'],
-  'reply-tasks': ['实时对话', '回复线程、任务阶段与耗时'], vector: ['本地向量', 'oMLX 模型、检索与永久记忆回填'],
+  'reply-tasks': ['实时对话', '回复线程、任务阶段与耗时'],
   tests: ['评估看板', '验证模型、Hook 与完整回调链路'], media: ['图片图库', '图片 OCR、文件/视频索引与媒体记忆'],
   'voice-records': ['语音内容', '群语音泡、ASR 转写与语音记忆'],
   voices: ['语音包管理', 'silk / zip / zip1 导入与语音发送'],
@@ -18,7 +18,7 @@ const pageMeta = {
 const pageWorkspace = {
   overview: 'runtime',
   ai: 'intelligence', groups: 'intelligence', brain: 'intelligence', 'reply-tasks': 'intelligence', tests: 'intelligence',
-  personas: 'memory', 'memory-infra': 'memory', vector: 'memory', memory: 'memory',
+  personas: 'memory', 'memory-infra': 'memory', memory: 'memory',
   media: 'assets', 'voice-records': 'assets', voices: 'assets', faces: 'assets',
   logs: 'diagnostics'
 };
@@ -37,7 +37,6 @@ const orbitNodeDetails = {
 const orbitalPageDesigns = {
   overview: { tone: 'cyan', icon: 'ph-gauge', code: 'RUNTIME ORBIT', title: '运行轨道总控', description: '把微信、OneBot、AI 与消息链路放在同一条实时运行轨道中。', state: '核心服务同步中', nodes: [['ph-wechat-logo', '当前微信', 'INSTANCE 1', '官方安装'], ['ph-plugs-connected', 'OneBot', '58080', '消息与媒体'], ['ph-brain', 'AI 网关', '36060', '生成与调度']] },
   ai: { tone: 'violet', icon: 'ph-cpu', code: 'MODEL ORBIT', title: '多模型神经中枢', description: '统一编排对话、生图、OCR 与 ASR 渠道，保存后实时切换运行链路。', state: '配置热加载', nodes: [['ph-arrows-clockwise', '故障切换', 'AUTO', '渠道健康'], ['ph-image-square', 'AI 生图', 'IMAGE', '图片生成'], ['ph-eye', '视觉理解', 'OCR', '图片解析'], ['ph-waveform', '语音理解', 'ASR', '实时转写']] },
-  vector: { tone: 'cyan', icon: 'ph-vector-three', code: 'VECTOR ORBIT', title: '本地向量引擎', description: 'Embedding 召回与 Reranker 精排共同驱动永久记忆检索。', state: 'oMLX 本地推理', nodes: [['ph-cube', '向量维度', '4096D', '完整精度'], ['ph-magnifying-glass', '初始召回', 'TOP 60', '多路融合'], ['ph-arrows-down-up', '精排注入', '12–24', '自适应扩批']] },
   'reply-tasks': { tone: 'mint', icon: 'ph-chats-circle', code: 'THREAD ORBIT', title: '多线程回复调度', description: '跨群并行、同线程串行，每个问题都绑定原消息和完整阶段。', state: '实时任务流', nodes: [['ph-stack', '全局工作池', '8', '并行任务'], ['ph-users-three', '单群并发', '3', '线程隔离'], ['ph-broadcast', '状态刷新', '<1s', '统一事件流']] },
   groups: { tone: 'violet', icon: 'ph-users-three', code: 'SOCIAL ORBIT', title: '群聊策略矩阵', description: '按群控制权限、回复边界与成员屏蔽，保存即刻生效。', state: '群级热更新', nodes: [['ph-shield-check', '群聊授权', 'ACL', '目标群隔离'], ['ph-user-minus', '成员屏蔽', 'LIVE', '历史目录'], ['ph-sliders-horizontal', '回复规则', 'HOT', '实时应用']] },
   tests: { tone: 'amber', icon: 'ph-chart-line-up', code: 'EVALUATION ORBIT', title: '链路评估实验场', description: '使用真实请求、真实耗时与真实回调验证完整机器人链路。', state: '诊断沙盒', nodes: [['ph-lightning', '模型探针', 'REAL', '真实调用'], ['ph-path', '链路追踪', 'TRACE', '逐段定位'], ['ph-check-circle', '回调验证', 'E2E', '发送闭环']] },
@@ -121,7 +120,9 @@ function decorateOrbitalWorkbenches() {
     ['.test-console', '运行终端'], ['.provider-panel', '模型渠道'], ['.reply-task-panel', '任务时间线'],
     ['.media-filter-panel', '筛选控制台'], ['.media-gallery-panel', '素材记录'], ['.voice-control-panel', '素材控制台'],
     ['.voice-gallery-panel', '素材列表'], ['.memory-control-panel', '记忆控制台'], ['.memory-results-panel', '记忆视图'],
-    ['.route-panel', '群聊授权'], ['.member-blacklist-panel', '成员屏蔽'], ['.rules-panel', '回复规则']
+    ['.route-panel', '群聊授权'], ['.member-blacklist-panel', '成员屏蔽'], ['.rules-panel', '回复规则'],
+    ['.infra-summary', '架构总览'], ['.infra-control-panel', '记忆与服务配置'],
+    ['.infra-operations-panel', '维护操作'], ['.hermes-console-panel', 'Hermes 控制台']
   ];
   Object.keys(orbitalPageDesigns).forEach(pageName => {
     const page = $('#page-' + pageName); if (!page || $('[data-orbit-section-map]', page)) return;
@@ -284,13 +285,15 @@ function showPage(name) {
   if (name === 'faces') requestAnimationFrame(() => { loadFaces(null, true); loadMediaReplyStats(true); });
   if (name === 'groups') requestAnimationFrame(() => loadGroupMembers(null, true));
   if (name === 'personas') { $('#page-personas').dataset.mobilePane = 'directory'; requestAnimationFrame(() => loadPersonaMembers(true)); }
-  if (name === 'memory-infra') requestAnimationFrame(() => refreshMemoryInfrastructure(true));
+  if (name === 'memory-infra') requestAnimationFrame(() => {
+    refreshMemoryInfrastructure(true); loadMemoryInfrastructureConfig(true); loadAutomationRuns(true);
+  });
   if (name === 'brain') requestAnimationFrame(runOrbitSequence);
   else requestAnimationFrame(() => animatePageSignal(name));
   if (name === 'memory' && $('#memoryResults')?.textContent?.includes('选择左侧操作')) {
     requestAnimationFrame(() => searchMemory($('#searchMemoryBtn')));
   }
-  if (name === 'reply-tasks' || name === 'vector') requestAnimationFrame(() => refreshReplyTasks(true));
+  if (name === 'reply-tasks') requestAnimationFrame(() => refreshReplyTasks(true));
 }
 
 function renderMediaTriggerDiagnostics(kind, data) {
@@ -338,10 +341,6 @@ function fillBrainConfig(data) {
   $('#factorEditor').innerHTML = Object.entries(factorLabels).map(([key, label]) => `<label><span>${label}</span><input data-factor="${key}" type="number" min="0" max="100" step="1" value="${Number(weights[key] ?? 0)}"></label>`).join('');
   const modifiers = c.modifiers || {};
   $('#modifierEditor').innerHTML = `<strong>本地修正值</strong>${Object.entries(modifierLabels).map(([key, label]) => `<label><span>${label}</span><input data-modifier="${key}" type="number" min="-100" max="100" step="1" value="${Number(modifiers[key] ?? 0)}"></label>`).join('')}`;
-  const e = data.embedding || {};
-  $('#embeddingBaseUrl').value = e.base_url || 'http://127.0.0.1:8017/v1';
-  $('#embeddingModel').value = e.model || 'Qwen3-Embedding-8B-mxfp8';
-  $('#rerankerModel').value = e.reranker_model || 'Qwen3-Reranker-4B-mxfp8';
   const media = data.media_reply || {};
   $('#voiceAutoEnabled').checked = media.automatic_enabled !== false;
   $('#faceAutoEnabled').checked = media.automatic_enabled !== false;
@@ -369,7 +368,6 @@ async function saveBrainConfig(button) {
     const old = state.brainConfig || {};
     const result = await api('/api/brain/config', { method: 'POST', body: JSON.stringify({
       reply_strategy: { ...(old.reply_strategy || {}), mode: $('#brainMode').value, threshold: Number($('#brainThreshold').value), scoring_mode: $('#brainScoringMode').value, rerank_candidates: Number($('#brainRerankCandidates').value), global_workers: Number($('#brainGlobalWorkers').value), per_group_workers: Number($('#brainGroupWorkers').value), model_concurrency: Number($('#brainModelWorkers').value), mute_duration_seconds: Number($('#brainMuteDuration').value), mention_user_on_reply: $('#brainMentionUser').checked, factor_weights: weights, modifiers },
-      embedding: { ...(old.embedding || {}), enabled: true, base_url: $('#embeddingBaseUrl').value.trim(), model: $('#embeddingModel').value.trim(), reranker_model: $('#rerankerModel').value.trim(), dimensions: 4096 },
       retrieval: { ...(old.retrieval || {}), vector_limit: Number($('#brainVectorLimit').value), fts_limit: Number($('#brainFtsLimit').value), adaptive_rerank: $('#brainAdaptiveRerank').checked }
     }) });
     fillBrainConfig(result);
@@ -443,14 +441,7 @@ async function refreshReplyTasks(silent = false) {
     const data = await api('/api/brain/tasks?limit=200'); state.replyTasks = data.items || []; renderReplyTasks();
     $('#replyActiveCount').textContent = data.active || 0; $('#replyQueuedCount').textContent = data.queued || 0; $('#replyDoneCount').textContent = data.completed_recent || 0;
     const s = data.runtime?.scheduler || {}; $('#workerUsage').textContent = `${s.active_workers || 0} / ${s.global_workers || 8}`;
-    const e = data.runtime?.embedding || {}; $('#backfillProgress').textContent = e.pending ?? 0; $('#embeddingState').textContent = e.paused ? '已暂停' : e.running ? '回填中' : '就绪';
-    $('#embeddingVectors').textContent = e.vectors ?? e.processed ?? 0; $('#embeddingPending').textContent = e.pending ?? 0;
-    const modelState = e.local_models?.[e.model] || {}, rerankerState = e.local_models?.[e.reranker_model] || {};
-    $('#embeddingLoaded').textContent = modelState.loaded && rerankerState.loaded ? '均已加载' : modelState.is_loading || rerankerState.is_loading ? '加载中' : '部分未加载';
-    const bytes = Number(modelState.actual_size || modelState.estimated_size || 0) + Number(rerankerState.actual_size || rerankerState.estimated_size || 0);
-    $('#embeddingMemory').textContent = bytes ? `${(bytes / 1073741824).toFixed(1)} GB` : '--';
-    setLatencyMetric('embeddingP50', e.embedding_p50_ms, 300, 500); setLatencyMetric('embeddingP95', e.embedding_p95_ms, 500, 1500);
-    setLatencyMetric('rerankerP50', e.reranker_p50_ms, 500, 1000); setLatencyMetric('rerankerP95', e.reranker_p95_ms, 1000, 2000);
+    const e = data.runtime?.embedding || {};
     const orbitalLatency = e.embedding_p50_ms ?? e.reranker_p50_ms;
     if ($('#orbitLatency')) $('#orbitLatency').textContent = orbitalLatency == null ? '--' : `${Number(orbitalLatency).toFixed(0)}ms`;
     if ($('#orbitTotalLatency')) $('#orbitTotalLatency').textContent = orbitalLatency == null ? '147ms' : `${Number(orbitalLatency).toFixed(0)}ms`;
@@ -1346,24 +1337,26 @@ async function refreshMemoryInfrastructure(silent = false, button = null) {
     }, minio.healthy ? '媒体原件独立保存，数据库只保留索引与哈希' : (minio.error || '对象存储不可用'));
 
     const graphDegraded = Boolean(graph.failed || graph.last_error);
-    setInfraCard('graphiti', graph.healthy ? (graphDegraded ? 'degraded' : 'running') : 'stopped',
-      graph.healthy ? (graphDegraded ? '在线·正在重试' : '关系图在线') : '关系图离线', {
+    setInfraCard('graphiti', graph.enabled === false ? 'degraded' : graph.healthy ? (graphDegraded ? 'degraded' : 'running') : 'stopped',
+      graph.enabled === false ? '已手动停用' : graph.healthy ? (graphDegraded ? '在线·正在重试' : '关系图在线') : '关系图离线', {
         pending: Number(graph.pending_jobs || 0).toLocaleString(),
-        processed: Number(graph.processed || 0).toLocaleString(),
+        processed: Number(graph.job_counts?.synced ?? graph.processed ?? 0).toLocaleString(),
         failed: Number(graph.failed || 0).toLocaleString(),
       }, graph.last_error || '人物、事件、偏好和关系在后台异步构建');
 
-    setInfraCard('hermes', hermes.healthy ? 'running' : 'stopped', hermes.healthy ? '自动化在线' : '自动化离线', {
+    setInfraCard('hermes', hermes.enabled === false ? 'degraded' : hermes.healthy ? 'running' : 'stopped',
+      hermes.enabled === false ? '已手动停用' : hermes.healthy ? '自动化在线' : '自动化离线', {
       queued: Number(hermes.queued || 0).toLocaleString(),
       running: Number(hermes.running || 0).toLocaleString(),
       completed: Number(hermes.completed || 0).toLocaleString(),
     }, hermes.last_error || 'GitHub、测试、部署和监控走独立工作池');
 
-    setInfraCard('router', router.healthy ? 'running' : 'degraded', router.healthy ? '回复链路在线' : '使用规则降级', {
+    const routerLabel = router.enabled === false ? '已手动停用' : router.healthy === true ? '快速路由在线' : router.healthy === false ? '快速路由降级' : '尚未验证';
+    setInfraCard('router', router.healthy === true ? 'running' : 'degraded', routerLabel, {
       router: router.model || '--',
       final: router.final_model || '--',
       local: embedding.local_model_disabled ? '已停用·省内存' : '运行中',
-    }, `${router.retrieval_deadline_ms || 250}ms 总截止；超时使用${router.fallback || '缓存'}直接回答`);
+    }, router.last_error || `${router.retrieval_deadline_ms || 250}ms 总截止；超时使用${router.fallback || '缓存'}直接回答`);
 
     $('#infraSyncBadge').textContent = Number(outbox.pending || 0) ? `积压 ${outbox.pending}` : '无积压';
     $('#infraSyncBadge').className = Number(outbox.pending || 0) ? 'warn' : 'good';
@@ -1374,7 +1367,7 @@ async function refreshMemoryInfrastructure(silent = false, button = null) {
     $('#infraHermesBadge').textContent = hermes.healthy ? 'API 在线' : '离线';
     $('#infraHermesBadge').className = hermes.healthy ? 'good' : 'bad';
     $('#infraHermesDetails').innerHTML = `<p><span>本地任务</span><b>${escapeHtml(infraCounts(hermes.local_runs))}</b></p><p><span>中央任务</span><b>${escapeHtml(infraCounts(hermes.central_runs))}</b></p><p><span>实时槽位</span><b>与回复线程隔离</b></p>`;
-    $('#infraFallbackDetails').innerHTML = `<p><span>路由模型</span><b>${escapeHtml(router.model || '--')}</b></p><p><span>最终模型</span><b>${escapeHtml(router.final_model || '--')}</b></p><p><span>深层检索超时</span><b>${router.retrieval_deadline_ms || 250}ms 后用缓存回答</b></p>`;
+    $('#infraFallbackDetails').innerHTML = `<p><span>路由模型</span><b>${escapeHtml(router.model || '--')} · ${escapeHtml(routerLabel)}</b></p><p><span>最终模型</span><b>${escapeHtml(router.final_model || '--')}</b></p><p><span>深层检索超时</span><b>${router.retrieval_deadline_ms || 250}ms 后用缓存回答</b></p>`;
   } catch (e) {
     $('#infraOverall').className = 'infra-overall offline';
     $('#infraOverall').textContent = '状态接口失败';
@@ -1382,6 +1375,163 @@ async function refreshMemoryInfrastructure(silent = false, button = null) {
   } finally {
     if (button) setBusy(button, false);
   }
+}
+
+async function loadMemoryInfrastructureConfig(silent = false) {
+  try {
+    const c = await api('/api/memory/infrastructure/config'); state.infraConfig = c;
+    const memory = c.memory || {}, router = c.router || {}, durable = c.durable || {};
+    const graph = c.graphiti || {}, hermes = c.hermes || {};
+    $('#infraMemoryEnabled').checked = memory.enabled !== false;
+    $('#infraMemoryTurns').value = memory.max_turns ?? 12;
+    $('#infraMemoryDeadline').value = memory.retrieval_deadline_ms ?? 250;
+    $('#infraContextBudget').value = memory.context_budget_chars ?? 8000;
+    $('#infraPromptBudget').value = memory.prompt_budget_chars ?? 24000;
+    $('#infraRouterEnabled').checked = router.enabled !== false;
+    $('#infraRouterModel').value = router.model || 'grok-chat-fast';
+    $('#infraRouterTimeout').value = router.timeout_seconds ?? 2;
+    $('#infraDurableEnabled').checked = durable.enabled !== false;
+    $('#infraDurableBatch').value = durable.batch_size ?? 100;
+    $('#infraDurablePoll').value = durable.poll_seconds ?? .5;
+    $('#infraGraphEnabled').checked = graph.enabled !== false;
+    $('#infraGraphModel').value = graph.model || 'grok-4.5';
+    $('#infraGraphPoll').value = graph.poll_seconds ?? 2;
+    $('#infraHermesEnabled').checked = hermes.enabled !== false;
+    $('#infraHermesUrl').value = hermes.api_url || 'http://127.0.0.1:8642';
+    $('#infraHermesWorkspace').value = hermes.workspace || '';
+    $('#infraHermesPoll').value = hermes.poll_seconds ?? 1;
+    $('#infraHermesMaxRun').value = hermes.max_run_seconds ?? 3600;
+    const oldGroup = $('#infraTaskGroup').value;
+    $('#infraTaskGroup').innerHTML = (c.groups || []).map(group => `<option value="${escapeHtml(group.id)}">${escapeHtml(group.name || group.id)}</option>`).join('');
+    if ((c.groups || []).some(group => group.id === oldGroup)) $('#infraTaskGroup').value = oldGroup;
+    $('#infraMinioLink').href = c.links?.minio_console || 'http://127.0.0.1:9001';
+    $('#infraFalkorLink').href = c.links?.falkordb_browser || 'http://127.0.0.1:3101';
+    $('#infraConfigState').textContent = '配置已读取';
+  } catch (e) {
+    $('#infraConfigState').textContent = `读取失败：${e.message}`;
+    if (!silent) toast(`配置读取失败：${e.message}`, 'error');
+  }
+}
+
+async function saveMemoryInfrastructureConfig(button) {
+  setBusy(button, true, '保存并重启中…'); $('#infraConfigState').textContent = '正在保存并重启 AI 服务';
+  try {
+    const result = await api('/api/memory/infrastructure/config', {
+      method: 'POST', body: JSON.stringify({
+        memory: {
+          enabled: $('#infraMemoryEnabled').checked,
+          max_turns: Number($('#infraMemoryTurns').value),
+          retrieval_deadline_ms: Number($('#infraMemoryDeadline').value),
+          context_budget_chars: Number($('#infraContextBudget').value),
+          prompt_budget_chars: Number($('#infraPromptBudget').value),
+        },
+        router: {
+          enabled: $('#infraRouterEnabled').checked,
+          model: $('#infraRouterModel').value.trim(),
+          timeout_seconds: Number($('#infraRouterTimeout').value),
+        },
+        durable: {
+          enabled: $('#infraDurableEnabled').checked,
+          batch_size: Number($('#infraDurableBatch').value),
+          poll_seconds: Number($('#infraDurablePoll').value),
+        },
+        graphiti: {
+          enabled: $('#infraGraphEnabled').checked,
+          model: $('#infraGraphModel').value.trim(),
+          poll_seconds: Number($('#infraGraphPoll').value),
+        },
+        hermes: {
+          enabled: $('#infraHermesEnabled').checked,
+          api_url: $('#infraHermesUrl').value.trim(),
+          workspace: $('#infraHermesWorkspace').value.trim(),
+          poll_seconds: Number($('#infraHermesPoll').value),
+          max_run_seconds: Number($('#infraHermesMaxRun').value),
+        },
+      }),
+    });
+    state.infraConfig = result.config;
+    $('#infraConfigState').textContent = `已应用 · 配置版本 ${result.revision}`;
+    toast('记忆与 Hermes 配置已保存，AI 服务已重启应用', 'success', 6500);
+    await refreshMemoryInfrastructure(true); await loadAutomationRuns(true);
+  } catch (e) {
+    $('#infraConfigState').textContent = `保存失败：${e.message}`;
+    toast(`保存失败：${e.message}`, 'error', 7000);
+  } finally { setBusy(button, false); }
+}
+
+async function runMemoryInfrastructureAction(action, button) {
+  setBusy(button, true, '执行中…');
+  try {
+    const result = await api('/api/memory/infrastructure/action', {
+      method: 'POST', body: JSON.stringify({ action }),
+    });
+    $('#infraOperationOutput').textContent = result.output || result.message || JSON.stringify(result, null, 2);
+    toast(result.message || '操作完成');
+    await refreshMemoryInfrastructure(true);
+  } catch (e) {
+    $('#infraOperationOutput').textContent = `操作失败：${e.message}`;
+    toast(`操作失败：${e.message}`, 'error');
+  } finally { setBusy(button, false); }
+}
+
+const automationStatusLabels = {
+  awaiting_approval: '等待审批', queued: '排队中', starting: '正在启动', running: '执行中',
+  completed: '已完成', failed: '失败', cancelled: '已停止',
+};
+
+function renderAutomationRuns() {
+  const root = $('#infraHermesRuns'), rows = state.automationRuns || [];
+  root.innerHTML = rows.length ? rows.map(run => {
+    const status = String(run.status || 'unknown');
+    const active = ['queued', 'starting', 'running'].includes(status);
+    const summary = run.result_summary || run.error || '';
+    return `<article class="hermes-run state-${escapeHtml(status)}">
+      <header><div><strong>${escapeHtml(automationStatusLabels[status] || status)}</strong><code>${escapeHtml(run.run_id || '')}</code></div><time>${escapeHtml(run.updated_at || run.created_at || '')}</time></header>
+      <p>${escapeHtml(run.intent || '')}</p>
+      <footer><span>${escapeHtml(run.risk_level || 'read')} · ${escapeHtml(run.group_id || '')}${run.last_event?.event_type ? ` · ${escapeHtml(run.last_event.event_type)}` : ''}</span><div>
+        ${status === 'awaiting_approval' ? `<button class="btn primary" type="button" data-automation-action="approve" data-run-id="${escapeHtml(run.run_id)}">批准执行</button>` : ''}
+        ${active ? `<button class="btn subtle" type="button" data-automation-action="stop" data-run-id="${escapeHtml(run.run_id)}">停止</button>` : ''}
+      </div></footer>
+      ${summary ? `<pre>${escapeHtml(summary)}</pre>` : ''}
+    </article>`;
+  }).join('') : '<div class="terminal-empty">暂无 Hermes 任务</div>';
+}
+
+async function loadAutomationRuns(silent = false) {
+  try {
+    const result = await api('/api/automation/runs?limit=50');
+    state.automationRuns = result.items || []; renderAutomationRuns();
+  } catch (e) { if (!silent) toast(`Hermes 任务读取失败：${e.message}`, 'error'); }
+}
+
+async function submitAutomationTask(button) {
+  const intent = $('#infraTaskIntent').value.trim(), groupId = $('#infraTaskGroup').value;
+  if (!groupId || !intent) { toast('请选择回传群并填写任务内容', 'error'); return; }
+  setBusy(button, true, '创建中…');
+  try {
+    const result = await api('/api/automation/submit', {
+      method: 'POST', body: JSON.stringify({
+        group_id: groupId, intent, risk_level: $('#infraTaskRisk').value,
+      }),
+    });
+    $('#infraTaskIntent').value = '';
+    toast(result.approval_required ? '高风险任务已创建，等待你点击批准' : result.message || '任务已创建',
+      result.approval_required ? 'warning' : 'success', 6500);
+    await loadAutomationRuns(true); await refreshMemoryInfrastructure(true);
+  } catch (e) { toast(`创建任务失败：${e.message}`, 'error'); }
+  finally { setBusy(button, false); }
+}
+
+async function controlAutomationRun(action, runId, button) {
+  setBusy(button, true, action === 'approve' ? '批准中…' : '停止中…');
+  try {
+    const result = await api(`/api/automation/${action}`, {
+      method: 'POST', body: JSON.stringify({ run_id: runId }),
+    });
+    toast(result.message || (action === 'approve' ? '任务已批准' : '任务已停止'));
+    await loadAutomationRuns(true); await refreshMemoryInfrastructure(true);
+  } catch (e) { toast(`任务操作失败：${e.message}`, 'error'); }
+  finally { setBusy(button, false); }
 }
 
 function setMemoryMode(title, sub, mode) {
@@ -2488,9 +2638,6 @@ function bind() {
   $('#personaBackBtn').onclick = showPersonaDirectory;
   $('#brainPreviewBtn').onclick = e => previewBrain(e.currentTarget); $('#closeBrainPreview').onclick = () => $('#brainPreviewDialog').close();
   $$('[data-brain-preview-clone]').forEach(x => x.onclick = e => previewBrain(e.currentTarget));
-  $('#backfillStartBtn').onclick = e => controlBackfill('start', e.currentTarget); $('#backfillPauseBtn').onclick = e => { const resume = $('#embeddingState').textContent === '已暂停'; controlBackfill(resume ? 'resume' : 'pause', e.currentTarget); };
-  $('#saveEmbeddingBtn').onclick = e => saveBrainConfig(e.currentTarget);
-  $('#embeddingTestBtn').onclick = e => testEmbedding(e.currentTarget);
   $('#refreshGroupsBtn').onclick = () => loadDiscoveredGroups(); $('#saveAliasesBtn').onclick = e => saveAliases(e.currentTarget); $('#syncUiGroupsBtn').onclick = e => syncUiGroups(e.currentTarget); $('#enableSelectedGroupBtn').onclick = enableQuickSelectedGroup; $$('#aiForm input, #aiForm textarea, #aiForm select, #groupForm input:not(#memberBlacklistQuery)').forEach(x => x.addEventListener('change', () => { updateRouteSummary(); markDirty(); }));
   $('#refreshGroupMembersBtn').onclick = e => loadGroupMembers(e.currentTarget);
   $('#saveGroupBlacklistBtn').onclick = e => saveGroupBlacklist(e.currentTarget);
@@ -2520,6 +2667,15 @@ function bind() {
   $('#clearTestConsole').onclick = () => { $('#testConsole').innerHTML = '<p class="muted">// 测试控制台已清空</p>'; };
   $('#refreshMemoryBtn').onclick = () => refreshMemoryStats(); $('#searchMemoryBtn').onclick = e => searchMemory(e.currentTarget); $('#vectorSearchBtn').onclick = e => vectorSearch(e.currentTarget);
   $('#refreshInfraBtn').onclick = e => refreshMemoryInfrastructure(false, e.currentTarget);
+  $('#infraConfigForm').onsubmit = e => { e.preventDefault(); saveMemoryInfrastructureConfig(e.submitter || $('#infraSaveConfigBtn')); };
+  $('#infraOpenHermesBtn').onclick = () => $('#infraHermesConsole').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  $$('[data-infra-action]').forEach(button => button.onclick = () => runMemoryInfrastructureAction(button.dataset.infraAction, button));
+  $('#infraRefreshRunsBtn').onclick = () => loadAutomationRuns();
+  $('#infraHermesTaskForm').onsubmit = e => { e.preventDefault(); submitAutomationTask(e.submitter || $('#infraSubmitTaskBtn')); };
+  $('#infraHermesRuns').onclick = e => {
+    const button = e.target.closest('[data-automation-action]'); if (!button) return;
+    controlAutomationRun(button.dataset.automationAction, button.dataset.runId, button);
+  };
   $('#loadMembersBtn').onclick = e => loadMembers(e.currentTarget); $('#loadMediaBtn').onclick = e => loadMedia(e.currentTarget);
   $('#mediaRefreshBtn').onclick = e => loadMediaCenter(e.currentTarget); $('#mediaSearchBtn').onclick = e => loadMediaCenter(e.currentTarget); $('#mediaOpenMemoryBtn').onclick = () => showPage('memory');
   $$('#mediaGroup,#mediaType,#mediaStatus').forEach(x => x.addEventListener('change', () => loadMediaCenter(null, true)));
@@ -2584,7 +2740,11 @@ async function init() {
   setInterval(() => { if ($('#page-groups').classList.contains('active') && !state.dirty) loadDiscoveredGroups(true); }, 30000);
   setInterval(() => { if ($('#page-media').classList.contains('active')) loadMediaCenter(null, true); }, 5000);
   setInterval(() => { if ($('#page-voice-records')?.classList.contains('active')) loadVoiceRecords(null, true); }, 5000);
-  setInterval(() => { if ($('#page-memory-infra')?.classList.contains('active')) refreshMemoryInfrastructure(true); }, 5000);
+  setInterval(() => {
+    if ($('#page-memory-infra')?.classList.contains('active')) {
+      refreshMemoryInfrastructure(true); loadAutomationRuns(true);
+    }
+  }, 5000);
   setInterval(() => refreshReplyTasks(true), 3000);
 }
 init();
