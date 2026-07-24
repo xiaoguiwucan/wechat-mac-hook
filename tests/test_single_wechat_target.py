@@ -2,7 +2,11 @@ import json
 import unittest
 from pathlib import Path
 
-from web_admin.server import ACTION_SCRIPTS, normalize_auto_login_config
+from web_admin.server import (
+    ACTION_SCRIPTS,
+    normalize_auto_login_config,
+    onebot_health_payload_ready,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,6 +56,20 @@ class SingleWeChatTargetTests(unittest.TestCase):
         config = json.loads((ROOT / "config" / "ai_reply_config.example.json").read_text())
         self.assertFalse(config["wechat_auto_login"]["enabled"])
         self.assertTrue(config["onebot_monitor"]["auto_recover"])
+
+    def test_cancelled_frida_context_is_not_reported_ready(self):
+        self.assertFalse(onebot_health_payload_ready({
+            "status": "ok",
+            "frida": {
+                "loaded": True,
+                "error": "parse frida rpc result",
+                "raw": "context cancelled",
+            },
+        }))
+        self.assertTrue(onebot_health_payload_ready({
+            "status": "ok",
+            "frida": {"send_ready": True, "upload_x0_ready": True},
+        }))
 
 
 if __name__ == "__main__":

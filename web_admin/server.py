@@ -1095,6 +1095,35 @@ def onebot_target_pid(command: str) -> int:
     return int(match.group(1)) if match else 0
 
 
+def onebot_health_payload_ready(payload: Any) -> bool:
+    """Reject a listening OneBot whose Frida session has already been cancelled."""
+    if not isinstance(payload, dict) or str(payload.get("status") or "").lower() != "ok":
+        return False
+    frida = payload.get("frida")
+    if not isinstance(frida, dict):
+        return False
+    error_text = " ".join(
+        str(frida.get(key) or "") for key in ("error", "raw")
+    ).lower()
+    if "context cancelled" in error_text or str(frida.get("error") or "").strip():
+        return False
+    return bool(frida.get("send_ready"))
+
+
+def onebot_live_health(timeout: float = 1.0) -> Tuple[bool, str, Dict[str, Any]]:
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:58080/health", timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+        ready = onebot_health_payload_ready(payload)
+        frida = payload.get("frida") if isinstance(payload.get("frida"), dict) else {}
+        error = "" if ready else str(
+            frida.get("error") or frida.get("raw") or "Frida 接收 Hook 未就绪"
+        )
+        return ready, error, payload
+    except Exception as exc:
+        return False, str(exc), {}
+
+
 def upload_x0_cache_info(wechat_pid: int) -> Dict[str, Any]:
     cache_file = AGENT_HOME / "state" / "upload_x0.json"
     try:
@@ -1147,8 +1176,12 @@ def status() -> Dict[str, Any]:
     onebot_log = onebot_head + onebot_tail
     attached_pid = onebot_target_pid(oc)
     attached_current_wechat = bool(wp and attached_pid == wp)
+    live_hook_ready, live_hook_error, live_onebot_health = (
+        onebot_live_health() if port_open(58080) else (False, "OneBot 端口未监听", {})
+    )
     hook_ready = (
         attached_current_wechat
+        and live_hook_ready
         and "Dynamic Text Message Setup Complete" in onebot_log
         and "Receiver buf2resp hook attached" in onebot_log
         and "Receiver buf2resp hook attach failed" not in onebot_log
@@ -1180,6 +1213,9 @@ def status() -> Dict[str, Any]:
             "attach_permission": developer_tools_enabled(),
             "hook_ready": hook_ready,
             "send_ready": send_ready,
+            "live_hook_ready": live_hook_ready,
+            "live_hook_error": live_hook_error,
+            "live_health": live_onebot_health,
             "start_task_ready": start_task_ready,
             "attached_wechat_pid": attached_pid or None,
             "attached_current_wechat": attached_current_wechat,
@@ -4143,12 +4179,17 @@ def onebot_monitor_loop() -> None:
             op, oc = pid_from_file(PID_FILES["onebot"], "tools/onebot/onebot/onebot")
             opened = port_open(58080)
             target_mismatch = bool(wp and onebot_target_pid(oc) != wp)
+            live_ready, live_error, _ = onebot_live_health() if opened else (False, "OneBot 端口未监听", {})
             action = ""
             error = ""
-            if enabled and auto_recover and (not opened or target_mismatch):
+            if enabled and auto_recover and (not opened or target_mismatch or not live_ready):
                 try:
                     recover_onebot({"restart_wechat": False})
-                    action = "restarted_onebot" if not target_mismatch else "reattached_current_wechat"
+                    action = (
+                        "reattached_current_wechat" if target_mismatch
+                        else "restarted_cancelled_hook" if opened and not live_ready
+                        else "restarted_onebot"
+                    )
                     opened = port_open(58080)
                 except Exception as exc:
                     error = str(exc)[:500]
@@ -4163,7 +4204,7 @@ def onebot_monitor_loop() -> None:
                     "auto_recover": auto_recover,
                     "port_open": opened,
                     "last_action": action or ONEBOT_MONITOR_STATE.get("last_action", ""),
-                    "last_error": error,
+                    "last_error": error or (live_error if opened and not live_ready and not action else ""),
                 })
         except Exception as exc:
             with ONEBOT_MONITOR_LOCK:
